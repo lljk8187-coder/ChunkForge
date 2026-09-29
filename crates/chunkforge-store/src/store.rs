@@ -2,6 +2,7 @@
 
 use crate::Error;
 use crate::meta::{Compression, StoreMeta};
+use crate::outcome::PutOutcome;
 use crate::path::chunk_abs_path;
 use chunkforge_chunk::ChunkId;
 use std::fs::{self, File, OpenOptions};
@@ -76,18 +77,20 @@ impl Store {
 
     /// Hash `plain`, then store it (deduplicating if already present).
     ///
-    /// Returns the content id (`blake3(plain)`). Hash is always over plaintext.
-    pub fn put(&self, plain: &[u8]) -> Result<ChunkId, Error> {
+    /// Returns the content id (`blake3(plain)`) and whether the chunk was newly
+    /// inserted or already present. Hash is always over plaintext.
+    pub fn put(&self, plain: &[u8]) -> Result<(ChunkId, PutOutcome), Error> {
         let id = ChunkId::hash(plain);
-        self.put_with_id(&id, plain)?;
-        Ok(id)
+        let outcome = self.put_with_id(&id, plain)?;
+        Ok((id, outcome))
     }
 
     /// Store `plain` under the given `id`.
     ///
     /// The id must equal `blake3(plain)`; otherwise returns [`Error::IdMismatch`].
-    /// If the chunk already exists (`has`), the write is skipped (dedup).
-    pub fn put_with_id(&self, id: &ChunkId, plain: &[u8]) -> Result<(), Error> {
+    /// If the chunk already exists (`has`), the write is skipped (dedup) and
+    /// [`PutOutcome::AlreadyPresent`] is returned.
+    pub fn put_with_id(&self, id: &ChunkId, plain: &[u8]) -> Result<PutOutcome, Error> {
         let actual = ChunkId::hash(plain);
         if actual != *id {
             return Err(Error::IdMismatch {
@@ -96,7 +99,7 @@ impl Store {
             });
         }
         if self.has(id) {
-            return Ok(());
+            return Ok(PutOutcome::AlreadyPresent);
         }
 
         let final_path = self.chunk_path(id);
@@ -138,12 +141,12 @@ impl Store {
             let _ = fs::remove_file(&tmp_path);
         }
 
-        // Another writer may have won the race; treat existing final as success.
+        // Another writer may have won the race; treat existing final as reuse.
         match write_result {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(PutOutcome::Inserted),
             Err(e) if self.has(id) => {
                 let _ = e; // discarded: chunk is present
-                Ok(())
+                Ok(PutOutcome::AlreadyPresent)
             }
             Err(e) => Err(e),
         }
@@ -226,7 +229,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::None).unwrap();
         let data = b"hello chunkforge store";
-        let id = store.put(data).unwrap();
+        let (id, outcome) = store.put(data).unwrap();
+        assert!(outcome.is_new());
         assert!(store.has(&id));
         assert_eq!(store.get(&id).unwrap(), data);
         assert_eq!(id, ChunkId::hash(data));
@@ -237,9 +241,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::None).unwrap();
         let data = b"dedup-me-please";
-        let id1 = store.put(data).unwrap();
-        let id2 = store.put(data).unwrap();
+        let (id1, o1) = store.put(data).unwrap();
+        let (id2, o2) = store.put(data).unwrap();
         assert_eq!(id1, id2);
+        assert!(o1.is_new());
+        assert!(o2.is_reused());
 
         let path = store.chunk_path(&id1);
         assert!(path.is_file());
@@ -258,7 +264,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::None).unwrap();
         let data = b"integrity-check";
-        let id = store.put(data).unwrap();
+        let (id, _) = store.put(data).unwrap();
         let path = store.chunk_path(&id);
 
         // Flip one byte on disk.
@@ -292,7 +298,7 @@ mod tests {
     fn path_layout_uses_hex_prefix() {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::None).unwrap();
-        let id = store.put(b"path-layout").unwrap();
+        let (id, _) = store.put(b"path-layout").unwrap();
         let hex = id.to_hex();
         let path = store.chunk_path(&id);
         let expected = dir
@@ -308,7 +314,7 @@ mod tests {
     fn empty_chunk_roundtrip() {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::None).unwrap();
-        let id = store.put(b"").unwrap();
+        let (id, _) = store.put(b"").unwrap();
         assert_eq!(
             id.to_hex(),
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
@@ -345,8 +351,11 @@ mod zstd_tests {
         let dir = tempdir().unwrap();
         let store = Store::create(dir.path(), Compression::Zstd).unwrap();
         let data = b"zzzzzzzzzzzzzzzz compressible payload zzzzzzzzzzzz";
-        let id = store.put(data).unwrap();
-        assert_eq!(store.put(data).unwrap(), id);
+        let (id, o1) = store.put(data).unwrap();
+        assert!(o1.is_new());
+        let (id2, o2) = store.put(data).unwrap();
+        assert_eq!(id2, id);
+        assert!(o2.is_reused());
         assert_eq!(store.get(&id).unwrap(), data);
         // On-disk bytes should differ from plaintext when compressed.
         let on_disk = std::fs::read(store.chunk_path(&id)).unwrap();

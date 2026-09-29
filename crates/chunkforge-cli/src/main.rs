@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, entry_length};
-use chunkforge_store::{Compression, Store};
+use chunkforge_store::{Compression, PutOutcome, Store};
 use clap::{Parser, Subcommand};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -162,15 +162,21 @@ fn cmd_make(
     let blob_blake3 = ChunkId::hash(&data);
 
     let mut entries = Vec::with_capacity(chunks.len());
+    let mut new_chunks = 0usize;
+    let mut reused_chunks = 0usize;
     for c in &chunks {
         let start = c.offset as usize;
         let end = (c.offset + c.length) as usize;
         let slice = data
             .get(start..end)
             .with_context(|| format!("chunk range {start}..{end} out of bounds"))?;
-        store
+        let outcome = store
             .put_with_id(&c.id, slice)
             .with_context(|| format!("put chunk {}", c.id))?;
+        match outcome {
+            PutOutcome::Inserted => new_chunks += 1,
+            PutOutcome::AlreadyPresent => reused_chunks += 1,
+        }
         entries.push(IndexEntry {
             end_offset: c.offset + c.length,
             chunk_id: c.id,
@@ -206,11 +212,13 @@ fn cmd_make(
         .with_context(|| format!("fsync index {}", output.display()))?;
 
     eprintln!(
-        "make: wrote {} ({} bytes, {} chunk{}) → store {}",
+        "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}) → store {}",
         output.display(),
         data.len(),
         chunks.len(),
         if chunks.len() == 1 { "" } else { "s" },
+        new_chunks,
+        reused_chunks,
         store_path.display()
     );
     Ok(())

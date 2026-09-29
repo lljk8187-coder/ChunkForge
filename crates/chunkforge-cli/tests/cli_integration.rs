@@ -220,7 +220,7 @@ fn dedup_second_make_same_file() {
     let idx2 = dir.path().join("v2.cfidx");
     let input = fixtures_dir().join("hello.txt");
 
-    run_ok(&[
+    let out1 = run_ok(&[
         "make",
         "--store",
         store.to_str().unwrap(),
@@ -228,8 +228,15 @@ fn dedup_second_make_same_file() {
         idx1.to_str().unwrap(),
         input.to_str().unwrap(),
     ]);
+    let err1 = String::from_utf8_lossy(&out1.stderr);
+    assert!(err1.contains("new="), "stderr={err1}");
+    assert!(
+        err1.contains("reused=0"),
+        "first make should insert all: {err1}"
+    );
     let count1 = count_cnk(&store.join("chunks"));
-    run_ok(&[
+
+    let out2 = run_ok(&[
         "make",
         "--store",
         store.to_str().unwrap(),
@@ -237,9 +244,183 @@ fn dedup_second_make_same_file() {
         idx2.to_str().unwrap(),
         input.to_str().unwrap(),
     ]);
+    let err2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        err2.contains("new=0"),
+        "identical remake must report new=0: {err2}"
+    );
+    assert!(err2.contains("reused="), "stderr={err2}");
     let count2 = count_cnk(&store.join("chunks"));
-    assert_eq!(count1, count2);
+    assert_eq!(count1, count2, "store .cnk count must not grow on remake");
     assert!(count1 >= 1);
+}
+
+/// Always-on CI: small chunk params + mid-file mutation → some new, some reused.
+#[test]
+fn dedup_mid_file_mutation_reuses_chunks() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("v1.cfidx");
+    let idx2 = dir.path().join("v2.cfidx");
+
+    // Build a multi-chunk blob with tiny CDC params (even, min≤avg≤max).
+    // 48 KiB of patterned data → several ~4–8 KiB chunks.
+    let mut data = Vec::with_capacity(48 * 1024);
+    for i in 0..(48 * 1024) {
+        data.push(((i * 17 + 3) % 251) as u8);
+    }
+    let orig = dir.path().join("orig.bin");
+    fs::write(&orig, &data).unwrap();
+
+    let mut mutated = data.clone();
+    let mid = mutated.len() / 2;
+    for b in &mut mutated[mid..mid + 512] {
+        *b = b.wrapping_add(1);
+    }
+    let mut_path = dir.path().join("mut.bin");
+    fs::write(&mut_path, &mutated).unwrap();
+
+    let chunk_size = "2048:4096:8192";
+    let out1 = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        orig.to_str().unwrap(),
+    ]);
+    let err1 = String::from_utf8_lossy(&out1.stderr);
+    let (new1, reused1) = parse_make_stats(&err1);
+    assert!(
+        new1 >= 2,
+        "expected multiple chunks, got new={new1} ({err1})"
+    );
+    assert_eq!(reused1, 0, "first make: {err1}");
+    let count1 = count_cnk(&store.join("chunks"));
+
+    let out2 = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        mut_path.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&out2.stderr);
+    let (new2, reused2) = parse_make_stats(&err2);
+    assert!(
+        reused2 >= 1,
+        "mid-file mutation should reuse some chunks: {err2}"
+    );
+    assert!(
+        new2 >= 1,
+        "mid-file mutation should insert some new chunks: {err2}"
+    );
+    let count2 = count_cnk(&store.join("chunks"));
+    assert!(
+        count2 > count1,
+        "store should gain some .cnk files ({count1} → {count2})"
+    );
+    assert!(
+        count2 < count1 + new1,
+        "reuse should keep growth well below a full rewrite ({count1}+{new1} vs {count2})"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx2.to_str().unwrap(),
+    ]);
+}
+
+/// Optional large-file path (ignored in default CI). Uses scripts/gen_large.sh.
+#[test]
+#[ignore = "generates multi-MiB fixtures; run with --ignored"]
+fn large_file_dedup() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let gen_dir = repo.join("fixtures/gen");
+    let size_mib: u64 = std::env::var("CHUNKFORGE_GEN_MIB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
+    let script = repo.join("scripts/gen_large.sh");
+    assert!(script.is_file(), "missing {}", script.display());
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg(&gen_dir)
+        .arg(size_mib.to_string())
+        .status()
+        .expect("run gen_large.sh");
+    assert!(status.success(), "gen_large.sh failed");
+
+    let orig = gen_dir.join(format!("large-{size_mib}m.bin"));
+    let mut_path = gen_dir.join(format!("large-{size_mib}m-mut.bin"));
+    assert!(orig.is_file() && mut_path.is_file());
+
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("v1.cfidx");
+    let idx1b = dir.path().join("v1b.cfidx");
+    let idx2 = dir.path().join("v2.cfidx");
+
+    let out1 = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        orig.to_str().unwrap(),
+    ]);
+    let (new1, reused1) = parse_make_stats(&String::from_utf8_lossy(&out1.stderr));
+    assert!(new1 >= 1 && reused1 == 0);
+    let count1 = count_cnk(&store.join("chunks"));
+
+    let out1b = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1b.to_str().unwrap(),
+        orig.to_str().unwrap(),
+    ]);
+    let (new1b, _) = parse_make_stats(&String::from_utf8_lossy(&out1b.stderr));
+    assert_eq!(new1b, 0);
+    assert_eq!(count1, count_cnk(&store.join("chunks")));
+
+    let out2 = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        mut_path.to_str().unwrap(),
+    ]);
+    let (new2, reused2) = parse_make_stats(&String::from_utf8_lossy(&out2.stderr));
+    assert!(new2 >= 1 && reused2 >= 1, "new={new2} reused={reused2}");
+    assert!(count_cnk(&store.join("chunks")) > count1);
+}
+
+fn parse_make_stats(stderr: &str) -> (usize, usize) {
+    let mut new_n = None;
+    let mut reused_n = None;
+    for part in stderr.split([' ', ',', ';', '(', ')']) {
+        if let Some(rest) = part.strip_prefix("new=") {
+            new_n = rest.parse().ok();
+        }
+        if let Some(rest) = part.strip_prefix("reused=") {
+            reused_n = rest.parse().ok();
+        }
+    }
+    (
+        new_n.unwrap_or_else(|| panic!("missing new= in stderr: {stderr}")),
+        reused_n.unwrap_or_else(|| panic!("missing reused= in stderr: {stderr}")),
+    )
 }
 
 fn delete_cnk_files(root: &Path) {

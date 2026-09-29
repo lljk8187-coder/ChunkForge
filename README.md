@@ -16,7 +16,7 @@
 
 ## Status
 
-**M4 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` + `chunkforge-index` + `chunkforge` CLI (`make` / `cat` / `verify` / `chunk-id`).
+**M5 (current):** fixtures + incremental dedup demo (`scripts/gen_large.sh`, `make demo-dedup`); `chunkforge make` prints `new=` / `reused=` chunk stats.
 
 ## Quick demo
 
@@ -28,16 +28,28 @@ cargo build -p chunkforge-cli
 cmp ./fixtures/hello.txt /tmp/hello.out
 ```
 
+## Incremental dedup demo
+
+Generate offline ≥64MiB fixtures (gitignored), then remake + mid-file mutate:
+
+```bash
+make gen-large          # → fixtures/gen/large-64m.bin (+ -mut)
+make demo-dedup         # or: ./scripts/demo_dedup.sh
+make demo-dedup-small   # 4MiB smoke
+```
+
+`chunkforge make` stderr reports `new=` / `reused=` from store put outcomes.
+See [docs/demo-dedup.md](docs/demo-dedup.md) for exact commands.
+
 ## Develop
 
 ```bash
 # Requires Rust 1.85+ (edition 2024); tested on stable 1.98+
-cargo test -p chunkforge-chunk
-cargo test -p chunkforge-store
-cargo test -p chunkforge-index
-cargo test -p chunkforge-cli
+cargo test --workspace
 # optional compression:
 cargo test -p chunkforge-store --features zstd
+# optional large-file dedup (generates fixtures; ignored by default):
+# CHUNKFORGE_GEN_MIB=8 cargo test -p chunkforge-cli --test cli_integration large_file_dedup -- --ignored --nocapture
 ```
 
 ## License

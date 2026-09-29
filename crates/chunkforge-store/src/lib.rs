@@ -17,11 +17,13 @@
 
 mod error;
 mod meta;
+mod outcome;
 mod path;
 mod store;
 
 pub use error::{Error, StoreError};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
+pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
 pub use store::Store;
 
