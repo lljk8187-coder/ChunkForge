@@ -194,7 +194,7 @@ enum Commands {
         /// Skip the optional one-shot HTTP base connectivity probe
         #[arg(long = "no-probe")]
         no_probe: bool,
-        /// One or more `.cfidx` files to check
+        /// One or more `.cfidx` / `.cfdir` listings to check
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
@@ -206,14 +206,15 @@ enum Commands {
         /// Actually delete unreferenced `.cnk` files (default is dry-run)
         #[arg(long)]
         apply: bool,
-        /// One or more `.cfidx` files whose chunk ids are retained
+        /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are retained
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
-    /// Upload missing chunks referenced by .cfidx files to an HTTP(S) destination
+    /// Upload missing chunks referenced by `.cfidx` / `.cfdir` listings to an HTTP(S) destination
     ///
     /// Reads plaintext chunks from the local `--store`, probes the remote with
-    /// `has`, and PUTs only missing ids. Does **not** upload `.cfidx` files.
+    /// `has`, and PUTs only missing ids. Does **not** upload `.cfidx` / `.cfdir`
+    /// listing files themselves (chunks only).
     /// Template flags (`--url-template` / `--prefix` / `--header`) match read-side
     /// layout so a successful push is readable with `verify --source`.
     Push {
@@ -231,7 +232,7 @@ enum Commands {
         /// Probe and count only; do not issue PUT
         #[arg(long = "dry-run")]
         dry_run: bool,
-        /// One or more `.cfidx` files whose chunk ids are uploaded
+        /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
@@ -886,6 +887,40 @@ fn peek_listing_kind(path: &Path) -> Result<ListingKind> {
     }
 }
 
+/// Collect chunk ids referenced by a `.cfidx` or `.cfdir` listing (validated).
+fn listing_chunk_ids(path: &Path) -> Result<Vec<ChunkId>> {
+    match peek_listing_kind(path)? {
+        ListingKind::Index => {
+            let index = load_index(path)?;
+            index
+                .validate()
+                .map_err(|e| anyhow::anyhow!("index structure {}: {e}", path.display()))?;
+            Ok(index.entries.iter().map(|e| e.chunk_id).collect())
+        }
+        ListingKind::DirArchive => {
+            let arch = load_dir_archive(path)?;
+            arch
+                .validate()
+                .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", path.display()))?;
+            Ok(arch.all_chunk_ids().collect())
+        }
+    }
+}
+
+/// Union of chunk ids across mixed `.cfidx` / `.cfdir` listing args.
+fn union_listing_chunk_ids(paths: &[PathBuf]) -> Result<(HashSet<ChunkId>, usize)> {
+    let mut referenced = HashSet::new();
+    let mut listings_ok = 0usize;
+    for path in paths {
+        for id in listing_chunk_ids(path)? {
+            referenced.insert(id);
+        }
+        listings_ok += 1;
+    }
+    Ok((referenced, listings_ok))
+}
+
+
 /// Join a validated `/`-separated archive path onto `out_root`.
 fn join_archive_path(out_root: &Path, rel: &str) -> Result<PathBuf> {
     // Paths are validated by DirArchive; still refuse absolute / escape defensively.
@@ -1332,73 +1367,56 @@ fn cmd_doctor(
         probe_http_base(trimmed)?;
     }
 
-    // Load + validate all indexes first (serial; cheap).
-    let mut loaded: Vec<(PathBuf, Index)> = Vec::with_capacity(index_paths.len());
-    for index_path in index_paths {
-        let index = load_index(index_path)?;
-        index
-            .validate()
-            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
-        loaded.push((index_path.clone(), index));
+    // Load + validate all listings (`.cfidx` / `.cfdir`) first (serial; cheap).
+    let mut checks: Vec<(String, ChunkId)> = Vec::new();
+    let mut listings_ok = 0usize;
+    for listing_path in index_paths {
+        let display = listing_path.display().to_string();
+        for id in listing_chunk_ids(listing_path)? {
+            checks.push((display.clone(), id));
+        }
+        listings_ok += 1;
     }
-    let indexes_ok = loaded.len();
+    let checked = checks.len();
 
     let mut missing: Vec<ChunkId> = Vec::new();
-    let mut checked: usize = 0;
 
     if jobs <= 1 {
         // Serial fail-fast ≡ 0.3.0.
-        for (path, index) in &loaded {
-            for entry in &index.entries {
-                checked += 1;
-                let present = if deep {
-                    match source.get(&entry.chunk_id) {
-                        Ok(_bytes) => true,
-                        Err(chunkforge_store::SourceError::NotFound(_)) => false,
-                        Err(e) => {
-                            bail!(
-                                "doctor: chunk {} check error (index {}): {e}",
-                                entry.chunk_id,
-                                path.display()
-                            );
-                        }
+        for (listing_display, chunk_id) in &checks {
+            let present = if deep {
+                match source.get(chunk_id) {
+                    Ok(_bytes) => true,
+                    Err(chunkforge_store::SourceError::NotFound(_)) => false,
+                    Err(e) => {
+                        bail!(
+                            "doctor: chunk {chunk_id} check error (listing {listing_display}): {e}"
+                        );
                     }
-                } else {
-                    match source.has(&entry.chunk_id) {
-                        Ok(true) => true,
-                        Ok(false) => false,
-                        Err(e) => {
-                            bail!(
-                                "doctor: chunk {} presence check error (index {}); \
-                                 retry with --deep to use get instead of has: {e}",
-                                entry.chunk_id,
-                                path.display()
-                            );
-                        }
-                    }
-                };
-                if !present {
-                    missing.push(entry.chunk_id);
                 }
+            } else {
+                match source.has(chunk_id) {
+                    Ok(true) => true,
+                    Ok(false) => false,
+                    Err(e) => {
+                        bail!(
+                            "doctor: chunk {chunk_id} presence check error (listing {listing_display});                              retry with --deep to use get instead of has: {e}"
+                        );
+                    }
+                }
+            };
+            if !present {
+                missing.push(*chunk_id);
             }
         }
     } else {
-        let mut checks: Vec<(String, ChunkId)> = Vec::new();
-        for (path, index) in &loaded {
-            let display = path.display().to_string();
-            for entry in &index.entries {
-                checks.push((display.clone(), entry.chunk_id));
-            }
-        }
-        checked = checks.len();
-
-        let outcomes = parallel::map_indexed(&checks, jobs, |_i, (index_display, chunk_id)| {
+        let outcomes = parallel::map_indexed(&checks, jobs, |_i, (listing_display, chunk_id)| {
             if deep {
                 match source.get(chunk_id) {
                     Ok(_bytes) => Ok(true),
                     Err(chunkforge_store::SourceError::NotFound(_)) => Ok(false),
                     Err(e) => Err(format!(
-                        "doctor: chunk {chunk_id} check error (index {index_display}): {e}"
+                        "doctor: chunk {chunk_id} check error (listing {listing_display}): {e}"
                     )),
                 }
             } else {
@@ -1406,8 +1424,7 @@ fn cmd_doctor(
                     Ok(true) => Ok(true),
                     Ok(false) => Ok(false),
                     Err(e) => Err(format!(
-                        "doctor: chunk {chunk_id} presence check error (index {index_display}); \
-                         retry with --deep to use get instead of has: {e}"
+                        "doctor: chunk {chunk_id} presence check error (listing {listing_display});                          retry with --deep to use get instead of has: {e}"
                     )),
                 }
             }
@@ -1430,15 +1447,15 @@ fn cmd_doctor(
         }
     }
 
-    // Deduplicate while sorting (multi-index overlap) — same as prior behaviour.
+    // Deduplicate while sorting (multi-listing overlap) — same as prior behaviour.
     missing.sort();
     missing.dedup();
 
     if missing.is_empty() {
         eprintln!(
-            "doctor: ok ({} index{}, {} chunk id{} checked, deep={})",
-            indexes_ok,
-            if indexes_ok == 1 { "" } else { "es" },
+            "doctor: ok ({} listing{}, {} chunk id{} checked, deep={})",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
             checked,
             if checked == 1 { "" } else { "s" },
             deep
@@ -1449,11 +1466,11 @@ fn cmd_doctor(
             println!("{id}");
         }
         bail!(
-            "doctor: {} missing chunk{} ({} index{}, {} checked)",
+            "doctor: {} missing chunk{} ({} listing{}, {} checked)",
             missing.len(),
             if missing.len() == 1 { "" } else { "s" },
-            indexes_ok,
-            if indexes_ok == 1 { "" } else { "es" },
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
             checked
         );
     }
@@ -1463,18 +1480,7 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()>
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
 
-    let mut referenced: HashSet<ChunkId> = HashSet::new();
-    let mut indexes_ok = 0usize;
-    for index_path in index_paths {
-        let index = load_index(index_path)?;
-        index
-            .validate()
-            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
-        indexes_ok += 1;
-        for entry in &index.entries {
-            referenced.insert(entry.chunk_id);
-        }
-    }
+    let (referenced, listings_ok) = union_listing_chunk_ids(index_paths)?;
 
     let listed = store
         .list_chunk_ids()
@@ -1488,9 +1494,9 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()>
 
     if unreferenced.is_empty() {
         eprintln!(
-            "gc: nothing to reclaim ({} index{}, {} referenced chunk id{}, dry_run={})",
-            indexes_ok,
-            if indexes_ok == 1 { "" } else { "es" },
+            "gc: nothing to reclaim ({} listing{}, {} referenced chunk id{}, dry_run={})",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
             referenced.len(),
             if referenced.len() == 1 { "" } else { "s" },
             !apply
@@ -1510,20 +1516,20 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()>
                 .with_context(|| format!("delete unreferenced chunk {id}"))?;
         }
         eprintln!(
-            "gc: deleted {} unreferenced chunk{} ({} index{}, {} referenced retained)",
+            "gc: deleted {} unreferenced chunk{} ({} listing{}, {} referenced retained)",
             unreferenced.len(),
             if unreferenced.len() == 1 { "" } else { "s" },
-            indexes_ok,
-            if indexes_ok == 1 { "" } else { "es" },
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
             referenced.len()
         );
     } else {
         eprintln!(
-            "gc: dry-run: {} unreferenced chunk{} (pass --apply to delete; {} index{}, {} referenced)",
+            "gc: dry-run: {} unreferenced chunk{} (pass --apply to delete; {} listing{}, {} referenced)",
             unreferenced.len(),
             if unreferenced.len() == 1 { "" } else { "s" },
-            indexes_ok,
-            if indexes_ok == 1 { "" } else { "es" },
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
             referenced.len()
         );
     }
@@ -1573,18 +1579,7 @@ fn cmd_push(
         .with_context(|| format!("open store at {}", store_path.display()))?;
     let sink = open_http_chunk_sink(dest, http_tmpl)?;
 
-    let mut referenced: HashSet<ChunkId> = HashSet::new();
-    let mut indexes_ok = 0usize;
-    for index_path in index_paths {
-        let index = load_index(index_path)?;
-        index
-            .validate()
-            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
-        indexes_ok += 1;
-        for entry in &index.entries {
-            referenced.insert(entry.chunk_id);
-        }
-    }
+    let (referenced, listings_ok) = union_listing_chunk_ids(index_paths)?;
 
     let mut ids: Vec<ChunkId> = referenced.into_iter().collect();
     ids.sort();
@@ -1651,11 +1646,11 @@ fn cmd_push(
 
     eprintln!(
         "push: skipped={skipped} uploaded={uploaded} failed={failed} \
-         ({} unique chunk id{}, {} index{}, dry_run={dry_run})",
+         ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
         ids.len(),
         if ids.len() == 1 { "" } else { "s" },
-        indexes_ok,
-        if indexes_ok == 1 { "" } else { "es" },
+        listings_ok,
+        if listings_ok == 1 { "" } else { "s" },
     );
 
     if failed > 0 {

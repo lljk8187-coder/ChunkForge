@@ -1,9 +1,10 @@
 # `chunkforge push`
 
-Phase 4 write path: upload **plaintext chunks** referenced by one or more
-`.cfidx` files from a local CAS `--store` to an HTTP(S) destination whose URL
-layout matches the Phase 3 read path. After a successful push, the same base URL
-works with existing `verify` / `cat` / `doctor` / `mount --source`.
+Phase 4 write path (Phase 5 extended): upload **plaintext chunks** referenced
+by one or more `.cfidx` **or** `.cfdir` listings from a local CAS `--store` to
+an HTTP(S) destination whose URL layout matches the Phase 3 read path. After a
+successful push, the same base URL works with existing `verify` / `cat` /
+`doctor` / `mount --source`.
 
 ## Usage
 
@@ -16,7 +17,7 @@ chunkforge push \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
   [--jobs N] \
   [--dry-run] \
-  index1.cfidx [index2.cfidx ...]
+  listing1.cfidx|.cfdir [listing2 ...]
 ```
 
 | Flag | Meaning |
@@ -26,18 +27,18 @@ chunkforge push \
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
 | `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16) |
 | `--dry-run` | Probe + count only; **no** PUT |
-| indexes | One or more `.cfidx` files; chunk id set is the **union** |
+| listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (`DirArchive::all_chunk_ids` for `.cfdir`) |
 
 Default URL template is `{base}/{path}` ≡ `{base}/chunks/<2hex>/<62hex>.cnk`,
 identical to Phase 2/3 GET layout.
 
 ### What push does
 
-1. Load and validate every index; merge referenced `ChunkId`s.
+1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s.
 2. For each id (sorted): read plaintext from the local store; remote `has`
    (HEAD, GET fallback) → skip; otherwise `PUT` the body.
 3. Print a summary on stderr:
-   `push: skipped=… uploaded=… failed=… (N unique chunk ids, M indexes, dry_run=…)`.
+   `push: skipped=… uploaded=… failed=… (N unique chunk ids, M listings, dry_run=…)`.
 4. Exit **non-zero** if `failed > 0`.
 
 ### Concurrency (`--jobs`)
@@ -52,7 +53,7 @@ FUSE `mount` is unchanged (no per-read thread storm).
 
 | Non-goal | Detail |
 |---|---|
-| ❌ Upload `.cfidx` | Indexes stay local / are published by the user separately |
+| ❌ Upload `.cfidx` / `.cfdir` | Listings stay local / are published by the user separately |
 | ❌ Remote GC / delete | Extra remote objects are left alone |
 | ❌ Bidirectional sync | Explicit one-way publish only |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |
@@ -100,14 +101,14 @@ chunkforge push \
 Push does not panic on remote rejection. Partial progress may leave some chunks
 on the remote; re-run is safe (see idempotency).
 
-## No `.cfidx` upload
+## No listing upload (`.cfidx` / `.cfdir`)
 
 The object layout under `--dest` holds **chunks only**
-(`chunks/<2hex>/<62hex>.cnk`, optionally under `{prefix}`). The `.cfidx` file is
-an out-of-band artifact: copy it next to releases, store it in git, or serve it
-from a different URL. `verify --source <dest> hello.cfidx` still needs the index
-**locally** (or wherever you pass the path); only chunk bodies are fetched from
-the remote.
+(`chunks/<2hex>/<62hex>.cnk`, optionally under `{prefix}`). The listing file
+(`.cfidx` or `.cfdir`) is an out-of-band artifact: copy it next to releases,
+store it in git, or serve it from a different URL. `verify --source <dest>
+release.cfdir` still needs the listing **locally** (or wherever you pass the
+path); only chunk bodies are fetched from the remote.
 
 ## Idempotency
 
@@ -118,7 +119,7 @@ Safe to re-run:
 3. Hash is verified locally (`blake3(plain) == id`) before PUT when the sink’s
    `verify_hash` is on (CLI default).
 
-Expect a second push with the same store + indexes against an unchanged remote:
+Expect a second push with the same store + listings against an unchanged remote:
 
 ```text
 push: skipped=N uploaded=0 failed=0 …
@@ -157,8 +158,23 @@ python3 ./scripts/put_stub.py --root /tmp/cf-p4/mirror --port 8766
 ./target/debug/chunkforge verify --source http://127.0.0.1:8766 /tmp/cf-p4/hello.cfidx
 ```
 
+
+## `.cfdir` push (Phase 5)
+
+Same flags; pass a directory archive instead of (or mixed with) `.cfidx`:
+
+```bash
+chunkforge archive --store ./store -o release.cfdir ./src
+chunkforge push --store ./store --dest http://127.0.0.1:8766 release.cfdir
+chunkforge verify --source http://127.0.0.1:8766 release.cfdir
+```
+
+Full local walkthrough: [`scripts/demo_archive.sh`](../scripts/demo_archive.sh)
+(see also [archive.md](archive.md)).
+
 ## Related
 
 - Layout + PUT key conventions: [remote-layout.md](remote-layout.md)
 - Read-side templates / auth: same document, HTTP GET section
 - CLI library face: `HttpChunkSink` in `chunkforge-remote` (isomorphic with `HttpChunkSource`)
+- Directory archive workflow: [archive.md](archive.md)

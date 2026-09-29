@@ -77,3 +77,13 @@ Implemented by `chunkforge-index` (`DirArchive::encode` / `DirArchive::decode`).
 - `chunkforge verify` magic-dispatches: `.cfidx` single-blob (unchanged) vs `.cfdir` tree (structure + per-file `blob_blake3`; missing chunk → non-zero with chunk id in the message).
 - `--jobs N` applies to chunk fetches on extract/verify (default 1 = serial).
 
+## Push / doctor / gc (Phase5-M5)
+
+- `chunkforge push` / `doctor` / `gc` accept `.cfdir` alongside `.cfidx` (magic
+  dispatch via listing header).
+- Reference set for a `.cfdir` = all chunk ids across file entries
+  (`DirArchive::all_chunk_ids`).
+- `push` still uploads **chunks only** — the `.cfdir` listing stays local (same
+  as Phase 4 for `.cfidx`).
+- See [archive.md](archive.md), [push.md](push.md), [doctor-gc.md](doctor-gc.md).
+

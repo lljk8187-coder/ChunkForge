@@ -1611,8 +1611,12 @@ fn push_help_lists_store_dest_dry_run_templates() {
     assert!(s.contains("--prefix"), "{s}");
     assert!(s.contains("--header"), "{s}");
     assert!(
-        s.to_ascii_lowercase().contains("cfidx") || s.contains("index"),
-        "help should mention indexes:\n{s}"
+        s.to_ascii_lowercase().contains("cfidx"),
+        "help should mention .cfidx:\n{s}"
+    );
+    assert!(
+        s.to_ascii_lowercase().contains("cfdir"),
+        "help should mention .cfdir:\n{s}"
     );
 }
 
@@ -2563,4 +2567,241 @@ fn verify_cfidx_still_works_alongside_cfdir_dispatch() {
         store.to_str().unwrap(),
         idx.to_str().unwrap(),
     ]);
+}
+
+
+// --- Phase 5 M5: push / doctor / gc accept .cfdir ---
+
+#[test]
+fn doctor_and_gc_help_mention_cfdir() {
+    for cmd in ["doctor", "gc", "push"] {
+        let out = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+        assert!(
+            s.contains("cfdir"),
+            "{cmd} --help should mention .cfdir:\n{s}"
+        );
+        assert!(
+            s.contains("cfidx"),
+            "{cmd} --help should mention .cfidx:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn push_cfdir_to_mock_then_verify_source_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-tree\n").unwrap();
+    fs::copy(fixtures_dir().join("hello.txt"), src.join("sub").join("b.txt")).unwrap();
+    fs::copy(src.join("a.txt"), src.join("a-copy.txt")).unwrap();
+    let cfdir = dir.path().join("release.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("uploaded="), "stderr={err}");
+    assert!(
+        err.contains("failed=0"),
+        "push .cfdir should report failed=0; stderr={err}"
+    );
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "expected at least one PUT for .cfdir push, got {}",
+        put_count.load(Ordering::SeqCst)
+    );
+    assert!(
+        count_cnk(&mirror.join("chunks")) >= 1,
+        "mirror should contain uploaded .cnk files"
+    );
+    // Listing itself must not appear under the mirror.
+    assert!(
+        !mirror.join("release.cfdir").exists(),
+        "push must not upload the .cfdir listing"
+    );
+
+    run_ok(&["verify", "--source", &base, cfdir.to_str().unwrap()]);
+}
+
+#[test]
+fn doctor_cfdir_complete_and_missing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"doctor-cfdir\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("doctor: ok"), "stderr={err}");
+
+    let bytes = fs::read(&cfdir).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let chunk_id = arch
+        .all_chunk_ids()
+        .next()
+        .expect("archive should reference at least one chunk");
+    let hex_id = chunk_id.to_string();
+    let cnk = store
+        .join("chunks")
+        .join(&hex_id[..2])
+        .join(format!("{}.cnk", &hex_id[2..]));
+    fs::remove_file(&cnk).unwrap();
+
+    let out = run_fail(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&hex_id),
+        "missing id should appear on stdout; stdout={stdout}"
+    );
+}
+
+#[test]
+fn gc_cfdir_keeps_referenced_deletes_orphan() {
+    let dir = tempdir().unwrap();
+    let store_path = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"gc-cfdir\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store_path.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let before = count_cnk(&store_path.join("chunks"));
+    assert!(before >= 1, "store should have chunks");
+
+    // Plant an orphan loose chunk.
+    let orphan_plain = b"orphan-loose-chunk-for-gc-cfdir";
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store_path).unwrap();
+        s.put(orphan_plain).unwrap();
+    }
+    let with_orphan = count_cnk(&store_path.join("chunks"));
+    assert_eq!(with_orphan, before + 1);
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store_path.to_str().unwrap(),
+        "--apply",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("deleted") || err.contains("gc:"),
+        "stderr={err}"
+    );
+    let after = count_cnk(&store_path.join("chunks"));
+    assert_eq!(after, before, "orphan deleted; referenced retained");
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store_path.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn push_mixed_cfidx_and_cfdir_union() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("tree-only.txt"), b"tree-unique-payload\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        cfdir.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "mixed push should PUT; got {}",
+        put_count.load(Ordering::SeqCst)
+    );
+
+    run_ok(&["verify", "--source", &base, cfdir.to_str().unwrap()]);
+    run_ok(&["verify", "--source", &base, idx.to_str().unwrap()]);
 }
