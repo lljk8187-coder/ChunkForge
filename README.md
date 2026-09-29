@@ -11,7 +11,7 @@
 | **Phase 3** | **0.3.0** | URL/header templates + S3 path conventions; `doctor`; local `gc` dry-run / `--apply` |
 | **Phase 4** | **0.4.0** | `ChunkSink` + `HttpChunkSink` per-chunk PUT; CLI `push`; `--jobs` on cat/verify/doctor/push |
 | **Phase 5** | **0.5.0** | `.cfdir` v1 directory archive + `DirFs` RO mount; `archive` / `extract` / tree `verify`; `push`/`doctor`/`gc` accept `.cfdir`; `push --verify`; `archive --dry-run` |
-| **Phase 6** | **toward 0.6.0** (features on `main`; crate version still **0.5.0** until M7) | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
+| **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 
 ## Non-goals (current / Phase 6)
 
@@ -25,12 +25,13 @@
 | ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay local (git / release artifact / optional manual URL) |
 | ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
 | ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
+| ❌ **`--seed-trust-mtime`** | Seed always content-BLAKE3 (size fast-reject); no mtime-only shortcut |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), and multi-file `.cfdir` + DirFs (Phase 5). Phase 6 (in progress toward **0.6.0**) adds incremental `archive --seed` and `pull`.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), and multi-file `.cfdir` + DirFs (Phase 5). Phase 6 (**0.6.0**) adds incremental `archive --seed` and `pull`.
 
 ## Quick start (local CAS)
 
@@ -179,10 +180,10 @@ Or one-shot: [`scripts/demo_archive.sh`](scripts/demo_archive.sh). Details:
 [docs/archive.md](docs/archive.md), [docs/dir-format.md](docs/dir-format.md),
 [docs/mount.md](docs/mount.md), [docs/push.md](docs/push.md).
 
-## Phase 6 (toward 0.6.0): seed archive + pull
+## Phase 6: seed archive + pull (**0.6.0**)
 
-Features are already on `main`; the workspace version remains **0.5.0** until
-Phase 6 closeout (M7 → **0.6.0**).
+Incremental directory archive and CAS fill on top of Phase 5 `.cfdir` /
+DirFs. Without `--seed`, `archive` matches **0.5.0**.
 
 - **`archive --seed prior.cfdir`**: reuse unchanged files' chunk tables via
   content BLAKE3 (size fast-reject); stderr `seed_reused_files=` /
@@ -192,8 +193,9 @@ Phase 6 closeout (M7 → **0.6.0**).
   seed map is read-only; store puts stay atomic
 - **`chunkforge pull`**: fill a local `--store` from `--source` for missing
   chunks referenced by `.cfidx` / `.cfdir` — see [docs/pull.md](docs/pull.md)
-- Smoke: [`scripts/demo_seed.sh`](scripts/demo_seed.sh) (~10 min local:
-  archive → change one file → `--seed` → verify / extract / optional pull)
+- Quickstart smoke: [`scripts/demo_seed.sh`](scripts/demo_seed.sh) (~10 min
+  local: archive → change one file → `--seed` → verify / extract / optional
+  `pull`)
 
 ```bash
 # Incremental archive (or: bash scripts/demo_seed.sh)

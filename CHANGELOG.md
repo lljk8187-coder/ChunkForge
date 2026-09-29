@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 6 in progress toward **0.6.0** (crate version still **0.5.0** until M7).
+## [0.6.0] — 2026-09-29
+
+Phase 6 closeout: incremental directory archive (`archive --seed`), CAS fill
+(`chunkforge pull`), per-file `archive --jobs`, and `scripts/demo_seed.sh`.
+`.cfidx` / `.cfdir` v1 bytes and `ChunkSource` / `ChunkSink` signatures stay
+frozen; no AWS SDK, in-process SigV4, write mount, packfile, or bidirectional
+sync.
 
 ### Added
 
@@ -25,15 +31,33 @@ Phase 6 in progress toward **0.6.0** (crate version still **0.5.0** until M7).
   (path / `file://` / `http(s)://`); `--jobs` / `--dry-run`; stderr
   `skipped=` / `fetched=` / `failed=`; does not extract trees or upload/download
   listings — see `docs/pull.md`
-- **`scripts/demo_seed.sh`**: local ~10 min smoke (archive → change one file →
-  `--seed` → verify / extract / optional `pull` via `put_stub`)
+- **`scripts/demo_seed.sh`** + docs: local ~10 min smoke (archive → change one
+  file → `--seed` → verify / extract / optional `pull` via `put_stub`);
+  `docs/archive.md` seed section; `docs/pull.md`
+
+### Not delivered / deferred (Phase 6)
+
+- **`--seed-trust-mtime`**: mtime-only “unchanged” shortcut not shipped; seed
+  always content-BLAKE3 (size fast-reject)
+- In-process **SigV4** / complete **`aws-sdk-*`** / S3 multipart upload API
+- Write mount / COW / writable FUSE
+- Bidirectional sync / watch directories / conflict resolution
+- Packfile / multi-chunk single object (loose `.cnk` layout unchanged)
+- Video analysis / GPU·LLM / P2P
+- `push` still does **not** upload listings
+
+### Non-goals (Phase 6)
+
+- No rewrite of `.cfidx` / `.cfdir` v1 byte layouts
+- No change to `ChunkSource` / `ChunkSink` method signatures
+- No process-in SigV4 / `aws-sdk-*` / multipart; HTTP surface remains **ureq**
+- No `--seed-trust-mtime`; no write mount; no bidirectional sync; no packfile;
+  no video analysis
 
 ### Notes
 
-- Version bump / annotated tag **0.6.0** deferred to Phase6-M7
-- Still deferred / non-goals: in-process SigV4 / `aws-sdk-*` / multipart; write
-  mount; bidirectional sync; packfile; video analysis; `push` does **not**
-  upload listings; `--seed-trust-mtime` not shipped
+- Without `--seed`, `archive` (+ `--dry-run`) behaviour matches **0.5.0**
+- Default HTTP chunk layout remains byte-compatible with **0.5.0** / **0.4.0**
 
 ## [0.5.0] — 2026-09-29
 
@@ -193,6 +217,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[0.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.3.0
