@@ -7,18 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (Phase 3 in progress)
+## [0.3.0] — 2026-09-29
 
-- **M1**: URL/header template engine + `HttpChunkSource` builder (`url_template` / `prefix` / `header`); default `{base}/{path}` ≡ Phase 2
-- **M2**: S3-compatible path conventions in `docs/remote-layout.md` (placeholder table, path-style / virtual-host examples, `prefix` normalization); tiny_http mock asserts GET `/data/chunks/…` + Authorization expansion
-- **M3**: CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` (HTTP sources only; non-HTTP + templates → readable error)
-- **M4**: CLI `doctor` — check `.cfidx` readability + chunk presence via `ChunkSource::has` (optional `--deep` uses `get`); missing ids printed to stdout and non-zero exit; optional HTTP base probe; local `meta.toml` summary
-- **M5**: CLI `gc` — local dry-run of unreferenced loose `.cnk` (merge chunk ids from given indexes; `Store::list_chunk_ids`); `--apply` deletes serially; no remote GC
+Phase 3 closeout: object-store–friendly read paths (URL/header templates + S3 path conventions) plus `doctor` and local `gc`, without an AWS SDK or in-process SigV4.
 
-### Still deferred
+### Added
 
-- 0.3.0 version bump / Phase 3 closeout docs (M6)
-- No `aws-sdk-*`, no in-process SigV4, no upload/multipart
+- **HTTP URL / header templates** on `HttpChunkSource`: `--url-template` / `--prefix` / `--header` (closed placeholders `{base}` `{path}` `{2hex}` `{62hex}` `{id}`/`{hex}` `{prefix}` `{env:NAME}`); default `{base}/{path}` ≡ Phase 2 layout
+- **S3-compatible path conventions** (read-only): default key `{prefix}chunks/{2hex}/{62hex}.cnk`; path-style preferred; virtual-host documented; no bucket field parsing — see `docs/remote-layout.md`
+- CLI wiring: `cat` / `verify` / `mount` / `doctor` accept template flags for `http(s)://` sources (non-HTTP + templates → readable error)
+- **`chunkforge doctor`**: `.cfidx` readability + chunk presence via `ChunkSource::has` (optional `--deep` uses `get`); missing ids on stdout + non-zero exit; optional HTTP base probe; local `meta.toml` summary
+- **`chunkforge gc`**: local dry-run of unreferenced loose `.cnk` (merge chunk ids from given indexes; `Store::list_chunk_ids`); `--apply` deletes serially; **no remote GC**
+- Docs: `docs/remote-layout.md` (placeholders, path-style / virtual-host, non-goals); `docs/doctor-gc.md`
+
+### Non-goals (Phase 3)
+
+- No `aws-sdk-*` / full S3 SDK; no in-process SigV4 (even GET-only)
+- No upload / multipart / PUT / POST; no bidirectional sync; FUSE stays read-only
+- No remote GC / object-storage lifecycle; no auto batch-presign per chunk
+
+### Notes
+
+- Default HTTP layout remains byte-compatible with **0.2.0** when no template flags are set
+- Presigned URLs: query may appear in `url_template`; per-object differing signatures are out of scope
 
 ## [0.2.0] — 2026-09-29
 
@@ -62,5 +73,6 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[0.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.1.0

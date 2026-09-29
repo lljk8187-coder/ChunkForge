@@ -217,7 +217,7 @@ pass as `base` / `prefix` / `url_template`.
 | ❌ **`aws-sdk-*` / `aws-config` / ListObjects** | Forbidden — dependency surface stays `ureq` |
 | ❌ **In-process SigV4** (even GET-only HMAC) | Not in Phase 3; use external presign or header templates |
 | ❌ **Upload / multipart / PUT / POST** | Read path only |
-| ❌ **Remote GC / bucket lifecycle** | Local `gc` (later milestone) only touches a local store |
+| ❌ **Remote GC / bucket lifecycle** | Local `chunkforge gc` only touches a local store |
 | ❌ **Auto batch-presign every chunk** | Static URL template only |
 
 ## `file://` (`FileUrlSource`)
@@ -233,8 +233,13 @@ let src = FileUrlSource::open("file:///tmp/cf-store")?;
 let bytes = src.get(&chunk_id)?;
 ```
 
-## Out of scope (later milestones)
+## Related CLI (Phase 3 delivered)
 
-- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` (**M3** ✅)
-- `chunkforge doctor` (**M4** ✅); local `gc` (**M5**)
+- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor`
+- `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
+- `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
+
+## Still out of scope
+
 - Mixed compression over HTTP, range requests, smart retries beyond a simple timeout
+- In-process SigV4, `aws-sdk-*`, upload/multipart, remote GC (see non-goals above)

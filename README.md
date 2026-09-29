@@ -1,6 +1,6 @@
 # ChunkForge
 
-**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`) and **read-only** FUSE mount of a single blob.
+**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, and **read-only** FUSE mount of a single blob.
 
 ## Status
 
@@ -8,21 +8,24 @@
 |---|---|---|
 | **Phase 1** | **0.1.0** | Local chunk / store / index / CLI (`make` `cat` `verify` `chunk-id` `store has`) / fixtures + dedup demo / CI |
 | **Phase 2** | **0.2.0** | `ChunkSource` + HTTP/`file://` remote + `--source`/`--cache` + read-only `mount` |
+| **Phase 3** | **0.3.0** | URL/header templates + S3 path conventions; `doctor`; local `gc` dry-run / `--apply` |
 
-## Non-goals (Phase 2)
+## Non-goals (Phase 3)
 
 | Not this | Why |
 |---|---|
-| ❌ **Bidirectional sync** | No watch directories, conflict resolution, or “two machines push each other” |
-| ❌ **Write mount** | FUSE is always `RO`; writes return `EROFS` / `EACCES`; no COW write-back |
-| ❌ **Full S3 SDK** | No `aws-sdk-s3` / multipart / SigV4; static HTTP GET (or CDN) over store layout is enough |
-| ❌ **P2P** | No device discovery, DHT, or node reputation |
-| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune; commands avoid `backup`/`restore` |
+| ❌ **Full AWS/S3 SDK** | No `aws-sdk-s3` / `aws-config` / ListObjects — dependency surface stays **ureq** |
+| ❌ **In-process SigV4** | No GET-only HMAC either; use public/CDN, fixed header templates, or externally presigned query in `--url-template` |
+| ❌ **Upload / multipart** | No PUT/POST, CompleteMultipart, or object writes |
+| ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
+| ❌ **Bidirectional sync** | No watch directories, conflict resolution, or mutual push |
+| ❌ **Write mount / COW** | FUSE stays `RO`; writes return `EROFS` / `EACCES` |
+| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ Not a casync **binary drop-in** | Native `.cfidx` (not `.caibx`); single-blob only — no directory-tree archive |
-| ❌ **GPU / LLM** | Pure CPU data plane |
+| ❌ **P2P** / **GPU / LLM** | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Phase 1 also had no FUSE and no network store; those are now in Phase 2 as above.
+Earlier phases also deferred FUSE (Phase 1) and object-store templates / doctor / gc (Phase 2); those are now delivered as above.
 
 ## Quick start (local CAS)
 
@@ -64,6 +67,40 @@ fusermount3 -u ./mnt
 ```
 
 Details: [docs/mount.md](docs/mount.md). Remote chunk layout: [docs/remote-layout.md](docs/remote-layout.md).
+
+## Phase 3: templates, doctor, local gc
+
+Object-store–friendly **read** paths: same `HttpChunkSource`, optional URL/header templates and key prefix. Default (no flags) stays Phase 2–compatible.
+
+```bash
+# Explicit default template (≡ bare --source http://…)
+./target/debug/chunkforge verify \
+  --source http://127.0.0.1:8765 \
+  --url-template '{base}/{path}' \
+  v1.cfidx
+
+# Path-style “bucket + subdirectory” (serve ./mirror as docroot with store under data/)
+# ./target/debug/chunkforge verify \
+#   --source http://127.0.0.1:PORT \
+#   --prefix 'data/' \
+#   --url-template '{base}/{prefix}{path}' \
+#   v1.cfidx
+
+# Header auth via env (do not put real secrets in examples)
+# export CF_TOKEN=demo
+# ./target/debug/chunkforge cat --source http://127.0.0.1:8765 \
+#   --header 'Authorization: Bearer {env:CF_TOKEN}' \
+#   v1.cfidx -o /tmp/hello.out
+
+# doctor: missing chunks → non-zero + ids on stdout
+./target/debug/chunkforge doctor --store ./store v1.cfidx
+
+# gc: dry-run unreferenced loose .cnk; --apply to delete (local store only)
+./target/debug/chunkforge gc --store ./store v1.cfidx
+# ./target/debug/chunkforge gc --store ./store v1.cfidx --apply
+```
+
+Placeholders, path-style / virtual-host examples, and auth patterns: [docs/remote-layout.md](docs/remote-layout.md). Doctor / gc details: [docs/doctor-gc.md](docs/doctor-gc.md).
 
 ## Incremental dedup demo
 
