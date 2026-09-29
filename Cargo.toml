@@ -4,6 +4,7 @@ members = [
     "crates/chunkforge-chunk",
     "crates/chunkforge-index",
     "crates/chunkforge-store",
+    "crates/chunkforge-remote",
     "crates/chunkforge-cli",
 ]
 
@@ -23,3 +24,6 @@ tempfile = "3"
 chunkforge-chunk = { path = "crates/chunkforge-chunk" }
 chunkforge-index = { path = "crates/chunkforge-index" }
 chunkforge-store = { path = "crates/chunkforge-store" }
+chunkforge-remote = { path = "crates/chunkforge-remote" }
+ureq = "3"
+tiny_http = "0.12"
