@@ -1576,9 +1576,10 @@ fn spawn_put_get_store_server(
                         let _ = fs::create_dir_all(parent);
                     }
                     let _ = fs::write(&file_path, &body);
-                    let _ = request.respond(Response::empty(StatusCode(200)).with_header(
-                        Header::from_bytes(&b"Content-Length"[..], "0").unwrap(),
-                    ));
+                    let _ = request.respond(
+                        Response::empty(StatusCode(200))
+                            .with_header(Header::from_bytes(&b"Content-Length"[..], "0").unwrap()),
+                    );
                 }
                 _ => {
                     let _ = request.respond(Response::empty(StatusCode(405)));
@@ -1594,7 +1595,10 @@ fn spawn_put_get_store_server(
 fn push_help_lists_store_dest_dry_run_templates() {
     let help = run_ok(&["--help"]);
     let top = String::from_utf8_lossy(&help.stdout);
-    assert!(top.contains("push"), "top-level help should list push:\n{top}");
+    assert!(
+        top.contains("push"),
+        "top-level help should list push:\n{top}"
+    );
 
     let p = run_ok(&["push", "--help"]);
     let s = String::from_utf8_lossy(&p.stdout);
@@ -1735,7 +1739,10 @@ fn push_dry_run_issues_no_put() {
         idx.to_str().unwrap(),
     ]);
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("dry_run=true") || err.contains("uploaded="), "stderr={err}");
+    assert!(
+        err.contains("dry_run=true") || err.contains("uploaded="),
+        "stderr={err}"
+    );
     assert_eq!(
         put_count.load(Ordering::SeqCst),
         0,
@@ -1840,4 +1847,375 @@ fn push_missing_local_chunk_fails() {
         "stderr={err}"
     );
     assert_eq!(put_count.load(Ordering::SeqCst), 0);
+}
+
+// --- Phase 4 M5: bounded concurrency `--jobs` ---
+
+#[test]
+fn jobs_help_listed_on_cat_verify_doctor_push() {
+    for cmd in ["cat", "verify", "doctor", "push"] {
+        let out = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("--jobs"),
+            "{cmd} --help should list --jobs:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn jobs_zero_rejected() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let out = run_fail(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("jobs") && (err.contains(">= 1") || err.contains("0")),
+        "stderr={err}"
+    );
+}
+
+/// Multi-chunk local verify: `--jobs 1` and `--jobs 4` both succeed; cat bytes match.
+#[test]
+fn verify_jobs_four_matches_jobs_one_bytes() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("multi.cfidx");
+    let out1 = dir.path().join("out1.bin");
+    let out4 = dir.path().join("out4.bin");
+
+    // Patterned multi-chunk blob (same recipe as dedup mid-file test).
+    let mut data = Vec::with_capacity(48 * 1024);
+    for i in 0..(48 * 1024) {
+        data.push(((i * 17 + 3) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+    let chunk_size = "2048:4096:8192";
+
+    let make_out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&make_out.stderr);
+    let (new_chunks, _) = parse_make_stats(&err);
+    assert!(
+        new_chunks >= 4,
+        "need several chunks for jobs coverage, got new={new_chunks} ({err})"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "1",
+        idx.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "1",
+        idx.to_str().unwrap(),
+        "-o",
+        out1.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+        "-o",
+        out4.to_str().unwrap(),
+    ]);
+
+    let a = fs::read(&out1).unwrap();
+    let b = fs::read(&out4).unwrap();
+    assert_eq!(a, data, "jobs=1 cat must match original");
+    assert_eq!(b, data, "jobs=4 cat must match original");
+    assert_eq!(a, b, "jobs=1 and jobs=4 cat must be byte-identical");
+}
+
+#[test]
+fn verify_jobs_four_http_source_against_mock() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("multi.cfidx");
+
+    let mut data = Vec::with_capacity(32 * 1024);
+    for i in 0..(32 * 1024) {
+        data.push(((i * 31 + 7) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        input.to_str().unwrap(),
+    ]);
+
+    let (base, _handle) = spawn_static_store_server(store.clone());
+
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    // Default jobs=1 still works against the same mock.
+    run_ok(&["verify", "--source", &base, idx.to_str().unwrap()]);
+}
+
+#[test]
+fn verify_jobs_missing_chunk_error_includes_id() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("multi.cfidx");
+
+    let mut data = Vec::with_capacity(24 * 1024);
+    for i in 0..(24 * 1024) {
+        data.push(((i * 13 + 5) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        input.to_str().unwrap(),
+    ]);
+
+    // Collect one chunk id, delete its .cnk, then verify --jobs 4.
+    let chunk_id_out = run_ok(&[
+        "chunk-id",
+        "--chunk-size",
+        "2048:4096:8192",
+        input.to_str().unwrap(),
+    ]);
+    let first_line = String::from_utf8_lossy(&chunk_id_out.stdout)
+        .lines()
+        .next()
+        .expect("chunk line")
+        .to_string();
+    let hex_id = first_line.split('\t').nth(2).expect("id column");
+    assert_eq!(hex_id.len(), 64);
+    let cnk = store
+        .join("chunks")
+        .join(&hex_id[..2])
+        .join(format!("{}.cnk", &hex_id[2..]));
+    assert!(cnk.is_file(), "expected {}", cnk.display());
+    fs::remove_file(&cnk).unwrap();
+
+    let out = run_fail(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(hex_id),
+        "error must include chunk id {hex_id}; stderr={err}"
+    );
+}
+
+#[test]
+fn doctor_jobs_four_ok_and_missing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("multi.cfidx");
+
+    let mut data = Vec::with_capacity(24 * 1024);
+    for i in 0..(24 * 1024) {
+        data.push(((i * 19 + 11) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        input.to_str().unwrap(),
+    ]);
+
+    let ok = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&ok.stderr);
+    assert!(err.contains("doctor: ok"), "stderr={err}");
+
+    delete_cnk_files(&store.join("chunks"));
+    let fail = run_fail(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&fail.stdout);
+    assert!(
+        stdout.lines().any(|l| l.len() == 64),
+        "missing ids on stdout; got={stdout}"
+    );
+}
+
+#[test]
+fn push_jobs_four_to_mock_then_verify() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("multi.cfidx");
+
+    let mut data = Vec::with_capacity(24 * 1024);
+    for i in 0..(24 * 1024) {
+        data.push(((i * 23 + 1) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("uploaded="), "stderr={err}");
+    let puts = put_count.load(Ordering::SeqCst);
+    assert!(
+        puts >= 2,
+        "expected multiple PUTs under --jobs 4, got {puts}; stderr={err}"
+    );
+    assert!(
+        err.contains("failed=0"),
+        "push --jobs 4 should report failed=0; stderr={err}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn push_jobs_one_matches_serial_stats_shape() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--jobs",
+        "1",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("uploaded="), "stderr={err}");
+    assert!(err.contains("skipped="), "stderr={err}");
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(put_count.load(Ordering::SeqCst) >= 1);
 }

@@ -14,6 +14,7 @@ chunkforge push \
   [--url-template '{base}/{path}'] \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
+  [--jobs N] \
   [--dry-run] \
   index1.cfidx [index2.cfidx ...]
 ```
@@ -23,6 +24,7 @@ chunkforge push \
 | `--store` | Local CAS providing plaintext chunk bytes (`Store::get`) |
 | `--dest` | HTTP(S) base URL (required shape for the remote write face) |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
+| `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16) |
 | `--dry-run` | Probe + count only; **no** PUT |
 | indexes | One or more `.cfidx` files; chunk id set is the **union** |
 
@@ -38,6 +40,14 @@ identical to Phase 2/3 GET layout.
    `push: skipped=… uploaded=… failed=… (N unique chunk ids, M indexes, dry_run=…)`.
 4. Exit **non-zero** if `failed > 0`.
 
+### Concurrency (`--jobs`)
+
+`cat` / `verify` / `doctor` / `push` accept `--jobs N` (default **1**). `N=1`
+keeps the Phase 3 serial orchestration on the calling thread. `N>1` uses a
+bounded `std::thread::scope` worker pool in the CLI only — `ChunkSource` /
+`ChunkSink` stay synchronous; no tokio. Failures still name the chunk id.
+FUSE `mount` is unchanged (no per-read thread storm).
+
 ### What push does **not** do
 
 | Non-goal | Detail |
@@ -47,7 +57,6 @@ identical to Phase 2/3 GET layout.
 | ❌ Bidirectional sync | Explicit one-way publish only |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |
 | ❌ `aws-sdk-*` / in-process SigV4 | ureq + template headers / external presign only |
-| ❌ `--jobs` (Phase 4 P1 / M5) | Serial upload in this milestone |
 
 ## Auth headers
 

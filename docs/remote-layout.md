@@ -293,7 +293,7 @@ let bytes = src.get(&chunk_id)?;
 ## Related CLI
 
 - CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4)
-- `chunkforge push` — serial per-chunk PUT; see [push.md](push.md)
+- `chunkforge push` — per-chunk PUT with optional `--jobs` concurrency; see [push.md](push.md)
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--jobs N`** on `cat` / `verify` / `doctor` / `push` (Phase 4 M5): bounded
+  concurrency via `std::thread::scope` in the CLI orchestration layer. Default
+  **`1`** preserves 0.3.0 serial behaviour; errors still include the chunk id.
+  FUSE mount concurrency unchanged; no tokio; workspace version remains **0.3.0**.
+
 ## [0.3.0] — 2026-09-29
 
 Phase 3 closeout: object-store–friendly read paths (URL/header templates + S3 path conventions) plus `doctor` and local `gc`, without an AWS SDK or in-process SigV4.

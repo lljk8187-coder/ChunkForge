@@ -1,12 +1,12 @@
 //! ChunkForge CLI: make / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
 
+mod parallel;
+
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, entry_length};
-use chunkforge_remote::{FileUrlSource, HttpChunkSource, HttpChunkSink};
-use chunkforge_store::{
-    CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store,
-};
+use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
+use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -57,6 +57,9 @@ enum Commands {
         cache: Option<PathBuf>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
+        /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
         /// Input .cfidx
         index: PathBuf,
         /// Output file path
@@ -77,6 +80,9 @@ enum Commands {
         cache: Option<PathBuf>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
+        /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
         /// Input .cfidx
         index: PathBuf,
     },
@@ -122,6 +128,9 @@ enum Commands {
         source: Option<String>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
+        /// Max concurrent presence checks (default 1 = serial / 0.3.0 behaviour)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
         /// Use `get` (discard body) instead of `has` for presence checks
         #[arg(long)]
         deep: bool,
@@ -159,6 +168,9 @@ enum Commands {
         dest: String,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
+        /// Max concurrent has/PUT workers (default 1 = serial)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
         /// Probe and count only; do not issue PUT
         #[arg(long = "dry-run")]
         dry_run: bool,
@@ -226,31 +238,35 @@ fn run() -> Result<()> {
             source,
             cache,
             http_tmpl,
+            jobs,
             index,
             output,
         } => {
+            let jobs = parse_jobs(jobs)?;
             let src = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_cat(src.as_ref(), &index, &output)
+            cmd_cat(src.as_ref(), &index, &output, jobs)
         }
         Commands::Verify {
             store,
             source,
             cache,
             http_tmpl,
+            jobs,
             index,
         } => {
+            let jobs = parse_jobs(jobs)?;
             let src = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_verify(src.as_ref(), &index)
+            cmd_verify(src.as_ref(), &index, jobs)
         }
         Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
         Commands::Mount {
@@ -275,17 +291,19 @@ fn run() -> Result<()> {
             store,
             source,
             http_tmpl,
+            jobs,
             deep,
             no_probe,
             indexes,
         } => {
+            let jobs = parse_jobs(jobs)?;
             let src = open_chunk_source(store.as_deref(), source.as_deref(), None, &http_tmpl)?;
             let origin_spec = match (store.as_deref(), source.as_deref()) {
                 (Some(path), None) => path.to_string_lossy().into_owned(),
                 (None, Some(s)) => s.to_string(),
                 _ => unreachable!("clap origin group requires exactly one of --store/--source"),
             };
-            cmd_doctor(src.as_ref(), &origin_spec, &indexes, deep, no_probe)
+            cmd_doctor(src.as_ref(), &origin_spec, &indexes, deep, no_probe, jobs)
         }
         Commands::Gc {
             store,
@@ -296,13 +314,24 @@ fn run() -> Result<()> {
             store,
             dest,
             http_tmpl,
+            jobs,
             dry_run,
             indexes,
-        } => cmd_push(&store, &dest, &http_tmpl, dry_run, &indexes),
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_push(&store, &dest, &http_tmpl, dry_run, &indexes, jobs)
+        }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
     }
+}
+
+fn parse_jobs(jobs: u32) -> Result<usize> {
+    if jobs == 0 {
+        bail!("--jobs must be >= 1 (got 0); default 1 is serial / 0.3.0 behaviour");
+    }
+    Ok(jobs as usize)
 }
 
 fn parse_chunk_size(spec: Option<&str>) -> Result<ChunkParams> {
@@ -494,7 +523,7 @@ fn load_index(path: &Path) -> Result<Index> {
     Index::decode(&bytes).map_err(|e| anyhow::anyhow!("decode index {}: {e}", path.display()))
 }
 
-fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path) -> Result<()> {
+fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usize) -> Result<()> {
     let index = load_index(index_path)?;
 
     if let Some(parent) = output.parent() {
@@ -507,23 +536,11 @@ fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path) -> Result
         File::create(output).with_context(|| format!("create output {}", output.display()))?;
     let mut writer = BufWriter::new(file);
 
-    for (i, entry) in index.entries.iter().enumerate() {
-        let expected_len = entry_length(&index.entries, i).expect("entry index in range");
-        let plain = source.get(&entry.chunk_id).with_context(|| {
-            format!(
-                "missing or corrupt chunk {} (index entry {i})",
-                entry.chunk_id
-            )
-        })?;
-        if plain.len() as u64 != expected_len {
-            bail!(
-                "chunk {} length mismatch: source has {} bytes, index expects {expected_len}",
-                entry.chunk_id,
-                plain.len()
-            );
-        }
+    // Fetch plaintext (optionally concurrent); always write in entry order.
+    let plains = fetch_index_plains(source, &index, jobs, "cat")?;
+    for plain in &plains {
         writer
-            .write_all(&plain)
+            .write_all(plain)
             .with_context(|| format!("write output {}", output.display()))?;
     }
     writer
@@ -542,42 +559,131 @@ fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path) -> Result
     Ok(())
 }
 
-fn cmd_verify(source: &dyn ChunkSource, index_path: &Path) -> Result<()> {
+/// Fetch every index entry's plaintext with bounded concurrency; results in entry order.
+///
+/// When `jobs == 1`, work is serial and fail-fast on the calling thread (≡ 0.3.0).
+/// Errors always include the chunk id.
+fn fetch_index_plains(
+    source: &dyn ChunkSource,
+    index: &Index,
+    jobs: usize,
+    op: &str,
+) -> Result<Vec<Vec<u8>>> {
+    let tasks: Vec<(usize, ChunkId, u64)> = index
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let expected_len = entry_length(&index.entries, i).expect("entry index in range");
+            (i, entry.chunk_id, expected_len)
+        })
+        .collect();
+
+    if jobs <= 1 {
+        let mut plains = Vec::with_capacity(tasks.len());
+        for (i, chunk_id, expected_len) in &tasks {
+            let plain = source.get(chunk_id).with_context(|| {
+                format!("{op}: missing or corrupt chunk {chunk_id} (index entry {i})")
+            })?;
+            if plain.len() as u64 != *expected_len {
+                bail!(
+                    "{op}: chunk {chunk_id} length mismatch: source has {} bytes, index expects {expected_len}",
+                    plain.len()
+                );
+            }
+            plains.push(plain);
+        }
+        return Ok(plains);
+    }
+
+    let results = parallel::map_indexed(&tasks, jobs, |_idx, (i, chunk_id, expected_len)| {
+        let plain = match source.get(chunk_id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(format!(
+                    "{op}: missing or corrupt chunk {chunk_id} (index entry {i}): {e}"
+                ));
+            }
+        };
+        if plain.len() as u64 != *expected_len {
+            return Err(format!(
+                "{op}: chunk {chunk_id} length mismatch: source has {} bytes, index expects {expected_len}",
+                plain.len()
+            ));
+        }
+        Ok(plain)
+    });
+
+    // Prefer lowest entry-index error (stable vs serial fail-fast order).
+    let mut plains = Vec::with_capacity(results.len());
+    let mut first_err: Option<(usize, String)> = None;
+    for (pos, r) in results.into_iter().enumerate() {
+        match r {
+            Ok(bytes) => {
+                if first_err.is_none() {
+                    plains.push(bytes);
+                }
+            }
+            Err(msg) => {
+                if first_err.is_none() {
+                    first_err = Some((pos, msg));
+                }
+            }
+        }
+    }
+    if let Some((_, msg)) = first_err {
+        bail!("{msg}");
+    }
+    Ok(plains)
+}
+
+fn cmd_verify(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Result<()> {
     let index = load_index(index_path)?;
     index
         .validate()
         .map_err(|e| anyhow::anyhow!("index structure: {e}"))?;
 
+    let plains = if jobs <= 1 {
+        // Serial path ≡ 0.3.0: has then get, fail-fast in entry order.
+        let mut plains = Vec::with_capacity(index.entries.len());
+        for (i, entry) in index.entries.iter().enumerate() {
+            let expected_len = entry_length(&index.entries, i).expect("entry index in range");
+            match source.has(&entry.chunk_id) {
+                Ok(true) => {}
+                Ok(false) => bail!(
+                    "verify failed: chunk {} missing from source (entry {i})",
+                    entry.chunk_id
+                ),
+                Err(e) => bail!(
+                    "verify failed: chunk {} presence check error (entry {i}): {e}",
+                    entry.chunk_id
+                ),
+            }
+            let plain = source.get(&entry.chunk_id).with_context(|| {
+                format!(
+                    "verify failed: chunk {} unreadable or hash mismatch (entry {i})",
+                    entry.chunk_id
+                )
+            })?;
+            if plain.len() as u64 != expected_len {
+                bail!(
+                    "verify failed: chunk {} length mismatch (got {}, expected {expected_len})",
+                    entry.chunk_id,
+                    plain.len()
+                );
+            }
+            plains.push(plain);
+        }
+        plains
+    } else {
+        // Concurrent get (presence implied); length-checked; errors include chunk id.
+        fetch_index_plains(source, &index, jobs, "verify failed")?
+    };
+
     let mut hasher = blake3::Hasher::new();
     let mut assembled: u64 = 0;
-
-    for (i, entry) in index.entries.iter().enumerate() {
-        let expected_len = entry_length(&index.entries, i).expect("entry index in range");
-        match source.has(&entry.chunk_id) {
-            Ok(true) => {}
-            Ok(false) => bail!(
-                "verify failed: chunk {} missing from source (entry {i})",
-                entry.chunk_id
-            ),
-            Err(e) => bail!(
-                "verify failed: chunk {} presence check error (entry {i}): {e}",
-                entry.chunk_id
-            ),
-        }
-        let plain = source.get(&entry.chunk_id).with_context(|| {
-            format!(
-                "verify failed: chunk {} unreadable or hash mismatch (entry {i})",
-                entry.chunk_id
-            )
-        })?;
-        if plain.len() as u64 != expected_len {
-            bail!(
-                "verify failed: chunk {} length mismatch (got {}, expected {expected_len})",
-                entry.chunk_id,
-                plain.len()
-            );
-        }
-        hasher.update(&plain);
+    for plain in &plains {
+        hasher.update(plain);
         assembled += plain.len() as u64;
     }
 
@@ -611,6 +717,7 @@ fn cmd_doctor(
     index_paths: &[PathBuf],
     deep: bool,
     no_probe: bool,
+    jobs: usize,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
     maybe_print_local_store_meta(origin_spec);
@@ -622,52 +729,105 @@ fn cmd_doctor(
         probe_http_base(trimmed)?;
     }
 
-    let mut missing: Vec<ChunkId> = Vec::new();
-    let mut checked: usize = 0;
-    let mut indexes_ok: usize = 0;
-
+    // Load + validate all indexes first (serial; cheap).
+    let mut loaded: Vec<(PathBuf, Index)> = Vec::with_capacity(index_paths.len());
     for index_path in index_paths {
         let index = load_index(index_path)?;
         index
             .validate()
             .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
-        indexes_ok += 1;
+        loaded.push((index_path.clone(), index));
+    }
+    let indexes_ok = loaded.len();
 
-        for entry in &index.entries {
-            checked += 1;
-            let present = if deep {
-                match source.get(&entry.chunk_id) {
-                    Ok(_bytes) => true,
-                    Err(chunkforge_store::SourceError::NotFound(_)) => false,
-                    Err(e) => {
-                        bail!(
-                            "doctor: chunk {} check error (index {}): {e}",
-                            entry.chunk_id,
-                            index_path.display()
-                        );
+    let mut missing: Vec<ChunkId> = Vec::new();
+    let mut checked: usize = 0;
+
+    if jobs <= 1 {
+        // Serial fail-fast ≡ 0.3.0.
+        for (path, index) in &loaded {
+            for entry in &index.entries {
+                checked += 1;
+                let present = if deep {
+                    match source.get(&entry.chunk_id) {
+                        Ok(_bytes) => true,
+                        Err(chunkforge_store::SourceError::NotFound(_)) => false,
+                        Err(e) => {
+                            bail!(
+                                "doctor: chunk {} check error (index {}): {e}",
+                                entry.chunk_id,
+                                path.display()
+                            );
+                        }
                     }
+                } else {
+                    match source.has(&entry.chunk_id) {
+                        Ok(true) => true,
+                        Ok(false) => false,
+                        Err(e) => {
+                            bail!(
+                                "doctor: chunk {} presence check error (index {}); \
+                                 retry with --deep to use get instead of has: {e}",
+                                entry.chunk_id,
+                                path.display()
+                            );
+                        }
+                    }
+                };
+                if !present {
+                    missing.push(entry.chunk_id);
+                }
+            }
+        }
+    } else {
+        let mut checks: Vec<(String, ChunkId)> = Vec::new();
+        for (path, index) in &loaded {
+            let display = path.display().to_string();
+            for entry in &index.entries {
+                checks.push((display.clone(), entry.chunk_id));
+            }
+        }
+        checked = checks.len();
+
+        let outcomes = parallel::map_indexed(&checks, jobs, |_i, (index_display, chunk_id)| {
+            if deep {
+                match source.get(chunk_id) {
+                    Ok(_bytes) => Ok(true),
+                    Err(chunkforge_store::SourceError::NotFound(_)) => Ok(false),
+                    Err(e) => Err(format!(
+                        "doctor: chunk {chunk_id} check error (index {index_display}): {e}"
+                    )),
                 }
             } else {
-                match source.has(&entry.chunk_id) {
-                    Ok(true) => true,
-                    Ok(false) => false,
-                    Err(e) => {
-                        bail!(
-                            "doctor: chunk {} presence check error (index {}); \
-                             retry with --deep to use get instead of has: {e}",
-                            entry.chunk_id,
-                            index_path.display()
-                        );
+                match source.has(chunk_id) {
+                    Ok(true) => Ok(true),
+                    Ok(false) => Ok(false),
+                    Err(e) => Err(format!(
+                        "doctor: chunk {chunk_id} presence check error (index {index_display}); \
+                         retry with --deep to use get instead of has: {e}"
+                    )),
+                }
+            }
+        });
+
+        let mut first_err: Option<String> = None;
+        for (outcome, (_disp, chunk_id)) in outcomes.into_iter().zip(checks.iter()) {
+            match outcome {
+                Ok(true) => {}
+                Ok(false) => missing.push(*chunk_id),
+                Err(msg) => {
+                    if first_err.is_none() {
+                        first_err = Some(msg);
                     }
                 }
-            };
-            if !present {
-                missing.push(entry.chunk_id);
             }
+        }
+        if let Some(msg) = first_err {
+            bail!("{msg}");
         }
     }
 
-    // Deduplicate while preserving first-seen order (multi-index overlap).
+    // Deduplicate while sorting (multi-index overlap) — same as prior behaviour.
     missing.sort();
     missing.dedup();
 
@@ -804,6 +964,7 @@ fn cmd_push(
     http_tmpl: &HttpTemplateArgs,
     dry_run: bool,
     index_paths: &[PathBuf],
+    jobs: usize,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
@@ -825,56 +986,61 @@ fn cmd_push(
     let mut ids: Vec<ChunkId> = referenced.into_iter().collect();
     ids.sort();
 
-    let mut skipped = 0usize;
-    let mut uploaded = 0usize;
-    let mut failed = 0usize;
-    let mut first_error: Option<String> = None;
+    #[derive(Clone, Copy)]
+    enum PushOne {
+        Skipped,
+        Uploaded,
+        Failed,
+    }
 
-    for id in &ids {
+    let store_display = store_path.display().to_string();
+    let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| {
         let plain = match store.get(id) {
             Ok(bytes) => bytes,
             Err(e) => {
-                failed += 1;
-                let msg = format!("local chunk {id} unavailable from store {}: {e}", store_path.display());
+                let msg = format!("local chunk {id} unavailable from store {store_display}: {e}");
                 eprintln!("push: fail {id}: {msg}");
-                if first_error.is_none() {
-                    first_error = Some(msg);
-                }
-                continue;
+                return (PushOne::Failed, Some(msg));
             }
         };
 
         match sink.has(id) {
-            Ok(true) => {
-                skipped += 1;
-                continue;
-            }
+            Ok(true) => return (PushOne::Skipped, None),
             Ok(false) => {}
             Err(e) => {
-                failed += 1;
                 let msg = format!("remote has check failed for {id}: {e}");
                 eprintln!("push: fail {id}: {msg}");
-                if first_error.is_none() {
-                    first_error = Some(msg);
-                }
-                continue;
+                return (PushOne::Failed, Some(msg));
             }
         }
 
         if dry_run {
-            uploaded += 1;
-            continue;
+            return (PushOne::Uploaded, None);
         }
 
         match ChunkSink::put(&sink, id, &plain) {
-            Ok(PutOutcome::Written) => uploaded += 1,
-            Ok(PutOutcome::SkippedExists) => skipped += 1,
+            Ok(PutOutcome::Written) => (PushOne::Uploaded, None),
+            Ok(PutOutcome::SkippedExists) => (PushOne::Skipped, None),
             Err(e) => {
-                failed += 1;
                 let msg = format!("put failed for {id}: {e}");
                 eprintln!("push: fail {id}: {msg}");
+                (PushOne::Failed, Some(msg))
+            }
+        }
+    });
+
+    let mut skipped = 0usize;
+    let mut uploaded = 0usize;
+    let mut failed = 0usize;
+    let mut first_error: Option<String> = None;
+    for (outcome, err) in outcomes {
+        match outcome {
+            PushOne::Skipped => skipped += 1,
+            PushOne::Uploaded => uploaded += 1,
+            PushOne::Failed => {
+                failed += 1;
                 if first_error.is_none() {
-                    first_error = Some(msg);
+                    first_error = err;
                 }
             }
         }
