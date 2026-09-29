@@ -6,12 +6,13 @@ use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_MAGIC_PREFIX, DirArchive, DirEntry, DirEntryKind, FLAG_CHUNKS_COMPRESSED_IN_STORE, Index,
-    IndexEntry, MAGIC_PREFIX, entry_length, validate_archive_path,
+    IndexEntry, MAGIC_PREFIX, SeedDecision, decide_seed_for_entry, entry_length, seed_file_map,
+    validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
 use clap::{Parser, Subcommand};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
@@ -70,6 +71,10 @@ enum Commands {
         /// Compute stats only; do not write store chunks or the `.cfdir`
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Prior `.cfdir` for incremental archive: unchanged files (content BLAKE3
+        /// match) reuse chunk tables and skip FastCDC; missing prior chunks force rechunk
+        #[arg(long = "seed", value_name = "PRIOR.cfdir")]
+        seed: Option<PathBuf>,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -306,7 +311,15 @@ fn run() -> Result<()> {
             src_dir,
             chunk_size,
             dry_run,
-        } => cmd_archive(&store, &output, &src_dir, chunk_size.as_deref(), dry_run),
+            seed,
+        } => cmd_archive(
+            &store,
+            &output,
+            &src_dir,
+            chunk_size.as_deref(),
+            dry_run,
+            seed.as_deref(),
+        ),
         Commands::Extract {
             store,
             source,
@@ -617,6 +630,7 @@ fn cmd_archive(
     src_dir: &Path,
     chunk_size: Option<&str>,
     dry_run: bool,
+    seed: Option<&Path>,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -626,6 +640,15 @@ fn cmd_archive(
             src_dir.display()
         );
     }
+
+    // Load prior `.cfdir` for --seed (fail non-zero on bad magic / decode / .cfidx).
+    let prior_arch = match seed {
+        Some(seed_path) => Some(load_seed_cfdir(seed_path)?),
+        None => None,
+    };
+    let seed_map: Option<HashMap<&str, &DirEntry>> =
+        prior_arch.as_ref().map(|arch| seed_file_map(arch));
+    let seeding = seed_map.is_some();
 
     // Dry-run: open existing store for has() accounting only; do not create / put / write .cfdir.
     let store = if dry_run {
@@ -674,6 +697,9 @@ fn cmd_archive(
     let mut total_chunks = 0usize;
     let mut new_chunks = 0usize;
     let mut reused_chunks = 0usize;
+    let mut seed_reused_files = 0usize;
+    let mut rechunked_files = 0usize;
+    let mut seed_missing_chunks = 0usize;
     // Dry-run: track ids we would write this run so cross-file dedup is counted.
     let mut dry_seen: HashSet<ChunkId> = HashSet::new();
 
@@ -700,6 +726,68 @@ fn cmd_archive(
             continue;
         }
 
+        let source_size = meta.len();
+
+        // --- Seed reuse path -------------------------------------------------
+        let mut reused_from_seed = false;
+        if let Some(ref map) = seed_map {
+            if let Some(prior_entry) = map.get(rel.as_str()) {
+                let mut f = File::open(full)
+                    .with_context(|| format!("open {} for seed hash", full.display()))?;
+                let decision = decide_seed_for_entry(prior_entry, source_size, &mut f)
+                    .map_err(|e| anyhow::anyhow!("seed decide for {rel}: {e}"))?;
+                if decision == SeedDecision::Reuse {
+                    let prior_chunks = match &prior_entry.kind {
+                        DirEntryKind::File { chunks, .. } => chunks.as_slice(),
+                        DirEntryKind::Dir { .. } => unreachable!("seed map is files only"),
+                    };
+                    let all_present = match store.as_ref() {
+                        Some(s) => prior_chunks.iter().all(|e| s.has(&e.chunk_id)),
+                        // Dry-run with no store: cannot verify → force rechunk.
+                        None => false,
+                    };
+                    if all_present {
+                        // Copy prior fields; do not FastCDC / do not put.
+                        let chunk_n = prior_chunks.len();
+                        total_chunks += chunk_n;
+                        reused_chunks += chunk_n;
+                        seed_reused_files += 1;
+                        entries.push(DirEntry {
+                            path: rel.clone(),
+                            kind: prior_entry.kind.clone(),
+                        });
+                        reused_from_seed = true;
+                    } else {
+                        let missing: Vec<_> = match store.as_ref() {
+                            Some(s) => prior_chunks
+                                .iter()
+                                .filter(|e| !s.has(&e.chunk_id))
+                                .map(|e| e.chunk_id.to_string())
+                                .collect(),
+                            None => prior_chunks
+                                .iter()
+                                .map(|e| e.chunk_id.to_string())
+                                .collect(),
+                        };
+                        eprintln!(
+                            "archive: seed: missing {} chunk{} in store for {rel} \
+                             (rechunking; first missing: {})",
+                            missing.len(),
+                            if missing.len() == 1 { "" } else { "s" },
+                            missing.first().map(|s| s.as_str()).unwrap_or("?"),
+                        );
+                        seed_missing_chunks += 1;
+                    }
+                }
+            }
+        }
+
+        if reused_from_seed {
+            continue;
+        }
+
+        // --- FastCDC + store put (unchanged / rechunk / no seed) ------------
+        rechunked_files += 1;
         let data = fs::read(full).with_context(|| format!("read {}", full.display()))?;
         let mode = file_mode_u32(&meta);
         let mtime_secs = file_mtime_secs(&meta);
@@ -756,16 +844,39 @@ fn cmd_archive(
     let file_count = entries.len();
 
     if dry_run {
-        eprintln!(
-            "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={});              no store/.cfdir written (would write {})",
-            file_count,
-            if file_count == 1 { "" } else { "s" },
-            total_chunks,
-            if total_chunks == 1 { "" } else { "s" },
-            new_chunks,
-            reused_chunks,
-            output.display()
-        );
+        if seeding {
+            eprintln!(
+                "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}; \
+                 seed_reused_files={}, rechunked_files={}{}); \
+                 no store/.cfdir written (would write {})",
+                file_count,
+                if file_count == 1 { "" } else { "s" },
+                total_chunks,
+                if total_chunks == 1 { "" } else { "s" },
+                new_chunks,
+                reused_chunks,
+                seed_reused_files,
+                rechunked_files,
+                if seed_missing_chunks > 0 {
+                    format!(", seed_missing_chunks={seed_missing_chunks}")
+                } else {
+                    String::new()
+                },
+                output.display()
+            );
+        } else {
+            eprintln!(
+                "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}); \
+                 no store/.cfdir written (would write {})",
+                file_count,
+                if file_count == 1 { "" } else { "s" },
+                total_chunks,
+                if total_chunks == 1 { "" } else { "s" },
+                new_chunks,
+                reused_chunks,
+                output.display()
+            );
+        }
         return Ok(());
     }
 
@@ -786,18 +897,55 @@ fn cmd_archive(
     file.sync_all()
         .with_context(|| format!("fsync archive {}", output.display()))?;
 
-    eprintln!(
-        "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}) → store {}",
-        output.display(),
-        file_count,
-        if file_count == 1 { "" } else { "s" },
-        total_chunks,
-        if total_chunks == 1 { "" } else { "s" },
-        new_chunks,
-        reused_chunks,
-        store_path.display()
-    );
+    if seeding {
+        eprintln!(
+            "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}; \
+             seed_reused_files={}, rechunked_files={}{}) → store {}",
+            output.display(),
+            file_count,
+            if file_count == 1 { "" } else { "s" },
+            total_chunks,
+            if total_chunks == 1 { "" } else { "s" },
+            new_chunks,
+            reused_chunks,
+            seed_reused_files,
+            rechunked_files,
+            if seed_missing_chunks > 0 {
+                format!(", seed_missing_chunks={seed_missing_chunks}")
+            } else {
+                String::new()
+            },
+            store_path.display()
+        );
+    } else {
+        eprintln!(
+            "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}) → store {}",
+            output.display(),
+            file_count,
+            if file_count == 1 { "" } else { "s" },
+            total_chunks,
+            if total_chunks == 1 { "" } else { "s" },
+            new_chunks,
+            reused_chunks,
+            store_path.display()
+        );
+    }
     Ok(())
+}
+
+/// Load a prior `.cfdir` for `--seed` (rejects `.cfidx` / bad magic / decode errors).
+fn load_seed_cfdir(path: &Path) -> Result<DirArchive> {
+    match peek_listing_kind(path)? {
+        ListingKind::DirArchive => {}
+        ListingKind::Index => bail!(
+            "--seed requires a .cfdir prior (got .cfidx at {})",
+            path.display()
+        ),
+    }
+    let arch = load_dir_archive(path)?;
+    arch.validate()
+        .map_err(|e| anyhow::anyhow!("seed archive structure {}: {e}", path.display()))?;
+    Ok(arch)
 }
 
 /// Recursively collect regular-file paths under `dir` (relative walk from `root`).

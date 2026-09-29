@@ -3060,3 +3060,350 @@ fn archive_help_lists_dry_run() {
         "archive --help should list --dry-run:\n{s}"
     );
 }
+
+// --- Phase 6 M2: archive --seed ---
+
+#[test]
+fn archive_help_lists_seed() {
+    let help = run_ok(&["archive", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--seed"),
+        "archive --help should list --seed:\n{s}"
+    );
+}
+
+#[test]
+fn archive_seed_same_tree_reuses_all_files_verify_green() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    let sub = src.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(src.join("a.txt"), b"hello-seed-v1\n").unwrap();
+    fs::write(sub.join("b.txt"), b"shared-payload\n").unwrap();
+    fs::write(src.join("a-copy.txt"), b"hello-seed-v1\n").unwrap();
+
+    let store = dir.path().join("store");
+    let prior = dir.path().join("v1.cfdir");
+    let seeded = dir.path().join("v1b.cfdir");
+
+    let first = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err1 = String::from_utf8_lossy(&first.stderr);
+    assert!(err1.contains("archive: wrote"), "stderr={err1}");
+    // No --seed → no seed counters required.
+    assert!(
+        !err1.contains("seed_reused_files="),
+        "no-seed archive should omit seed counters; stderr={err1}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        prior.to_str().unwrap(),
+    ]);
+
+    let store_h = chunkforge_store::Store::open(&store).expect("open store");
+    let chunk_count_before = store_h.list_chunk_ids().expect("list").len();
+
+    let second = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        seeded.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        err2.contains("seed_reused_files=3"),
+        "same-tree seed should reuse all 3 files; stderr={err2}"
+    );
+    assert!(
+        err2.contains("rechunked_files=0"),
+        "same-tree seed should rechunk 0; stderr={err2}"
+    );
+    assert!(
+        err2.contains("new=0"),
+        "same-tree seed should write no new chunks; stderr={err2}"
+    );
+
+    let chunk_count_after = store_h.list_chunk_ids().expect("list again").len();
+    assert_eq!(
+        chunk_count_before, chunk_count_after,
+        "store must not grow on identical --seed archive"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        seeded.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn archive_seed_changed_file_only_rechunked() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    let sub = src.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(src.join("a.txt"), b"hello-seed-v1\n").unwrap();
+    let hello = fs::read(fixtures_dir().join("hello.txt")).expect("fixtures/hello.txt");
+    fs::write(sub.join("b.txt"), &hello).unwrap();
+    fs::write(src.join("c.txt"), b"unchanged-c\n").unwrap();
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Change only a.txt
+    fs::write(src.join("a.txt"), b"hello-seed-v2\n").unwrap();
+
+    let store_h = chunkforge_store::Store::open(&store).expect("open store");
+    let before = store_h.list_chunk_ids().expect("list").len();
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("seed_reused_files=2"),
+        "two unchanged files should reuse; stderr={err}"
+    );
+    assert!(
+        err.contains("rechunked_files=1"),
+        "only a.txt should rechunk; stderr={err}"
+    );
+
+    let after = store_h.list_chunk_ids().expect("list").len();
+    assert!(
+        after >= before,
+        "store may gain chunks for changed file ({before} → {after})"
+    );
+    // Changed file is small; expect few new chunks (not a flood).
+    assert!(
+        after - before <= 4,
+        "only one small file changed; unexpected chunk growth {before} → {after}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn archive_seed_missing_chunk_forces_rechunk_and_warns() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    // Multi-chunk file so deleting one .cnk is meaningful.
+    let mut data = Vec::with_capacity(24 * 1024);
+    for i in 0..(24 * 1024) {
+        data.push(((i * 17 + 3) % 251) as u8);
+    }
+    fs::write(src.join("big.bin"), &data).unwrap();
+    fs::write(src.join("sub/small.txt"), b"keep-me\n").unwrap();
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        src.to_str().unwrap(),
+    ]);
+
+    // Delete one chunk belonging to big.bin.
+    let bytes = fs::read(&v1).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let big = arch
+        .entries
+        .iter()
+        .find(|e| e.path == "big.bin")
+        .expect("big.bin entry");
+    let chunk_id = match &big.kind {
+        chunkforge_index::DirEntryKind::File { chunks, .. } => {
+            chunks.first().expect("big.bin has chunks").chunk_id
+        }
+        _ => panic!("big.bin should be File"),
+    };
+    let hex_id = chunk_id.to_string();
+    let cnk = store
+        .join("chunks")
+        .join(&hex_id[..2])
+        .join(format!("{}.cnk", &hex_id[2..]));
+    assert!(cnk.is_file(), "expected {}", cnk.display());
+    fs::remove_file(&cnk).unwrap();
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("missing") && err.contains("rechunk"),
+        "expected missing-chunk warning; stderr={err}"
+    );
+    assert!(
+        err.contains("seed_missing_chunks=1") || err.contains("rechunked_files=1"),
+        "big.bin should rechunk; stderr={err}"
+    );
+    assert!(
+        err.contains("seed_reused_files=1"),
+        "small.txt should still reuse; stderr={err}"
+    );
+
+    // New listing must verify green (not a broken silent reuse).
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn archive_seed_rejects_cfidx_and_bad_magic() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out.cfdir");
+
+    // Make a .cfidx to misuse as seed.
+    let idx = dir.path().join("single.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail_idx = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        idx.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail_idx.stderr);
+    assert!(
+        err.contains("cfdir") || err.contains(".cfidx") || err.contains("seed"),
+        "should reject .cfidx seed; stderr={err}"
+    );
+
+    let junk = dir.path().join("junk.cfdir");
+    fs::write(&junk, b"NOTACFDIR").unwrap();
+    let fail_magic = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        junk.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&fail_magic.stderr);
+    assert!(
+        !fail_magic.status.success(),
+        "bad magic must fail; stderr={err2}"
+    );
+}
+
+#[test]
+fn archive_dry_run_with_seed_reports_reuse_without_writing() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"dry-seed-a\n").unwrap();
+    fs::write(src.join("b.txt"), b"dry-seed-b\n").unwrap();
+
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfdir");
+    let out = dir.path().join("would.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let before = count_cnk(&store.join("chunks"));
+
+    let dry = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&dry.stderr);
+    assert!(err.contains("dry-run"), "stderr={err}");
+    assert!(
+        err.contains("seed_reused_files=2") && err.contains("rechunked_files=0"),
+        "dry-run×seed should preview full reuse; stderr={err}"
+    );
+    assert!(!out.exists(), "dry-run must not write .cfdir");
+    assert_eq!(
+        before,
+        count_cnk(&store.join("chunks")),
+        "dry-run must not add chunks"
+    );
+}
