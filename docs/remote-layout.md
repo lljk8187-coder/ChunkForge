@@ -43,9 +43,9 @@ https://mybucket.s3.amazonaws.com  # virtual-host style base (Phase 3)
 Trailing slashes on the HTTP base are optional; join / template logic strips a
 trailing `/` from `{base}` before expansion.
 
-> **CLI note:** wiring `--url-template` / `--prefix` / `--header` onto
-> `cat` / `verify` / `mount` is **Phase 3 M3**. Until then, use the
-> `HttpChunkSource` builder from Rust (or wait for M3).
+> **CLI note:** `cat` / `verify` / `mount` / `doctor` accept `--url-template` /
+> `--prefix` / `--header` for `http(s)://` sources (Phase 3 M3+). Non-HTTP
+> sources reject those flags with a readable error.
 
 ## HTTP chunk URL (default ≡ Phase 2)
 
@@ -235,6 +235,6 @@ let bytes = src.get(&chunk_id)?;
 
 ## Out of scope (later milestones)
 
-- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` (**M3**)
-- `chunkforge doctor` / local `gc` (**M4** / **M5**)
+- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` (**M3** ✅)
+- `chunkforge doctor` (**M4** ✅); local `gc` (**M5**)
 - Mixed compression over HTTP, range requests, smart retries beyond a simple timeout

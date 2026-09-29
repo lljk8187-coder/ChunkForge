@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / cat / verify / mount (+ chunk-id debug).
+//! ChunkForge CLI: make / cat / verify / mount / doctor (+ chunk-id debug).
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
@@ -16,7 +16,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor)",
     long_about = None
 )]
 struct Cli {
@@ -108,6 +108,27 @@ enum Commands {
         /// Empty directory to mount onto
         mountpoint: PathBuf,
     },
+    /// Check indexes and chunk presence (missing ids → non-zero exit)
+    #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
+    Doctor {
+        /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Chunk source: local path, `file://`, or `http(s)://`
+        #[arg(long, value_name = "PATH|URL")]
+        source: Option<String>,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
+        /// Use `get` (discard body) instead of `has` for presence checks
+        #[arg(long)]
+        deep: bool,
+        /// Skip the optional one-shot HTTP base connectivity probe
+        #[arg(long = "no-probe")]
+        no_probe: bool,
+        /// One or more `.cfidx` files to check
+        #[arg(required = true, num_args = 1..)]
+        indexes: Vec<PathBuf>,
+    },
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -127,7 +148,7 @@ enum StoreCommands {
     },
 }
 
-/// Optional HTTP URL / header templates for `cat` / `verify` / `mount`.
+/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor`.
 ///
 /// Only meaningful with an `http(s)://` `--source`. Omitting all three flags
 /// preserves 0.2.0 / Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
@@ -212,6 +233,22 @@ fn run() -> Result<()> {
                 &http_tmpl,
             )?;
             cmd_mount(src, &index, &mountpoint, name.as_deref())
+        }
+        Commands::Doctor {
+            store,
+            source,
+            http_tmpl,
+            deep,
+            no_probe,
+            indexes,
+        } => {
+            let src = open_chunk_source(store.as_deref(), source.as_deref(), None, &http_tmpl)?;
+            let origin_spec = match (store.as_deref(), source.as_deref()) {
+                (Some(path), None) => path.to_string_lossy().into_owned(),
+                (None, Some(s)) => s.to_string(),
+                _ => unreachable!("clap origin group requires exactly one of --store/--source"),
+            };
+            cmd_doctor(src.as_ref(), &origin_spec, &indexes, deep, no_probe)
         }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
@@ -517,6 +554,164 @@ fn cmd_verify(source: &dyn ChunkSource, index_path: &Path) -> Result<()> {
         if index.chunk_count() == 1 { "" } else { "s" }
     );
     Ok(())
+}
+
+fn cmd_doctor(
+    source: &dyn ChunkSource,
+    origin_spec: &str,
+    index_paths: &[PathBuf],
+    deep: bool,
+    no_probe: bool,
+) -> Result<()> {
+    // Optional local-store meta.toml summary.
+    maybe_print_local_store_meta(origin_spec);
+
+    // Optional one-shot HTTP base probe (connectivity only).
+    let trimmed = origin_spec.trim();
+    let is_http = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    if is_http && !no_probe {
+        probe_http_base(trimmed)?;
+    }
+
+    let mut missing: Vec<ChunkId> = Vec::new();
+    let mut checked: usize = 0;
+    let mut indexes_ok: usize = 0;
+
+    for index_path in index_paths {
+        let index = load_index(index_path)?;
+        index
+            .validate()
+            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
+        indexes_ok += 1;
+
+        for entry in &index.entries {
+            checked += 1;
+            let present = if deep {
+                match source.get(&entry.chunk_id) {
+                    Ok(_bytes) => true,
+                    Err(chunkforge_store::SourceError::NotFound(_)) => false,
+                    Err(e) => {
+                        bail!(
+                            "doctor: chunk {} check error (index {}): {e}",
+                            entry.chunk_id,
+                            index_path.display()
+                        );
+                    }
+                }
+            } else {
+                match source.has(&entry.chunk_id) {
+                    Ok(true) => true,
+                    Ok(false) => false,
+                    Err(e) => {
+                        bail!(
+                            "doctor: chunk {} presence check error (index {}); \
+                             retry with --deep to use get instead of has: {e}",
+                            entry.chunk_id,
+                            index_path.display()
+                        );
+                    }
+                }
+            };
+            if !present {
+                missing.push(entry.chunk_id);
+            }
+        }
+    }
+
+    // Deduplicate while preserving first-seen order (multi-index overlap).
+    missing.sort();
+    missing.dedup();
+
+    if missing.is_empty() {
+        eprintln!(
+            "doctor: ok ({} index{}, {} chunk id{} checked, deep={})",
+            indexes_ok,
+            if indexes_ok == 1 { "" } else { "es" },
+            checked,
+            if checked == 1 { "" } else { "s" },
+            deep
+        );
+        Ok(())
+    } else {
+        for id in &missing {
+            println!("{id}");
+        }
+        bail!(
+            "doctor: {} missing chunk{} ({} index{}, {} checked)",
+            missing.len(),
+            if missing.len() == 1 { "" } else { "s" },
+            indexes_ok,
+            if indexes_ok == 1 { "" } else { "es" },
+            checked
+        );
+    }
+}
+
+fn maybe_print_local_store_meta(origin_spec: &str) {
+    let trimmed = origin_spec.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return;
+    }
+    let path = match chunkforge_remote::parse_store_location(trimmed) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let meta_path = path.join("meta.toml");
+    match chunkforge_store::StoreMeta::read_from(&meta_path) {
+        Ok(meta) => {
+            eprintln!(
+                "doctor: store meta at {} (magic={}, version={}, compression={})",
+                meta_path.display(),
+                meta.magic,
+                meta.version,
+                meta.compression
+            );
+        }
+        Err(_) => {
+            // Not a local store / unreadable meta — skip quietly.
+        }
+    }
+}
+
+/// One HEAD (or GET fallback) against the HTTP base URL to confirm reachability.
+fn probe_http_base(base: &str) -> Result<()> {
+    let base = base.trim_end_matches('/');
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build()
+        .into();
+
+    match agent.head(base).call() {
+        Ok(_resp) => {
+            eprintln!("doctor: base probe ok (HEAD {base})");
+            Ok(())
+        }
+        Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => {
+            // Base path itself often has no document; server answered → ok.
+            eprintln!("doctor: base probe ok (HEAD {base} → not found, server reachable)");
+            Ok(())
+        }
+        Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
+            match agent.get(base).call() {
+                Ok(mut resp) => {
+                    let _ = resp.body_mut().read_to_vec();
+                    eprintln!("doctor: base probe ok (GET {base})");
+                    Ok(())
+                }
+                Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => {
+                    eprintln!("doctor: base probe ok (GET {base} → not found, server reachable)");
+                    Ok(())
+                }
+                Err(e) => bail!("doctor: base probe failed for {base}: {e}"),
+            }
+        }
+        Err(ureq::Error::StatusCode(code)) => {
+            // Any other HTTP status still means the server is reachable.
+            eprintln!("doctor: base probe ok (HEAD {base} → HTTP {code})");
+            Ok(())
+        }
+        Err(e) => bail!("doctor: base probe failed for {base}: {e}"),
+    }
 }
 
 fn cmd_chunk_id(input: &Path, chunk_size: Option<&str>) -> Result<()> {

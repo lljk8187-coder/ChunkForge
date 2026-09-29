@@ -161,6 +161,7 @@ dependencies = [
  "clap",
  "tempfile",
  "tiny_http",
+ "ureq",
 ]
 
 [[package]]

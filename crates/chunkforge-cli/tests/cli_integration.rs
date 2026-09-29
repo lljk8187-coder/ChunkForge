@@ -1015,3 +1015,300 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
         }
     }
 }
+
+// --- Phase 3 M4: doctor ---
+
+/// Find the first `.cnk` under `chunks/` and return (absolute path, hex id).
+fn first_cnk_id(chunks_root: &Path) -> (PathBuf, String) {
+    let mut stack = vec![chunks_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("cnk") {
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap();
+                let parent_hex = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap();
+                assert_eq!(parent_hex.len(), 2, "shard dir must be 2 hex");
+                assert_eq!(stem.len(), 62, "cnk stem must be 62 hex");
+                let id = format!("{parent_hex}{stem}");
+                return (path, id);
+            }
+        }
+    }
+    panic!("no .cnk under {}", chunks_root.display());
+}
+
+#[test]
+fn doctor_help_lists_flags() {
+    let help = run_ok(&["--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("doctor"),
+        "top-level help should list doctor:\n{help_s}"
+    );
+
+    let d = run_ok(&["doctor", "--help"]);
+    let s = String::from_utf8_lossy(&d.stdout);
+    assert!(s.contains("--store"), "{s}");
+    assert!(s.contains("--source"), "{s}");
+    assert!(s.contains("--url-template"), "{s}");
+    assert!(s.contains("--prefix"), "{s}");
+    assert!(s.contains("--header"), "{s}");
+    assert!(s.contains("--deep"), "{s}");
+    assert!(s.contains("--no-probe"), "{s}");
+}
+
+#[test]
+fn doctor_complete_store_exits_zero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("doctor: ok"), "stderr={err}");
+    assert!(
+        err.contains("meta.toml") || err.contains("store meta"),
+        "stderr={err}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "complete store should print no missing ids"
+    );
+}
+
+#[test]
+fn doctor_missing_chunk_nonzero_and_prints_id() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (cnk_path, missing_id) = first_cnk_id(&store.join("chunks"));
+    fs::remove_file(&cnk_path).unwrap();
+
+    let out = run_fail(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.trim() == missing_id),
+        "stdout must contain missing id {missing_id}, got:\n{stdout}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(err.contains("missing"), "stderr={err}");
+}
+
+#[test]
+fn doctor_http_source_uses_has_probing() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let head_count = Arc::new(Mutex::new(0usize));
+    let get_count = Arc::new(Mutex::new(0usize));
+    let head_count2 = Arc::clone(&head_count);
+    let get_count2 = Arc::clone(&get_count);
+    let store_root = remote_store.clone();
+
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            if request.method() == &Method::Head {
+                *head_count2.lock().unwrap() += 1;
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let response = Response::empty(200).with_header(
+                        Header::from_bytes(&b"Content-Length"[..], data.len().to_string()).unwrap(),
+                    );
+                    let _ = request.respond(response);
+                } else if rel.is_empty() || rel == "/" {
+                    // Base probe against "/" or empty path.
+                    let _ = request.respond(Response::empty(404));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else if request.method() == &Method::Get {
+                *get_count2.lock().unwrap() += 1;
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let _ = request.respond(Response::from_data(data));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    run_ok(&[
+        "doctor",
+        "--source",
+        &base,
+        "--no-probe",
+        idx.to_str().unwrap(),
+    ]);
+
+    let heads = *head_count.lock().unwrap();
+    let gets = *get_count.lock().unwrap();
+    assert!(
+        heads >= 1,
+        "doctor default path must probe via has (HEAD); heads={heads} gets={gets}"
+    );
+    assert_eq!(
+        gets, 0,
+        "doctor without --deep must not GET chunk bodies; heads={heads} gets={gets}"
+    );
+}
+
+#[test]
+fn doctor_http_missing_chunk_via_has() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (cnk_path, missing_id) = first_cnk_id(&remote_store.join("chunks"));
+    fs::remove_file(&cnk_path).unwrap();
+
+    let (base, _handle) = spawn_static_store_server(remote_store);
+
+    let out = run_fail(&[
+        "doctor",
+        "--source",
+        &base,
+        "--no-probe",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.trim() == missing_id),
+        "stdout must contain missing id {missing_id}, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn doctor_deep_flag_uses_get() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let get_count = Arc::new(Mutex::new(0usize));
+    let get_count2 = Arc::clone(&get_count);
+    let store_root = remote_store.clone();
+
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            if request.method() == &Method::Get {
+                *get_count2.lock().unwrap() += 1;
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let _ = request.respond(Response::from_data(data));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else if request.method() == &Method::Head {
+                // has() path unused when --deep; still answer.
+                if file_path.is_file() {
+                    let _ = request.respond(Response::empty(200));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    run_ok(&[
+        "doctor",
+        "--source",
+        &base,
+        "--deep",
+        "--no-probe",
+        idx.to_str().unwrap(),
+    ]);
+
+    let gets = *get_count.lock().unwrap();
+    assert!(gets >= 1, "doctor --deep must use get; got gets={gets}");
+}

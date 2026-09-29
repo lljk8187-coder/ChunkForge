@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "ChunkForge CLI: make / cat / verify / mount local CAS indexes"
+description = "ChunkForge CLI: make / cat / verify / mount / doctor local CAS indexes"
 readme = false
 
 [[bin]]
@@ -26,6 +26,7 @@ chunkforge-chunk = { workspace = true }
 chunkforge-index = { workspace = true }
 chunkforge-store = { workspace = true }
 chunkforge-remote = { workspace = true }
+ureq = { workspace = true }
 chunkforge-fuse = { workspace = true, optional = true }
 
 [dev-dependencies]
