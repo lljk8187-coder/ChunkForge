@@ -1,0 +1,66 @@
+# ChunkForge `.cfdir` directory archive format (v1)
+
+Phase 5 multi-file listing. Parallel to [`.cfidx`](index-format.md); **not** a
+revision of `.cfidx` and **not** bit-compatible with casync `.catar`.
+
+Little-endian. File extension: **`.cfdir`**.
+
+## Layout
+
+```
+Offset  Size  Field
+0       8     magic = b"CFDIR\0\0\1"   // last byte = major
+8       2     format_version_u16 = 1
+10      2     flags_u16
+12      4     reserved_u32 = 0
+16      8     entry_count_u64
+24      …     entries (variable)
+…       32    trailer_checksum        // blake3(header||body)
+```
+
+### Entry (variable)
+
+```
+u16     path_len
+[u8]    path UTF-8 (path_len bytes)
+u8      kind_tag   // 1 = File, 2 = Dir
+```
+
+**File** (`kind_tag = 1`):
+
+```
+u32     mode
+u64     size
+u64     mtime_secs
+[u8;32] blob_blake3
+u64     chunk_count
+N×40    entries[]   // same shape as .cfidx: end_offset_u64 + chunk_id[32]
+```
+
+**Dir** (`kind_tag = 2`):
+
+```
+u32     mode
+```
+
+Chunk table rules match `.cfidx`: last `end_offset == size`; empty iff `size == 0`.
+
+## Path rules
+
+- UTF-8, relative, `/`-separated
+- Reject: empty path, absolute (`/…`), empty segments, `.` / `..` segments,
+  backslash, NUL, Windows drive letters (`C:…`)
+- Paths within one archive must be unique
+
+## Versioning
+
+| Rule | Behavior |
+|---|---|
+| Magic last byte | **major** — incompatible changes |
+| `format_version_u16` | **minor** — compatible extensions |
+| Read | major ≠ 1 → hard fail (“please upgrade chunkforge”) |
+| Write (Phase 5 / v1) | major=1, `format_version=1`, `reserved=0` |
+
+Trailer checksum covers `header || body` (same spirit as `.cfidx`).
+
+Implemented by `chunkforge-index` (`DirArchive::encode` / `DirArchive::decode`).

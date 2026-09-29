@@ -1,18 +1,28 @@
-//! ChunkForge `.cfidx` v1 index encode / decode.
+//! ChunkForge index / archive encode / decode.
 //!
-//! Binary layout is little-endian; see [`docs/index-format.md`](../../docs/index-format.md)
-//! and Phase 1 spec §3. Phase 1 writes major=1, `format_version=1`.
+//! - [`.cfidx` v1](Index) — single-blob chunk map (Phase 1; **byte-frozen**)
+//! - [`.cfdir` v1](DirArchive) — multi-file directory listing (Phase 5)
 //!
-//! This crate does **not** implement CLI make/cat/verify, FUSE, or store I/O.
+//! Binary layouts are little-endian. See `docs/index-format.md` and
+//! `docs/dir-format.md`.
+//!
+//! This crate does **not** implement CLI archive/extract, FUSE, or store I/O.
 
+mod dir;
 mod error;
 mod index;
+mod path;
 
+pub use dir::{
+    DIR_FORMAT_VERSION_V1, DIR_HEADER_SIZE, DIR_MAGIC_PREFIX, DIR_MAGIC_V1, DIR_MAJOR_V1,
+    DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE,
+};
 pub use error::{Error, IndexError};
 pub use index::{
     ENTRY_SIZE, FLAG_CHUNKS_COMPRESSED_IN_STORE, FORMAT_VERSION_V1, HEADER_SIZE, Index, IndexEntry,
     MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE, entry_length,
 };
+pub use path::validate_archive_path;
 
 #[cfg(test)]
 mod tests {

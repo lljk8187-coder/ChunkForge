@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = ".cfidx v1 encode/decode for ChunkForge indexes"
+description = ".cfidx / .cfdir encode/decode for ChunkForge"
 readme = false
 
 [dependencies]
