@@ -14,6 +14,7 @@
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
+| **Phase 9** | *Unreleased* | `extract --skip-unchanged` / `--dry-run`; `docs/extract.md`; `scripts/demo_extract_skip.sh` (0.9.0 closeout = M7) |
 
 ## Non-goals (current / Phase 8)
 
@@ -310,6 +311,30 @@ cp fixtures/hello.txt /tmp/cf-p8/src/b.txt
 Details: [docs/http-retry.md](docs/http-retry.md),
 [docs/remote-layout.md](docs/remote-layout.md),
 [docs/sigv4.md](docs/sigv4.md), [docs/diff.md](docs/diff.md).
+
+
+## Phase 9: extract skip + dry-run (*draft* → **0.9.0**)
+
+Incremental materialize on top of Phase 8. Default extract (no new flags) stays
+**0.8.0**-compatible. Full non-goals / version bump land in M7.
+
+- **`extract --skip-unchanged`**: opt-in; skip when dest size + content BLAKE3
+  match listing `blob_blake3` (no chunk fetch/write; match beats `--force`)
+- **`extract --dry-run`**: plan only — no target writes; `would_skip` /
+  `would_write` / `would_dirs` / `would_fail`
+- Docs: [docs/extract.md](docs/extract.md) (flag overlap; **no prune** of extra
+  files under `-o`)
+- Smoke: [`scripts/demo_extract_skip.sh`](scripts/demo_extract_skip.sh)
+
+**Still not this Phase (draft):** packfile / full AWS SDK / write mount /
+bidirectional sync / **extract prune (`--delete`)** / remote scrub / byte-range
+resume / push listing upload. `extract` ≠ sync.
+
+```bash
+bash scripts/demo_extract_skip.sh
+# first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
+# change one file → skipped=N-1 wrote=1 → dry-run glance
+```
 
 ## Incremental dedup demo
 

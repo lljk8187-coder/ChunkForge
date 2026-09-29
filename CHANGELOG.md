@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
   Exit **0** when the listing is valid (even if `would_fail>0`); invalid listing
   → non-zero. Mismatch + `--force` → `would_write`.
+- **Docs + demo** (Phase 9 M4 / G5): `docs/extract.md` (`--skip-unchanged` / `--force` / `--dry-run` overlap; explicitly **no prune**); `scripts/demo_extract_skip.sh`; README Phase 9 draft section
 
 ## [0.8.0] — 2026-09-29
 
