@@ -5,9 +5,10 @@ mod parallel;
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
-    DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
+    DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
-    decide_seed_for_entry, diff_dir_archives, entry_length, seed_file_map, validate_archive_path,
+    decide_seed_for_entry, diff_dir_archives, entry_length, hash_reader, seed_file_map,
+    validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
@@ -282,10 +283,14 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
-    /// Compare two `.cfdir` directory listings (path + chunk set diff)
+    /// Compare `.cfdir` listings, or a source tree against a listing (`--tree`)
     ///
-    /// Loads both sides as `.cfdir` only (`.cfidx` or bad magic → error). Reports
-    /// path-level **added** / **removed** / **changed** (content) /
+    /// **Listing↔listing:** two `.cfdir` args (`.cfidx` / bad magic → error).
+    /// **Tree↔listing:** `--tree <src-dir> <listing.cfdir>` — builds an ephemeral
+    /// in-memory `DirArchive` from regular files in `src-dir` (left) and compares
+    /// it to the listing (right). Read-only: does **not** write store or `.cfdir`.
+    ///
+    /// Reports path-level **added** / **removed** / **changed** (content) /
     /// **meta_changed** (same blake3, mode/mtime differ), then a stable summary
     /// line on **stdout**:
     /// `diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunks_only_left=… chunks_only_right=…`
@@ -293,15 +298,18 @@ enum Commands {
     /// there are no path or chunk-set differences; exit **1** when any
     /// added/removed/changed/meta_changed or chunks_only_left/right is non-zero.
     /// Usage / decode errors use the usual non-zero clap/anyhow path.
-    /// `--tree` (tree↔listing) is deferred to a later milestone.
+    /// See `docs/diff.md`.
     Diff {
         /// Max paths to print per category (default: unlimited)
         #[arg(long = "max-paths", value_name = "N")]
         max_paths: Option<usize>,
-        /// Left (baseline) `.cfdir`
+        /// Source directory to compare as left (ephemeral DirArchive; no store/.cfdir writes)
+        #[arg(long = "tree", value_name = "SRC_DIR")]
+        tree: Option<PathBuf>,
+        /// Left `.cfdir` (listing↔listing), or the listing `.cfdir` when `--tree` is set
         left: PathBuf,
-        /// Right (comparison) `.cfdir`
-        right: PathBuf,
+        /// Right `.cfdir` (listing↔listing only). Must be omitted with `--tree`.
+        right: Option<PathBuf>,
     },
     /// Query the local store
     Store {
@@ -498,9 +506,10 @@ fn run() -> Result<()> {
         }
         Commands::Diff {
             max_paths,
+            tree,
             left,
             right,
-        } => cmd_diff(&left, &right, max_paths),
+        } => cmd_diff_dispatch(tree.as_deref(), &left, right.as_deref(), max_paths),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -1277,18 +1286,14 @@ fn print_diff_path_category(label: &str, paths: &[String], max_paths: Option<usi
     }
 }
 
-fn cmd_diff(left: &Path, right: &Path, max_paths: Option<usize>) -> Result<()> {
-    let left_arch = load_cfdir_for_diff(left)?;
-    let right_arch = load_cfdir_for_diff(right)?;
-    let report = diff_dir_archives(&left_arch, &right_arch);
-
+fn emit_diff_report(report: &DiffReport, max_paths: Option<usize>) -> Result<()> {
     print_diff_path_category("added", &report.added, max_paths);
     print_diff_path_category("removed", &report.removed, max_paths);
     print_diff_path_category("changed", &report.changed, max_paths);
     print_diff_path_category("meta_changed", &report.meta_changed, max_paths);
 
-    let summary = format_diff_summary(&report);
-    // Path lists + summary on stdout (documented in `diff --help`).
+    let summary = format_diff_summary(report);
+    // Path lists + summary on stdout (documented in `diff --help` / docs/diff.md).
     println!("{summary}");
 
     let has_path_diff = !(report.added.is_empty()
@@ -1299,6 +1304,211 @@ fn cmd_diff(left: &Path, right: &Path, max_paths: Option<usize>) -> Result<()> {
     if has_path_diff || has_chunk_diff {
         // Like diff(1): differences → exit 1 without an "error:" prefix.
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_diff_dispatch(
+    tree: Option<&Path>,
+    left: &Path,
+    right: Option<&Path>,
+    max_paths: Option<usize>,
+) -> Result<()> {
+    match tree {
+        Some(src_dir) => {
+            if let Some(extra) = right {
+                bail!(
+                    "diff --tree takes one listing `.cfdir` after the source dir;                      unexpected extra argument {}",
+                    extra.display()
+                );
+            }
+            cmd_diff_tree(src_dir, left, max_paths)
+        }
+        None => {
+            let Some(right) = right else {
+                bail!(
+                    "diff without --tree requires two `.cfdir` arguments                      (or use: chunkforge diff --tree <src-dir> <listing.cfdir>)"
+                );
+            };
+            // Bare directory without --tree: do not silently try to decode as .cfdir.
+            if left.is_dir() || right.is_dir() {
+                bail!(
+                    "diff without --tree expects two `.cfdir` files; got a directory.                      Use: chunkforge diff --tree <src-dir> <listing.cfdir>"
+                );
+            }
+            cmd_diff_listings(left, right, max_paths)
+        }
+    }
+}
+
+fn cmd_diff_listings(left: &Path, right: &Path, max_paths: Option<usize>) -> Result<()> {
+    let left_arch = load_cfdir_for_diff(left)?;
+    let right_arch = load_cfdir_for_diff(right)?;
+    let report = diff_dir_archives(&left_arch, &right_arch);
+    emit_diff_report(&report, max_paths)
+}
+
+/// Tree↔listing: left = ephemeral DirArchive from `src_dir`, right = listing.
+fn cmd_diff_tree(src_dir: &Path, listing: &Path, max_paths: Option<usize>) -> Result<()> {
+    if !src_dir.is_dir() {
+        bail!(
+            "diff --tree source {} is not a directory (or is unreadable)",
+            src_dir.display()
+        );
+    }
+    if listing.is_dir() {
+        bail!(
+            "diff --tree expects one listing `.cfdir` (got directory {});              two trees are not supported",
+            listing.display()
+        );
+    }
+    let listing_arch = load_cfdir_for_diff(listing)?;
+    let tree_arch = build_ephemeral_tree_archive(src_dir, &listing_arch)?;
+    // Documented orientation: left=tree, right=listing.
+    let report = diff_dir_archives(&tree_arch, &listing_arch);
+    emit_diff_report(&report, max_paths)
+}
+
+/// Build an in-memory `DirArchive` from a source tree for `diff --tree`.
+///
+/// Regular files only (symlink/special skipped + warn, same policy as `archive`).
+/// Does **not** write store or `.cfdir`. For each file: size, mode, mtime_secs,
+/// stream BLAKE3 → `blob_blake3`. When the path exists in `listing` **and**
+/// `blob_blake3` matches, copy the listing's File entry (chunk table + meta) so
+/// identical tree↔listing yields `chunks_shared`≈full and `chunks_only_*=0`.
+/// Otherwise use an empty chunk list (path-level diff still works). Empty
+/// non-zero-size chunk tables are **not** structurally valid for encode, so this
+/// archive is ephemeral and never written.
+fn build_ephemeral_tree_archive(src_dir: &Path, listing: &DirArchive) -> Result<DirArchive> {
+    let listing_files = seed_file_map(listing);
+
+    let mut file_paths: Vec<PathBuf> = Vec::new();
+    let mut skipped_symlinks = 0usize;
+    let mut skipped_special = 0usize;
+    collect_diff_tree_files(
+        src_dir,
+        src_dir,
+        &mut file_paths,
+        &mut skipped_symlinks,
+        &mut skipped_special,
+    )?;
+    file_paths.sort();
+
+    if skipped_symlinks > 0 || skipped_special > 0 {
+        eprintln!(
+            "diff: symlink policy = skip+warn (not recorded / not followed);              skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
+            if skipped_symlinks == 1 { "" } else { "s" },
+        );
+    }
+
+    let mut entries: Vec<DirEntry> = Vec::with_capacity(file_paths.len());
+    for full in &file_paths {
+        let rel = relative_archive_path(src_dir, full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+
+        let meta =
+            fs::symlink_metadata(full).with_context(|| format!("stat {}", full.display()))?;
+        if meta.file_type().is_symlink() {
+            // collect should have skipped; belt-and-suspenders.
+            eprintln!(
+                "diff: skip symlink {} (policy: skip+warn; not recorded)",
+                full.display()
+            );
+            continue;
+        }
+        if !meta.is_file() {
+            eprintln!(
+                "diff: skip special file {} (fifo/socket/device)",
+                full.display()
+            );
+            continue;
+        }
+
+        let size = meta.len();
+        let mode = file_mode_u32(&meta);
+        let mtime_secs = file_mtime_secs(&meta);
+        let mut file =
+            File::open(full).with_context(|| format!("open {} for tree blake3", full.display()))?;
+        let blob_blake3 =
+            hash_reader(&mut file).map_err(|e| anyhow::anyhow!("hash {}: {e}", full.display()))?;
+
+        let kind = if let Some(prior) = listing_files.get(rel.as_str()) {
+            match &prior.kind {
+                DirEntryKind::File {
+                    blob_blake3: prior_blob,
+                    ..
+                } if *prior_blob == blob_blake3 => {
+                    // Identical content: prefer listing meta + chunk table.
+                    prior.kind.clone()
+                }
+                _ => DirEntryKind::File {
+                    mode,
+                    size,
+                    mtime_secs,
+                    blob_blake3,
+                    chunks: Vec::new(),
+                },
+            }
+        } else {
+            DirEntryKind::File {
+                mode,
+                size,
+                mtime_secs,
+                blob_blake3,
+                chunks: Vec::new(),
+            }
+        };
+
+        entries.push(DirEntry { path: rel, kind });
+    }
+
+    // Ephemeral only — may contain empty chunk tables on non-zero size (not
+    // encode-valid). Do not call DirArchive::new / encode / write.
+    Ok(DirArchive {
+        format_version: DIR_FORMAT_VERSION_V1,
+        flags: 0,
+        entries,
+    })
+}
+
+/// Walk like [`collect_archive_files`], but warn with a `diff:` prefix.
+fn collect_diff_tree_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skipped_symlinks: &mut usize,
+    skipped_special: &mut usize,
+) -> Result<()> {
+    let entries = fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read_dir entry under {}", dir.display()))?;
+        let path = entry.path();
+        let ft = entry
+            .file_type()
+            .with_context(|| format!("file_type {}", path.display()))?;
+
+        if ft.is_symlink() {
+            *skipped_symlinks += 1;
+            eprintln!(
+                "diff: skip symlink {} (policy: skip+warn; not recorded / not followed)",
+                display_under_root(root, &path)
+            );
+            continue;
+        }
+        if ft.is_dir() {
+            collect_diff_tree_files(root, &path, out, skipped_symlinks, skipped_special)?;
+            continue;
+        }
+        if ft.is_file() {
+            out.push(path);
+            continue;
+        }
+        *skipped_special += 1;
+        eprintln!(
+            "diff: skip special file {} (fifo/socket/device)",
+            display_under_root(root, &path)
+        );
     }
     Ok(())
 }

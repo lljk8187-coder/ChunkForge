@@ -4112,6 +4112,7 @@ fn diff_help_lists_max_paths_and_stdout_summary() {
         s.contains("cfdir") || s.contains(".cfdir"),
         "diff --help should mention .cfdir:\n{s}"
     );
+    assert!(s.contains("--tree"), "diff --help should list --tree:\n{s}");
 }
 
 #[test]
@@ -4323,4 +4324,257 @@ fn diff_max_paths_truncates_listing() {
         summary.contains("added=3"),
         "summary counts must stay full; summary={summary}"
     );
+}
+
+// --- Phase 7 M3: diff --tree ---
+
+#[test]
+fn diff_tree_matches_listing_exit_zero() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-tree-match\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"shared-tree\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("listing.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Snapshot store + listing before --tree (must stay read-only).
+    let store_before = snapshot_store_files(&store);
+    let listing_mtime_before = fs::metadata(&listing).unwrap().modified().unwrap();
+    let listing_bytes_before = fs::read(&listing).unwrap();
+    let cfdirs_before = count_cfdirs(dir.path());
+
+    let out = run_ok(&[
+        "diff",
+        "--tree",
+        src.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let summary = parse_diff_summary(&stdout);
+    assert!(
+        summary.contains("added=0")
+            && summary.contains("removed=0")
+            && summary.contains("changed=0")
+            && summary.contains("meta_changed=0")
+            && summary.contains("chunks_only_left=0")
+            && summary.contains("chunks_only_right=0"),
+        "identical tree↔listing should be clean; summary={summary}; stdout={stdout}"
+    );
+    assert!(
+        summary.contains("chunks_shared=2"),
+        "matching content should copy listing chunk tables; summary={summary}"
+    );
+
+    let store_after = snapshot_store_files(&store);
+    assert_eq!(
+        store_before, store_after,
+        "diff --tree must not write store objects"
+    );
+    let listing_mtime_after = fs::metadata(&listing).unwrap().modified().unwrap();
+    assert_eq!(
+        listing_mtime_before, listing_mtime_after,
+        "diff --tree must not touch the listing file mtime"
+    );
+    assert_eq!(
+        listing_bytes_before,
+        fs::read(&listing).unwrap(),
+        "diff --tree must not rewrite the listing"
+    );
+    assert_eq!(
+        cfdirs_before,
+        count_cfdirs(dir.path()),
+        "diff --tree must not write a new .cfdir"
+    );
+}
+
+#[test]
+fn diff_tree_changed_byte_exit_nonzero() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-tree-v1\n").unwrap();
+    let hello = fs::read(fixtures_dir().join("hello.txt")).expect("fixtures/hello.txt");
+    fs::write(src.join("sub").join("b.txt"), &hello).unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("listing.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let store_before = snapshot_store_files(&store);
+    let cfdirs_before = count_cfdirs(dir.path());
+
+    // Change one byte in the source tree (do not re-archive).
+    fs::write(src.join("a.txt"), b"hello-tree-v2\n").unwrap();
+
+    let out = run_fail(&[
+        "diff",
+        "--tree",
+        src.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "changed tree should exit 1; status={:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let summary = parse_diff_summary(&stdout);
+    assert!(
+        summary.contains("changed=1"),
+        "expected changed=1; summary={summary}; stdout={stdout}"
+    );
+    assert!(
+        summary.contains("added=0") && summary.contains("removed=0"),
+        "only content change expected; summary={summary}"
+    );
+    assert!(
+        stdout.contains("changed:") && stdout.contains("a.txt"),
+        "should list changed path a.txt; stdout={stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("error:"),
+        "differences must not print error: prefix; stderr={stderr}"
+    );
+
+    assert_eq!(
+        store_before,
+        snapshot_store_files(&store),
+        "diff --tree must not write store after content change"
+    );
+    assert_eq!(
+        cfdirs_before,
+        count_cfdirs(dir.path()),
+        "diff --tree must not write a new .cfdir after content change"
+    );
+}
+
+#[test]
+fn diff_tree_rejects_extra_listing_arg() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("listing.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let extra = dir.path().join("extra.cfdir");
+    fs::copy(&listing, &extra).unwrap();
+
+    let fail = run_fail(&[
+        "diff",
+        "--tree",
+        src.to_str().unwrap(),
+        listing.to_str().unwrap(),
+        extra.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--tree") || err.contains("extra") || err.contains("unexpected"),
+        "should reject two listings with --tree; stderr={err}"
+    );
+}
+
+#[test]
+fn diff_without_tree_rejects_bare_directory() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("listing.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&["diff", src.to_str().unwrap(), listing.to_str().unwrap()]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--tree") || err.contains("directory"),
+        "bare dir without --tree should error helpfully; stderr={err}"
+    );
+}
+
+fn snapshot_store_files(store: &Path) -> Vec<(String, u64, Vec<u8>)> {
+    let chunks = store.join("chunks");
+    if !chunks.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for shard in fs::read_dir(&chunks).unwrap() {
+        let shard = shard.unwrap().path();
+        if !shard.is_dir() {
+            continue;
+        }
+        for ent in fs::read_dir(&shard).unwrap() {
+            let p = ent.unwrap().path();
+            if p.extension().and_then(|e| e.to_str()) != Some("cnk") {
+                continue;
+            }
+            let meta = fs::metadata(&p).unwrap();
+            let bytes = fs::read(&p).unwrap();
+            out.push((
+                p.strip_prefix(store)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                meta.len(),
+                bytes,
+            ));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn count_cfdirs(root: &Path) -> usize {
+    let mut n = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for ent in fs::read_dir(&dir).unwrap() {
+            let p = ent.unwrap().path();
+            if p.is_dir() {
+                // Skip the store tree; only count sibling/temp .cfdir files.
+                if p.file_name().and_then(|s| s.to_str()) == Some("chunks") {
+                    continue;
+                }
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("cfdir") {
+                n += 1;
+            }
+        }
+    }
+    n
 }
