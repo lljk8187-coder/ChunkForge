@@ -7,7 +7,7 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--dry-run] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--dry-run`: stats only, no store/.cfdir write) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--dry-run] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--dry-run`: stats only, no store/.cfdir write) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir>` | Materialize the tree (parents created; existing paths → non-zero) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
@@ -72,6 +72,59 @@ not created.
 ```bash
 chunkforge archive --store ./store -o release.cfdir --dry-run ./src
 # stderr: archive: dry-run: N files, M chunks (would_write=…, would_reuse=…); no store/.cfdir written …
+```
+
+Combined with `--seed`, dry-run also prints `would_seed_reuse=` / `would_rechunk=`
+(see [Seed](#seed---seed-priorcfdir) below) and still writes nothing.
+
+## Seed (`--seed prior.cfdir`)
+
+Incremental archive against a **prior `.cfdir` only** (not a `.cfidx`). For each
+source file whose relative path exists in the prior listing:
+
+1. **Size fast-reject**: if the on-disk size differs from the prior entry, the
+   file is rechunked (no full-file hash).
+2. **Content fingerprint**: otherwise the file is streamed and compared to
+   `blob_blake3`. A match reuses the prior chunk table (and recorded
+   `mode` / `size` / `mtime_secs` / `blob_blake3`) and skips FastCDC / store
+   `put` for that file.
+3. **mtime is not the sole criterion** — content BLAKE3 decides reuse (mtime
+   alone never marks a file unchanged).
+
+Reuse copies the prior chunk table into the **new** listing. If any reused chunk
+id is missing from `--store`, that file is forced to rechunk and a stderr warning
+increments `seed_missing_chunks=`. Files absent from the prior, or whose content
+changed, are chunked as usual.
+
+The output is always a **full `.cfdir` v1** (self-contained listing) — never a
+delta against the prior. Consumers (`verify` / `extract` / `mount` / `push`) do
+not need the seed file.
+
+Write-path stderr (no `--dry-run`) reports `seed_reused_files=` /
+`rechunked_files=` (plus the usual `new=` / `reused=` chunk counters).
+
+### Dry-run × seed
+
+With both `--dry-run` and `--seed`, ChunkForge previews reuse without writing
+store chunks or the output `.cfdir`. File-level counters use dry-run vocabulary:
+
+`would_seed_reuse=` / `would_rechunk=` (alongside chunk-level
+`would_write=` / `would_reuse=`).
+
+```bash
+# First archive
+chunkforge archive --store ./store -o v1.cfdir ./src
+
+# Preview a second pass against the same tree (expect full seed reuse)
+chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
+# stderr: … would_seed_reuse=N, would_rechunk=0 …; no store/.cfdir written …
+```
+
+```bash
+# After editing one file, dry-run should show would_rechunk=1
+echo 'changed' > ./src/a.txt
+chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
+# stderr: … would_seed_reuse=…, would_rechunk=1 …; no store/.cfdir written …
 ```
 
 ## Archive policy (P0)

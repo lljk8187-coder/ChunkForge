@@ -71,8 +71,8 @@ enum Commands {
         /// Compute stats only; do not write store chunks or the `.cfdir`
         #[arg(long = "dry-run")]
         dry_run: bool,
-        /// Prior `.cfdir` for incremental archive: unchanged files (content BLAKE3
-        /// match) reuse chunk tables and skip FastCDC; missing prior chunks force rechunk
+        /// Reuse unchanged files' chunk tables from a prior `.cfdir` via content
+        /// fingerprint (BLAKE3); changed or missing-chunk files are rechunked
         #[arg(long = "seed", value_name = "PRIOR.cfdir")]
         seed: Option<PathBuf>,
     },
@@ -847,7 +847,7 @@ fn cmd_archive(
         if seeding {
             eprintln!(
                 "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}; \
-                 seed_reused_files={}, rechunked_files={}{}); \
+                 would_seed_reuse={}, would_rechunk={}{}); \
                  no store/.cfdir written (would write {})",
                 file_count,
                 if file_count == 1 { "" } else { "s" },

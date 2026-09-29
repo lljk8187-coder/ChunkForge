@@ -3061,7 +3061,7 @@ fn archive_help_lists_dry_run() {
     );
 }
 
-// --- Phase 6 M2: archive --seed ---
+// --- Phase 6 M2/M3: archive --seed (+ dry-run×seed stats) ---
 
 #[test]
 fn archive_help_lists_seed() {
@@ -3070,6 +3070,15 @@ fn archive_help_lists_seed() {
     assert!(
         s.contains("--seed"),
         "archive --help should list --seed:\n{s}"
+    );
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("content") && (lower.contains("fingerprint") || lower.contains("blake3")),
+        "archive --help --seed should mention content fingerprint semantics:\n{s}"
+    );
+    assert!(
+        lower.contains("chunk table") || lower.contains("chunk tables") || lower.contains("reuse"),
+        "archive --help --seed should mention reuse of chunk tables:\n{s}"
     );
 }
 
@@ -3397,13 +3406,74 @@ fn archive_dry_run_with_seed_reports_reuse_without_writing() {
     let err = String::from_utf8_lossy(&dry.stderr);
     assert!(err.contains("dry-run"), "stderr={err}");
     assert!(
-        err.contains("seed_reused_files=2") && err.contains("rechunked_files=0"),
-        "dry-run×seed should preview full reuse; stderr={err}"
+        err.contains("would_seed_reuse=2") && err.contains("would_rechunk=0"),
+        "dry-run×seed should preview would_seed_reuse / would_rechunk; stderr={err}"
+    );
+    // Dry-run vocabulary must not reuse the write-path counter names.
+    assert!(
+        !err.contains("seed_reused_files=") && !err.contains("rechunked_files="),
+        "dry-run×seed should use would_* counters, not write-path names; stderr={err}"
     );
     assert!(!out.exists(), "dry-run must not write .cfdir");
     assert_eq!(
         before,
         count_cnk(&store.join("chunks")),
         "dry-run must not add chunks"
+    );
+    // Store directory itself must not be created if absent; here it already
+    // exists from the prior archive — chunk count must stay unchanged.
+}
+
+#[test]
+fn archive_dry_run_with_seed_changed_file_would_rechunk() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"dry-seed-a-v1\n").unwrap();
+    fs::write(src.join("b.txt"), b"dry-seed-b\n").unwrap();
+
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfdir");
+    let out = dir.path().join("would.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let before = count_cnk(&store.join("chunks"));
+    let prior_mtime = fs::metadata(&prior).unwrap().modified().unwrap();
+
+    fs::write(src.join("a.txt"), b"dry-seed-a-v2\n").unwrap();
+
+    let dry = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        err.contains("would_seed_reuse=1") && err.contains("would_rechunk=1"),
+        "dry-run×seed should preview one reuse + one rechunk; stderr={err}"
+    );
+    assert!(!out.exists(), "dry-run must not write .cfdir");
+    assert_eq!(
+        before,
+        count_cnk(&store.join("chunks")),
+        "dry-run must not add chunks"
+    );
+    let after_mtime = fs::metadata(&prior).unwrap().modified().unwrap();
+    assert_eq!(
+        prior_mtime, after_mtime,
+        "dry-run must not touch the prior .cfdir"
     );
 }
