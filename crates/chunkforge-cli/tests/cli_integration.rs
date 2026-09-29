@@ -5952,3 +5952,275 @@ fn push_without_aws_sigv4_sends_no_sigv4_headers() {
         g.amz_date
     );
 }
+
+// --- Phase 9 M1: extract --skip-unchanged ---
+
+#[test]
+fn extract_help_lists_skip_unchanged() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--skip-unchanged"),
+        "extract --help should list --skip-unchanged:\n{s}"
+    );
+}
+
+#[test]
+fn extract_skip_unchanged_second_pass_skips_all_and_zero_gets() {
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-extract-v1\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"payload-b\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("v1.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    // First extract via local store (populate dest tree).
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let a_before = fs::metadata(out.join("a.txt")).unwrap();
+    let b_before = fs::metadata(out.join("sub/b.txt")).unwrap();
+
+    // Counting HTTP GET server over the same store.
+    let get_count = Arc::new(Mutex::new(0usize));
+    let get_count2 = Arc::clone(&get_count);
+    let store_root = store.clone();
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+            if request.method() == &Method::Get {
+                *get_count2.lock().unwrap() += 1;
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let _ = request.respond(Response::from_data(data));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else if request.method() == &Method::Head {
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let response = Response::empty(200).with_header(
+                        Header::from_bytes(&b"Content-Length"[..], data.len().to_string()).unwrap(),
+                    );
+                    let _ = request.respond(response);
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    let skip_out = run_ok(&[
+        "extract",
+        "--source",
+        &base,
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+    ]);
+
+    let gets = *get_count.lock().unwrap();
+    assert_eq!(
+        gets, 0,
+        "second extract --skip-unchanged must not GET any chunks; gets={gets}"
+    );
+
+    let skip_err = String::from_utf8_lossy(&skip_out.stderr);
+    assert!(
+        skip_err.contains("skipped=2") && skip_err.contains("wrote=0"),
+        "expected skipped=2 wrote=0; stderr={skip_err}"
+    );
+
+    // Files untouched (mtime preserved — whole file not rewritten).
+    let a_after = fs::metadata(out.join("a.txt")).unwrap();
+    let b_after = fs::metadata(out.join("sub/b.txt")).unwrap();
+    assert_eq!(
+        a_before.modified().unwrap(),
+        a_after.modified().unwrap(),
+        "skipped a.txt must keep mtime"
+    );
+    assert_eq!(
+        b_before.modified().unwrap(),
+        b_after.modified().unwrap(),
+        "skipped b.txt must keep mtime"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"hello-extract-v1\n");
+}
+
+#[test]
+fn extract_skip_unchanged_unequal_size_not_skipped() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"short\n").unwrap();
+    fs::write(src.join("b.txt"), b"keep-me\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    // Unequal size on a.txt → must not skip; without --force still fails.
+    fs::write(out.join("a.txt"), b"DIFFERENT-LENGTH-CONTENT\n").unwrap();
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+    ]);
+    let fail_err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        fail_err.contains("already exists") || fail_err.contains("refusing"),
+        "unequal size without --force must refuse; stderr={fail_err}"
+    );
+
+    // With --force: a.txt rewritten, b.txt skipped (still matches).
+    let out2 = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+    ]);
+    let err = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        err.contains("skipped=1") && err.contains("wrote=1"),
+        "expected skipped=1 wrote=1; stderr={err}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"short\n");
+    assert_eq!(fs::read(out.join("b.txt")).unwrap(), b"keep-me\n");
+}
+
+#[test]
+fn extract_skip_unchanged_match_priority_over_force() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"same-content\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let before = fs::metadata(out.join("a.txt")).unwrap();
+    let out2 = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+    ]);
+    let err = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        err.contains("skipped=1") && err.contains("wrote=0"),
+        "match must skip even with --force; stderr={err}"
+    );
+    let after = fs::metadata(out.join("a.txt")).unwrap();
+    assert_eq!(
+        before.modified().unwrap(),
+        after.modified().unwrap(),
+        "matched file must not be rewritten under --force + --skip-unchanged"
+    );
+}
+
+#[test]
+fn extract_without_skip_flag_summary_matches_0_8_0() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let o = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("extract: wrote") && err.contains("1 file") && !err.contains("skipped="),
+        "no --skip-unchanged must keep 0.8.0 summary; stderr={err}"
+    );
+}

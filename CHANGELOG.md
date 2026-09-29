@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`extract --skip-unchanged`** (Phase 9 M1): opt-in skip when dest size + content
+  BLAKE3 already match listing `blob_blake3` (no chunk fetch/write; mode untouched).
+  Default **off** ≡ 0.8.0. Match takes priority over `--force`. Helper
+  `judge_extract_unchanged` / `UnchangedVerdict` in `chunkforge-index`.
+
 ## [0.8.0] — 2026-09-29
 
 Phase 8 closeout: bounded HTTP retries (`--http-retries`), error-class push/pull

@@ -7,8 +7,8 @@ use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
-    decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader, seed_file_map,
-    validate_archive_path,
+    UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader,
+    judge_extract_unchanged, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -99,8 +99,11 @@ enum Commands {
     /// from `--store` / `--source` (same origin flags as `cat` / `verify`).
     /// Parent directories are created as needed. If a destination path already
     /// exists, extract fails (non-zero) unless `--force` is set (overwrites
-    /// existing regular files; type mismatches still error). Empty `Dir`
-    /// entries create directories; file modes are restored on Unix when recorded.
+    /// existing regular files; type mismatches still error). With
+    /// `--skip-unchanged`, files whose size and content BLAKE3 already match
+    /// the listing are left untouched (no chunk fetch / write), even if
+    /// `--force` is also set. Empty `Dir` entries create directories; file
+    /// modes are restored on Unix when recorded.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Extract {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -126,9 +129,16 @@ enum Commands {
         /// Overwrite existing regular files at destination paths. Without this
         /// flag, an existing path fails (≡ 0.6.0). Directory↔file type
         /// mismatches still error (refusing to replace a directory with a file
-        /// or vice versa).
+        /// or vice versa). When combined with `--skip-unchanged`, a content
+        /// match still skips (match takes priority over force rewrite).
         #[arg(long = "force")]
         force: bool,
+        /// Skip files whose destination already matches listing size + content
+        /// BLAKE3 (no chunk fetch / write; mode untouched). Default **off**
+        /// (≡ 0.8.0 full rewrite / conflict semantics). Existing but mismatched
+        /// files still require `--force` to overwrite.
+        #[arg(long = "skip-unchanged")]
+        skip_unchanged: bool,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -480,6 +490,7 @@ fn run() -> Result<()> {
             archive,
             output,
             force,
+            skip_unchanged,
         } => {
             let jobs = parse_jobs(jobs)?;
             let src = open_chunk_source(
@@ -488,7 +499,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_extract(src.as_ref(), &archive, &output, jobs, force)
+            cmd_extract(src.as_ref(), &archive, &output, jobs, force, skip_unchanged)
         }
         Commands::Cat {
             store,
@@ -2116,6 +2127,7 @@ fn cmd_extract(
     out_dir: &Path,
     jobs: usize,
     force: bool,
+    skip_unchanged: bool,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -2145,6 +2157,7 @@ fn cmd_extract(
 
     let mut file_count = 0usize;
     let mut dir_count = 0usize;
+    let mut skipped_count = 0usize;
 
     for entry in &archive.entries {
         let dest = join_archive_path(out_dir, &entry.path)?;
@@ -2176,7 +2189,54 @@ fn cmd_extract(
                 chunks,
                 ..
             } => {
-                if dest.exists() {
+                // Phase 9: optional skip when dest already matches listing content.
+                if skip_unchanged {
+                    let verdict = judge_extract_unchanged(&dest, *size, blob_blake3)
+                        .with_context(|| format!("stat/hash {}", dest.display()))?;
+                    match verdict {
+                        UnchangedVerdict::Unchanged => {
+                            // Match takes priority over --force: leave file untouched
+                            // (no chunk get, no write, no mode change).
+                            skipped_count += 1;
+                            continue;
+                        }
+                        UnchangedVerdict::Missing => {
+                            // Fall through to normal write (no --force needed).
+                        }
+                        UnchangedVerdict::TypeMismatch => {
+                            // Align messages with the 0.8.0 path: directories are a
+                            // hard type conflict; other non-regular nodes use the
+                            // same overwrite gate as an existing file.
+                            if dest.is_dir() {
+                                bail!(
+                                    "extract target {} already exists and is a directory (refusing to replace a directory with a file{})",
+                                    dest.display(),
+                                    if force {
+                                        "; --force does not change type"
+                                    } else {
+                                        ""
+                                    },
+                                );
+                            }
+                            if !force {
+                                bail!(
+                                    "extract target {} already exists (refusing to overwrite; pass --force)",
+                                    dest.display()
+                                );
+                            }
+                            // --force: fall through (File::create may replace the node).
+                        }
+                        UnchangedVerdict::SizeMismatch | UnchangedVerdict::ContentMismatch => {
+                            if !force {
+                                bail!(
+                                    "extract target {} already exists (refusing to overwrite; pass --force)",
+                                    dest.display()
+                                );
+                            }
+                            // --force: fall through to rewrite.
+                        }
+                    }
+                } else if dest.exists() {
                     if dest.is_dir() {
                         bail!(
                             "extract target {} already exists and is a directory (refusing to replace a directory with a file{})",
@@ -2240,17 +2300,24 @@ fn cmd_extract(
         }
     }
 
-    eprintln!(
-        "extract: wrote {} ({} file{}, {} dir{})",
-        out_dir.display(),
-        file_count,
-        if file_count == 1 { "" } else { "s" },
-        dir_count,
-        if dir_count == 1 { "" } else { "s" }
-    );
+    if skip_unchanged {
+        eprintln!(
+            "extract: wrote {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
+            out_dir.display(),
+        );
+    } else {
+        // ≡ 0.8.0 summary line when --skip-unchanged is off.
+        eprintln!(
+            "extract: wrote {} ({} file{}, {} dir{})",
+            out_dir.display(),
+            file_count,
+            if file_count == 1 { "" } else { "s" },
+            dir_count,
+            if dir_count == 1 { "" } else { "s" }
+        );
+    }
     Ok(())
 }
-
 fn cmd_doctor(
     source: &dyn ChunkSource,
     origin_spec: &str,

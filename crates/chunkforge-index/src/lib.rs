@@ -4,15 +4,17 @@
 //! - [`.cfdir` v1](DirArchive) — multi-file directory listing (Phase 5)
 //! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse (+ optional mtime trust, Phase 7)
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
+//! - [extract match](judge_extract_unchanged) — dest vs listing size+blake3 for `--skip-unchanged` (Phase 9)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
-//! `docs/dir-format.md`. Seed / diff helpers do **not** change those layouts.
+//! `docs/dir-format.md`. Seed / diff / extract-match helpers do **not** change those layouts.
 //!
 //! This crate does **not** implement CLI archive/extract, FUSE, or store I/O.
 
 mod diff;
 mod dir;
 mod error;
+mod extract_match;
 mod index;
 mod path;
 mod seed;
@@ -23,6 +25,7 @@ pub use dir::{
     DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE,
 };
 pub use error::{Error, IndexError};
+pub use extract_match::{UnchangedVerdict, judge_extract_unchanged};
 pub use index::{
     ENTRY_SIZE, FLAG_CHUNKS_COMPRESSED_IN_STORE, FORMAT_VERSION_V1, HEADER_SIZE, Index, IndexEntry,
     MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE, entry_length,
