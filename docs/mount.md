@@ -2,8 +2,9 @@
 
 Phase 2 presents a single `.cfidx` blob as **one** regular file under a mount
 point. Phase 5 extends the same `mount` command to present a `.cfdir` as a
-**directory tree**. Writes are rejected (`EROFS` / `EACCES`); there is no
-write-back.
+**directory tree**. Phase 10 adds **sequential chunk prefetch** (process-local;
+distinct from Store `--cache`). Writes are rejected (`EROFS` / `EACCES`); there
+is no write-back.
 
 ## Requirements
 
@@ -31,6 +32,7 @@ chunkforge mount \
   --source <local-store|file:///path|http(s)://host/base> \
   [--cache <local-cache-store>] \
   [--name <filename>] \
+  [--no-prefetch] \
   <listing.cfidx|listing.cfdir> <mountpoint>
 ```
 
@@ -47,6 +49,28 @@ chunkforge mount \
   on miss (never writes the primary source).
 - `--jobs` does **not** apply to mount.
 
+### Sequential prefetch (Phase 10)
+
+Default: **prefetch on** (conservative). After a forward sequential `read` that
+consumes into/past a chunk, the mount **best-effort** fetches the **next** index
+entry into a process-local cache (at most **1** subsequent chunk **and** total
+cached plaintext **≤ 512 KiB**, whichever stricter). Hits skip a synchronous
+`ChunkSource::get` on the following sequential read.
+
+| Behaviour | Detail |
+|---|---|
+| Default | Prefetch **on** — result bytes identical to 0.9.0; may do **fewer** sync gets on sequential streams |
+| `--no-prefetch` | Prefetch **off** ≡ 0.9.0 on-demand get (every chunk fetched when needed) |
+| Invalidation | Seek backward, non-contiguous offset, or cross-file (`DirFs` inode change) → **cold-start** the window (drop cached chunks) |
+| Errors | Prefetch `get` failure **never** fails a read whose current range is already satisfied |
+| vs `--cache` | Prefetch is **process-local / mount-lifetime** and does **not** persist; `--cache` is a disk `CacheSource` layer under `get` |
+
+Library switch: `BlobFs::with_prefetch(bool)` / `DirFs::with_prefetch(bool)`
+(same semantics as the CLI flag).
+
+True FUSE mount smoke tests may stay `#[ignore]` (need fuse3 + `/dev/fuse`);
+prefetch algebra is covered by in-process unit tests that count `get` calls.
+
 ### Single-file (`.cfidx`) example
 
 ```bash
@@ -59,6 +83,13 @@ mkdir -p /tmp/cf-mnt-demo/{store,mnt}
 # other terminal:
 cmp ./fixtures/hello.txt /tmp/cf-mnt-demo/mnt/hello
 fusermount3 -u /tmp/cf-mnt-demo/mnt
+```
+
+Disable prefetch (0.9.0-like on-demand gets):
+
+```bash
+./target/debug/chunkforge mount --store /tmp/cf-mnt-demo/store \
+  --no-prefetch /tmp/cf-mnt-demo/hello.cfidx /tmp/cf-mnt-demo/mnt
 ```
 
 ### Directory-tree (`.cfdir`) mount
@@ -74,7 +105,8 @@ fusermount3 -u /tmp/cf-mnt-demo/mnt-tree
 ```
 
 Under the mount point, relative paths from the `.cfdir` appear as directories and
-regular files. File content is assembled on demand from `ChunkSource::get`.
+regular files. File content is assembled from `ChunkSource::get`, with sequential
+prefetch of the next chunk when enabled (default).
 
 ### Smoke scripts
 
@@ -100,6 +132,6 @@ session also tears down the mount when possible.
 ## Out of scope
 
 - Writable mounts / COW write-back
-- Sequential prefetch / readahead (Phase 9 P1 O2 **not** delivered; reads stay
-  on-demand per chunk)
+- Configurable prefetch depth beyond the conservative default (P1 may add
+  `--prefetch-chunks N`; not required for Phase 10 M2)
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

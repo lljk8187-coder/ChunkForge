@@ -52,7 +52,7 @@ impl PrefetchCache {
         }
     }
 
-    /// Prefetch **off** ≡ 0.9.0 on-demand `get` (library switch; CLI is M2).
+    /// Prefetch **off** ≡ 0.9.0 on-demand `get` (CLI: `chunkforge mount --no-prefetch`).
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -240,5 +240,45 @@ mod tests {
         let mut cache = PrefetchCache::enabled();
         cache.note_sequential_advance(Some(&id), 7, &src);
         assert_eq!(cache.cached_chunks(), 0);
+    }
+
+    #[test]
+    fn prepare_for_read_invalidates_on_seek() {
+        let id = ChunkId::hash(b"cached");
+        let mut cache = PrefetchCache::enabled();
+        cache.entries.push((id, b"cached".to_vec()));
+        cache.scope = Some(2);
+        cache.next_offset = Some(50);
+        // Backward / non-contiguous → cold-start.
+        cache.prepare_for_read(2, 0);
+        assert_eq!(cache.cached_chunks(), 0);
+        assert!(!cache.is_sequential(2, 50));
+    }
+
+    #[test]
+    fn prepare_for_read_invalidates_on_scope_change() {
+        let id = ChunkId::hash(b"cross");
+        let mut cache = PrefetchCache::enabled();
+        cache.entries.push((id, b"cross".to_vec()));
+        cache.scope = Some(10);
+        cache.next_offset = Some(0);
+        // Cross-file (different scope) → cold-start.
+        cache.prepare_for_read(11, 0);
+        assert_eq!(cache.cached_chunks(), 0);
+    }
+
+    #[test]
+    fn disabled_never_prefetches() {
+        let id = ChunkId::hash(b"x");
+        let mut src = Mem::default();
+        src.chunks.insert(id, b"x".to_vec());
+        let mut cache = PrefetchCache::disabled();
+        cache.note_sequential_advance(Some(&id), 1, &src);
+        assert_eq!(cache.cached_chunks(), 0);
+        assert!(src.gets.lock().unwrap().is_empty());
+        // take_or_get still hits source when disabled.
+        let got = cache.take_or_get(&id, &src).unwrap();
+        assert_eq!(got, b"x");
+        assert_eq!(src.gets.lock().unwrap().len(), 1);
     }
 }

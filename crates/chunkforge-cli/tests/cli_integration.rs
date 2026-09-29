@@ -683,6 +683,10 @@ fn mount_help_lists_source_cache_name() {
     assert!(s.contains("--cache"), "{s}");
     assert!(s.contains("--store"), "{s}");
     assert!(s.contains("--name"), "{s}");
+    assert!(
+        s.contains("--no-prefetch"),
+        "mount --help must list --no-prefetch:\n{s}"
+    );
     assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
 }
 

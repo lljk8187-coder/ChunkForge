@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 10 M2**: `chunkforge mount --no-prefetch` disables sequential chunk
+  prefetch (default remains **on**; ≡ 0.9.0 on-demand `get`). Seek / cross-file /
+  backward / non-contiguous reads cold-start the prefetch window. Docs:
+  `docs/mount.md` prefetch semantics. (M1 delivered `PrefetchCache` +
+  `BlobFs`/`DirFs` wiring.)
+
 ## [0.9.0] — 2026-09-29
 
 Phase 9 closeout: incremental extract (`--skip-unchanged` / `--dry-run`), loose

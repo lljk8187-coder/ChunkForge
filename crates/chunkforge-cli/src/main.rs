@@ -225,6 +225,9 @@ enum Commands {
         /// Override the virtual file name for `.cfidx` mounts (default: stem without `.cfidx`; ignored for `.cfdir`)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Disable sequential chunk prefetch (default: prefetch on; ≡ 0.9.0 on-demand get)
+        #[arg(long = "no-prefetch")]
+        no_prefetch: bool,
         /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
         /// Empty directory to mount onto
@@ -573,6 +576,7 @@ fn run() -> Result<()> {
             cache,
             http_tmpl,
             name,
+            no_prefetch,
             index,
             mountpoint,
         } => {
@@ -583,7 +587,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_mount(src, &index, &mountpoint, name.as_deref())
+            cmd_mount(src, &index, &mountpoint, name.as_deref(), !no_prefetch)
         }
         Commands::Doctor {
             store,
@@ -3094,14 +3098,15 @@ fn cmd_mount(
     index_path: &Path,
     mountpoint: &Path,
     name: Option<&str>,
+    prefetch: bool,
 ) -> Result<()> {
     #[cfg(feature = "fuse")]
     {
-        cmd_mount_fuse(source, index_path, mountpoint, name)
+        cmd_mount_fuse(source, index_path, mountpoint, name, prefetch)
     }
     #[cfg(not(feature = "fuse"))]
     {
-        let _ = (source, index_path, mountpoint, name);
+        let _ = (source, index_path, mountpoint, name, prefetch);
         // ensure_mount_supported() already rejected; keep a defensive message.
         ensure_mount_supported()
     }
@@ -3113,6 +3118,7 @@ fn cmd_mount_fuse(
     index_path: &Path,
     mountpoint: &Path,
     name: Option<&str>,
+    prefetch: bool,
 ) -> Result<()> {
     use chunkforge_fuse::{BlobFs, DirFs, MountOption, default_blob_name, mount_ro};
 
@@ -3145,13 +3151,18 @@ fn cmd_mount_fuse(
             };
 
             let index = load_index(index_path)?;
-            let fs = BlobFs::new(index, source, blob_name.clone());
+            let fs = BlobFs::new(index, source, blob_name.clone()).with_prefetch(prefetch);
 
             eprintln!(
-                "mount: {} → {}/{} (read-only; Ctrl-C or fusermount3 -u to unmount)",
+                "mount: {} → {}/{} (read-only{}; Ctrl-C or fusermount3 -u to unmount)",
                 index_path.display(),
                 mountpoint.display(),
-                blob_name
+                blob_name,
+                if prefetch {
+                    "; prefetch on"
+                } else {
+                    "; --no-prefetch"
+                },
             );
 
             mount_ro(fs, mountpoint, opts).map_err(explain_fuse_mount_error)?;
@@ -3164,12 +3175,17 @@ fn cmd_mount_fuse(
                 );
             }
             let archive = load_dir_archive(index_path)?;
-            let fs = DirFs::new(archive, source);
+            let fs = DirFs::new(archive, source).with_prefetch(prefetch);
 
             eprintln!(
-                "mount: {} → {}/ (directory tree, read-only; Ctrl-C or fusermount3 -u to unmount)",
+                "mount: {} → {}/ (directory tree, read-only{}; Ctrl-C or fusermount3 -u to unmount)",
                 index_path.display(),
-                mountpoint.display()
+                mountpoint.display(),
+                if prefetch {
+                    "; prefetch on"
+                } else {
+                    "; --no-prefetch"
+                },
             );
 
             mount_ro(fs, mountpoint, opts).map_err(explain_fuse_mount_error)?;

@@ -58,7 +58,7 @@ impl<S: ChunkSource> BlobFs<S> {
             atime: now,
             mtime: now,
             ctime: now,
-            // M1 default: sequential prefetch on (CLI `--no-prefetch` is M2).
+            // Default: sequential prefetch on (disable via with_prefetch(false) / CLI `--no-prefetch`).
             prefetch: Mutex::new(PrefetchCache::enabled()),
         }
     }
@@ -70,9 +70,10 @@ impl<S: ChunkSource> BlobFs<S> {
         self
     }
 
-    /// Enable or disable sequential prefetch (library switch; CLI flag is M2).
+    /// Enable or disable sequential prefetch.
     ///
     /// Default is **on**. Disabling cold-starts the window (≡ 0.9.0 on-demand get).
+    /// CLI: `chunkforge mount --no-prefetch`.
     pub fn with_prefetch(mut self, enabled: bool) -> Self {
         *self.prefetch.get_mut().unwrap_or_else(|e| e.into_inner()) = if enabled {
             PrefetchCache::enabled()

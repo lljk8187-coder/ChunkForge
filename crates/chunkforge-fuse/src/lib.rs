@@ -546,22 +546,80 @@ mod tests {
     }
 
     #[test]
-    fn prefetch_disabled_regets_every_chunk() {
-        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
-        let cuts = [100usize, 200];
+    fn prefetch_disabled_get_count_equals_on_demand_path() {
+        // With `--no-prefetch` / with_prefetch(false), every chunk is fetched on
+        // demand — get count must match the bare `read_range` (no cache) path.
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200, 300];
         let (index, src) = index_from_cuts(&data, &cuts);
+        let id0 = index.entries[0].chunk_id;
         let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
 
+        // Baseline: on-demand read_range (no PrefetchCache).
+        let baseline = CountingSource::new(src.clone());
+        let _ = read_range(&index, &baseline, 0, 50).unwrap();
+        let _ = read_range(&index, &baseline, 50, 100).unwrap();
+        let _ = read_range(&index, &baseline, 150, 100).unwrap();
+        let base0 = baseline.get_count(&id0);
+        let base1 = baseline.get_count(&id1);
+        let base2 = baseline.get_count(&id2);
+        assert!(base0 >= 1 && base1 >= 1 && base2 >= 1);
+
+        // Prefetch off via with_prefetch(false) ≡ on-demand.
         let counting = CountingSource::new(src);
         let fs = BlobFs::new(index, counting.clone(), "nopre").with_prefetch(false);
-
         let _ = fs.read_at(0, 50).unwrap();
-        counting.clear_gets();
         let _ = fs.read_at(50, 100).unwrap();
+        let _ = fs.read_at(150, 100).unwrap();
+        assert_eq!(
+            counting.get_count(&id0),
+            base0,
+            "prefetch-off id0 gets must ≡ on-demand read_range"
+        );
         assert_eq!(
             counting.get_count(&id1),
-            1,
-            "with prefetch off, id1 must be gotten on demand"
+            base1,
+            "prefetch-off id1 gets must ≡ on-demand read_range"
+        );
+        assert_eq!(
+            counting.get_count(&id2),
+            base2,
+            "prefetch-off id2 gets must ≡ on-demand read_range"
+        );
+        // And must not have fewer gets than baseline (no silent prefetch hits).
+        let total_off =
+            counting.get_count(&id0) + counting.get_count(&id1) + counting.get_count(&id2);
+        let total_base = base0 + base1 + base2;
+        assert_eq!(total_off, total_base);
+    }
+
+    #[test]
+    fn non_contiguous_forward_seek_cold_starts_window() {
+        // Forward jump that skips the expected next_offset → invalidate.
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200, 300];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "gap");
+
+        // Establish window ending at 50; prefetch id1.
+        let _ = fs.read_at(0, 50).unwrap();
+        assert_eq!(counting.get_count(&id1), 1);
+        counting.clear_gets();
+
+        // Non-contiguous forward seek (skip past expected offset 50 → jump to 200).
+        let got = fs.read_at(200, 50).unwrap();
+        assert_eq!(got, &data[200..250]);
+        assert_eq!(counting.get_count(&id2), 1);
+        // Stale id1 prefetch must not be reused for this discontinuous read.
+        assert_eq!(
+            counting.get_count(&id1),
+            0,
+            "non-contiguous seek must cold-start; must not touch stale prefetch"
         );
     }
 
