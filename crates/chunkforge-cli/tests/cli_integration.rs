@@ -3044,6 +3044,15 @@ fn archive_dry_run_prints_stats_without_writing() {
         err.contains("no store") || err.contains("no store/.cfdir"),
         "stderr={err}"
     );
+    // Phase6-M4: without --seed, dry-run must keep the 0.5.0 stats shape
+    // (no would_seed_reuse / would_rechunk / seed_* noise).
+    assert!(
+        !err.contains("would_seed_reuse=")
+            && !err.contains("would_rechunk=")
+            && !err.contains("seed_reused_files=")
+            && !err.contains("rechunked_files="),
+        "no-seed dry-run must omit seed counters; stderr={err}"
+    );
     assert!(!out_cfdir.exists(), "dry-run must not write .cfdir");
     assert!(
         !store.join("meta.toml").exists(),
@@ -3475,5 +3484,153 @@ fn archive_dry_run_with_seed_changed_file_would_rechunk() {
     assert_eq!(
         prior_mtime, after_mtime,
         "dry-run must not touch the prior .cfdir"
+    );
+}
+
+// --- Phase 6 M4: no-seed / legacy path regression (0.5.0 compat) ---
+
+/// Without `--seed`, archive (+ dry-run) must keep the 0.5.0 contract:
+/// legacy stats shape, store+.cfdir writes (or neither on dry-run), and
+/// `.cfidx` make / `push --verify` on both listing kinds stay green.
+#[test]
+fn phase6_m4_no_seed_legacy_path_regression() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"m4-legacy-a\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"m4-legacy-b\n").unwrap();
+    fs::write(src.join("a-copy.txt"), b"m4-legacy-a\n").unwrap();
+
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("release.cfdir");
+    let dry_cfdir = dir.path().join("dry.cfdir");
+    let dry_store = dir.path().join("dry-store");
+    let cfidx = dir.path().join("hello.cfidx");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+
+    // --- dry-run without --seed: no writes, legacy would_* only ---
+    let dry = run_ok(&[
+        "archive",
+        "--store",
+        dry_store.to_str().unwrap(),
+        "-o",
+        dry_cfdir.to_str().unwrap(),
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let dry_err = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        dry_err.contains("dry-run")
+            && dry_err.contains("would_write=")
+            && dry_err.contains("would_reuse="),
+        "no-seed dry-run should use would_write/would_reuse; stderr={dry_err}"
+    );
+    assert!(
+        !dry_err.contains("would_seed_reuse=")
+            && !dry_err.contains("would_rechunk=")
+            && !dry_err.contains("seed_reused_files="),
+        "no-seed dry-run must omit seed counters; stderr={dry_err}"
+    );
+    assert!(!dry_cfdir.exists(), "dry-run must not write .cfdir");
+    assert!(
+        !dry_store.join("meta.toml").exists(),
+        "dry-run must not create store"
+    );
+
+    // --- write path without --seed: store + .cfdir, legacy new=/reused= ---
+    let wrote = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let wrote_err = String::from_utf8_lossy(&wrote.stderr);
+    assert!(
+        wrote_err.contains("archive: wrote")
+            && wrote_err.contains("new=")
+            && wrote_err.contains("reused="),
+        "no-seed archive should print legacy stats; stderr={wrote_err}"
+    );
+    assert!(
+        !wrote_err.contains("seed_reused_files=") && !wrote_err.contains("rechunked_files="),
+        "no-seed archive must omit seed counters; stderr={wrote_err}"
+    );
+    assert!(cfdir.is_file(), "archive must write .cfdir");
+    assert!(
+        store.join("meta.toml").is_file(),
+        "archive must create store"
+    );
+    assert!(
+        count_cnk(&store.join("chunks")) >= 1,
+        "archive must write chunks"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+
+    // --- .cfidx make + verify still works alongside .cfdir ---
+    let hello = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfidx.to_str().unwrap(),
+        hello.to_str().unwrap(),
+    ]);
+    assert!(cfidx.is_file(), "make must write .cfidx");
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        cfidx.to_str().unwrap(),
+    ]);
+
+    // --- push --verify on .cfdir and .cfidx ---
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let push_dir = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--verify",
+        cfdir.to_str().unwrap(),
+    ]);
+    let push_dir_err = String::from_utf8_lossy(&push_dir.stderr);
+    assert!(push_dir_err.contains("failed=0"), "stderr={push_dir_err}");
+    assert!(
+        push_dir_err.contains("push: verify ok") || push_dir_err.contains("verify: ok"),
+        "push --verify .cfdir should succeed; stderr={push_dir_err}"
+    );
+
+    let push_idx = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--verify",
+        cfidx.to_str().unwrap(),
+    ]);
+    let push_idx_err = String::from_utf8_lossy(&push_idx.stderr);
+    assert!(push_idx_err.contains("failed=0"), "stderr={push_idx_err}");
+    assert!(
+        push_idx_err.contains("push: verify ok") || push_idx_err.contains("verify: ok"),
+        "push --verify .cfidx should succeed; stderr={push_idx_err}"
+    );
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "expected at least one PUT across push --verify; got {}",
+        put_count.load(Ordering::SeqCst)
     );
 }
