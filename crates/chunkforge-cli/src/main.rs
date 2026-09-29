@@ -1,13 +1,13 @@
-//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff (+ chunk-id debug).
 
 mod parallel;
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
-    DIR_MAGIC_PREFIX, DirArchive, DirEntry, DirEntryKind, FLAG_CHUNKS_COMPRESSED_IN_STORE, Index,
-    IndexEntry, MAGIC_PREFIX, SeedDecision, decide_seed_for_entry, entry_length, seed_file_map,
-    validate_archive_path,
+    DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
+    FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
+    decide_seed_for_entry, diff_dir_archives, entry_length, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
@@ -24,7 +24,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff)",
     long_about = None
 )]
 struct Cli {
@@ -282,6 +282,27 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
+    /// Compare two `.cfdir` directory listings (path + chunk set diff)
+    ///
+    /// Loads both sides as `.cfdir` only (`.cfidx` or bad magic → error). Reports
+    /// path-level **added** / **removed** / **changed** (content) /
+    /// **meta_changed** (same blake3, mode/mtime differ), then a stable summary
+    /// line on **stdout**:
+    /// `diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunks_only_left=… chunks_only_right=…`
+    /// Path lists are also on stdout (non-empty categories only). Exit **0** when
+    /// there are no path or chunk-set differences; exit **1** when any
+    /// added/removed/changed/meta_changed or chunks_only_left/right is non-zero.
+    /// Usage / decode errors use the usual non-zero clap/anyhow path.
+    /// `--tree` (tree↔listing) is deferred to a later milestone.
+    Diff {
+        /// Max paths to print per category (default: unlimited)
+        #[arg(long = "max-paths", value_name = "N")]
+        max_paths: Option<usize>,
+        /// Left (baseline) `.cfdir`
+        left: PathBuf,
+        /// Right (comparison) `.cfdir`
+        right: PathBuf,
+    },
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -475,6 +496,11 @@ fn run() -> Result<()> {
             let jobs = parse_jobs(jobs)?;
             cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs)
         }
+        Commands::Diff {
+            max_paths,
+            left,
+            right,
+        } => cmd_diff(&left, &right, max_paths),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -1204,6 +1230,77 @@ fn load_dir_archive(path: &Path) -> Result<DirArchive> {
     let bytes = fs::read(path).with_context(|| format!("read archive {}", path.display()))?;
     DirArchive::decode(&bytes)
         .map_err(|e| anyhow::anyhow!("decode archive {}: {e}", path.display()))
+}
+
+/// Load a `.cfdir` for `diff` (reject `.cfidx` / bad magic).
+fn load_cfdir_for_diff(path: &Path) -> Result<DirArchive> {
+    match peek_listing_kind(path)? {
+        ListingKind::DirArchive => {}
+        ListingKind::Index => bail!(
+            "diff expects `.cfdir` listings; {} looks like a `.cfidx` (single-blob; use verify/cmp)",
+            path.display()
+        ),
+    }
+    let arch = load_dir_archive(path)?;
+    arch.validate()
+        .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", path.display()))?;
+    Ok(arch)
+}
+
+/// Format the stable machine-parseable `diff:` summary line (exact field names).
+fn format_diff_summary(report: &DiffReport) -> String {
+    format!(
+        "diff: added={} removed={} changed={} meta_changed={} chunks_shared={} chunks_only_left={} chunks_only_right={}",
+        report.added.len(),
+        report.removed.len(),
+        report.changed.len(),
+        report.meta_changed.len(),
+        report.chunks_shared,
+        report.chunks_only_left,
+        report.chunks_only_right,
+    )
+}
+
+fn print_diff_path_category(label: &str, paths: &[String], max_paths: Option<usize>) {
+    if paths.is_empty() {
+        return;
+    }
+    println!("{label}:");
+    let limit = max_paths.unwrap_or(usize::MAX);
+    let shown = paths.len().min(limit);
+    for path in &paths[..shown] {
+        println!("  {path}");
+    }
+    if paths.len() > shown {
+        let more = paths.len() - shown;
+        println!("  ... and {more} more");
+    }
+}
+
+fn cmd_diff(left: &Path, right: &Path, max_paths: Option<usize>) -> Result<()> {
+    let left_arch = load_cfdir_for_diff(left)?;
+    let right_arch = load_cfdir_for_diff(right)?;
+    let report = diff_dir_archives(&left_arch, &right_arch);
+
+    print_diff_path_category("added", &report.added, max_paths);
+    print_diff_path_category("removed", &report.removed, max_paths);
+    print_diff_path_category("changed", &report.changed, max_paths);
+    print_diff_path_category("meta_changed", &report.meta_changed, max_paths);
+
+    let summary = format_diff_summary(&report);
+    // Path lists + summary on stdout (documented in `diff --help`).
+    println!("{summary}");
+
+    let has_path_diff = !(report.added.is_empty()
+        && report.removed.is_empty()
+        && report.changed.is_empty()
+        && report.meta_changed.is_empty());
+    let has_chunk_diff = report.chunks_only_left > 0 || report.chunks_only_right > 0;
+    if has_path_diff || has_chunk_diff {
+        // Like diff(1): differences → exit 1 without an "error:" prefix.
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// Peek listing magic: `.cfidx` vs `.cfdir`.

@@ -96,6 +96,7 @@ fn help_and_version() {
     assert!(help_s.contains("extract"), "{help_s}");
     assert!(help_s.contains("cat"), "{help_s}");
     assert!(help_s.contains("verify"), "{help_s}");
+    assert!(help_s.contains("diff"), "{help_s}");
 
     let ver = run_ok(&["--version"]);
     let ver_s = String::from_utf8_lossy(&ver.stdout);
@@ -4082,5 +4083,244 @@ fn pull_rejects_http_templates_on_local_source() {
             || err.contains("header")
             || err.contains("http"),
         "stderr={err}"
+    );
+}
+
+// --- Phase 7 M2: chunkforge diff ---
+
+fn parse_diff_summary(stdout: &str) -> &str {
+    stdout
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("diff: "))
+        .expect("missing diff: summary line")
+}
+
+#[test]
+fn diff_help_lists_max_paths_and_stdout_summary() {
+    let out = run_ok(&["diff", "--help"]);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("--max-paths"),
+        "diff --help should list --max-paths:\n{s}"
+    );
+    assert!(
+        s.contains("stdout") || s.contains("summary"),
+        "diff --help should document summary on stdout:\n{s}"
+    );
+    assert!(
+        s.contains("cfdir") || s.contains(".cfdir"),
+        "diff --help should mention .cfdir:\n{s}"
+    );
+}
+
+#[test]
+fn diff_identical_cfdirs_exit_zero_all_zeros() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-diff-identical\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"shared\n").unwrap();
+
+    let store = dir.path().join("store");
+    let left = dir.path().join("left.cfdir");
+    let right = dir.path().join("right.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        left.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    // Second archive of the same tree → identical listing content for File paths.
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        right.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["diff", left.to_str().unwrap(), right.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let summary = parse_diff_summary(&stdout);
+    assert_eq!(
+        summary,
+        "diff: added=0 removed=0 changed=0 meta_changed=0 chunks_shared=2 chunks_only_left=0 chunks_only_right=0",
+        "stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("added:\n")
+            && !stdout.contains("removed:\n")
+            && !stdout.contains("changed:\n")
+            && !stdout.contains("meta_changed:\n"),
+        "identical diff should omit empty path categories; stdout={stdout}"
+    );
+}
+
+#[test]
+fn diff_changed_file_exit_nonzero() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-diff-v1\n").unwrap();
+    let hello = fs::read(fixtures_dir().join("hello.txt")).expect("fixtures/hello.txt");
+    fs::write(src.join("sub").join("b.txt"), &hello).unwrap();
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    fs::write(src.join("a.txt"), b"hello-diff-v2\n").unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&["diff", v1.to_str().unwrap(), v2.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "diff with changes should exit 1; status={:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let summary = parse_diff_summary(&stdout);
+    assert!(
+        summary.contains("changed=1"),
+        "expected changed=1 in summary; got {summary}; stdout={stdout}"
+    );
+    assert!(
+        summary.contains("added=0") && summary.contains("removed=0"),
+        "only content change expected; summary={summary}"
+    );
+    assert!(
+        stdout.contains("changed:") && stdout.contains("a.txt"),
+        "should list changed path a.txt; stdout={stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("error:"),
+        "differences must not print error: prefix; stderr={stderr}"
+    );
+}
+
+#[test]
+fn diff_rejects_cfidx() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("single.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Need a real cfdir for the other side so we exercise cfidx rejection.
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let fail_left = run_fail(&["diff", idx.to_str().unwrap(), cfdir.to_str().unwrap()]);
+    let err = String::from_utf8_lossy(&fail_left.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx") || err.contains("cfdir"),
+        "should reject .cfidx; stderr={err}"
+    );
+
+    let fail_right = run_fail(&["diff", cfdir.to_str().unwrap(), idx.to_str().unwrap()]);
+    let err2 = String::from_utf8_lossy(&fail_right.stderr);
+    assert!(
+        err2.contains("cfidx") || err2.contains(".cfidx") || err2.contains("cfdir"),
+        "should reject .cfidx on right; stderr={err2}"
+    );
+}
+
+#[test]
+fn diff_max_paths_truncates_listing() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    for i in 0..5 {
+        fs::write(src.join(format!("f{i}.txt")), format!("content-{i}\n")).unwrap();
+    }
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Add two new files on the right.
+    fs::write(src.join("new0.txt"), b"new0\n").unwrap();
+    fs::write(src.join("new1.txt"), b"new1\n").unwrap();
+    fs::write(src.join("new2.txt"), b"new2\n").unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&[
+        "diff",
+        "--max-paths",
+        "1",
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("added:"),
+        "should have added category; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("... and 2 more"),
+        "max-paths=1 with 3 added should truncate; stdout={stdout}"
+    );
+    let summary = parse_diff_summary(&stdout);
+    assert!(
+        summary.contains("added=3"),
+        "summary counts must stay full; summary={summary}"
     );
 }
