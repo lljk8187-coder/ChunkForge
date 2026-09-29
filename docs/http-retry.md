@@ -3,7 +3,8 @@
 Bounded whole-chunk retries for **transient** HTTP failures on
 `HttpChunkSource` / `HttpChunkSink`. Default **`--http-retries 0`** ≡ 0.7.0
 (single attempt). See also [remote-layout.md](remote-layout.md),
-[push.md](push.md), [pull.md](pull.md).
+[push.md](push.md), [pull.md](pull.md), [sigv4.md](sigv4.md),
+[diff.md](diff.md) (`--format json`).
 
 ## Status → class
 
@@ -55,4 +56,12 @@ chunkforge push --store ./store --dest http://127.0.0.1:8766 \
 # 401 — permanent; summary shows failed_permanent≥1, not retried
 chunkforge push --store ./store --dest http://127.0.0.1:8766 \
   --http-retries 5 release.cfdir
+```
+
+## Demo
+
+```bash
+bash scripts/demo_http_retry.sh
+# put_stub --fail-transient → --http-retries 0 fails; ≥2/3 succeeds;
+# push summary contains retries=
 ```

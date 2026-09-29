@@ -117,6 +117,10 @@ chunkforge store scrub --store ./empty-store
 `doctor --deep` is still presence-oriented (fetch/discard), **not** a full-store
 scrub. Use `store scrub` when you want every on-disk `.cnk` rehashed.
 
+There is **no** remote scrub command. For listing-referenced remote integrity,
+use **`verify --source`** (default hash check after GET; optional
+`--http-retries` — see [http-retry.md](http-retry.md)).
+
 ## `.cfdir` notes (Phase5-M5)
 
 - `doctor` / `gc` magic-dispatch each positional arg: `.cfidx` (single blob) or

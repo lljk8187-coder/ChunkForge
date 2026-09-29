@@ -306,6 +306,13 @@ let bytes = src.get(&chunk_id)?;
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
 
+## Related docs
+
+- [http-retry.md](http-retry.md) — `--http-retries`, error classes, demo
+- [sigv4.md](sigv4.md) — optional minimal `--aws-sigv4`
+- [diff.md](diff.md) — `diff --format json`
+- [push.md](push.md) / [pull.md](pull.md) — summaries with `retries=`
+
 ## Still out of scope
 
 - Mixed compression over HTTP; byte-range / partial-chunk retries (Phase 8 retries **whole chunks** only)

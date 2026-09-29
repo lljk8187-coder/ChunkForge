@@ -5,7 +5,9 @@ Mirrors the default CAS layout under --root: request path
 ``/chunks/<2hex>/<62hex>.cnk`` → ``<root>/chunks/<2hex>/<62hex>.cnk``.
 
 Supports PUT (and POST) to write bodies, HEAD for presence, GET for verify/cat.
-Not a production object store — Phase 4 M4 smoke only.
+Optional ``--fail-transient N``: first N PUT/POST attempts return HTTP 503
+(body still consumed), then behave normally — for Phase 8 HTTP-retry demos.
+Not a production object store — Phase 4+ smoke only.
 """
 
 from __future__ import annotations
@@ -14,11 +16,14 @@ import argparse
 import http.server
 import os
 import sys
+import threading
 from pathlib import Path
 
 
 class PutStubHandler(http.server.BaseHTTPRequestHandler):
     root: Path  # set on the class before serving
+    fail_lock = threading.Lock()
+    fail_remaining: int = 0
 
     def log_message(self, fmt: str, *args) -> None:  # quieter than default
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -33,6 +38,14 @@ class PutStubHandler(http.server.BaseHTTPRequestHandler):
         except ValueError as exc:
             raise PermissionError(f"path escapes root: {path}") from exc
         return dest
+
+    def _consume_fail_transient(self) -> bool:
+        """Return True if this PUT should be answered with 503."""
+        with self.fail_lock:
+            if self.fail_remaining > 0:
+                PutStubHandler.fail_remaining -= 1
+                return True
+        return False
 
     def do_HEAD(self) -> None:  # noqa: N802
         try:
@@ -81,6 +94,13 @@ class PutStubHandler(http.server.BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length > 0 else b""
+        # Consume body before deciding 503 so ureq does not hang.
+        if self._consume_fail_transient():
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            sys.stderr.write("put_stub: injected 503 (fail-transient)\n")
+            return
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Atomic-ish: write temp then rename
         tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -110,15 +130,28 @@ def main() -> int:
         default="127.0.0.1",
         help="Bind address (default 127.0.0.1)",
     )
+    ap.add_argument(
+        "--fail-transient",
+        type=int,
+        default=0,
+        metavar="N",
+        help="First N PUT/POST attempts return HTTP 503 (default 0)",
+    )
     args = ap.parse_args()
+
+    if args.fail_transient < 0:
+        print("error: --fail-transient must be >= 0", file=sys.stderr)
+        return 2
 
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     PutStubHandler.root = root
+    PutStubHandler.fail_remaining = args.fail_transient
 
     server = http.server.ThreadingHTTPServer((args.bind, args.port), PutStubHandler)
     print(
-        f"put_stub: listening on http://{args.bind}:{args.port} root={root}",
+        f"put_stub: listening on http://{args.bind}:{args.port} root={root}"
+        f" fail_transient={args.fail_transient}",
         flush=True,
     )
     try:

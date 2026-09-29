@@ -4,8 +4,9 @@ Compare two directory listings (`.cfdir`), or a live source tree against a
 listing (`--tree`). **Read-only**: never writes a local store or a `.cfdir`.
 
 Phase 7 (+ Phase 8 `--format json`). See also [`doctor-gc.md`](doctor-gc.md)
-for presence / GC tooling, and [`dir-format.md`](dir-format.md) for `.cfdir`
-layout.
+for presence / GC tooling, [`dir-format.md`](dir-format.md) for `.cfdir`
+layout, [`http-retry.md`](http-retry.md) for HTTP retries / error classes,
+and [`sigv4.md`](sigv4.md) for optional `--aws-sigv4`.
 
 ## Listing ↔ listing
 

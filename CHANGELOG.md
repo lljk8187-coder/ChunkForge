@@ -7,36 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-29
+
+Phase 8 closeout: bounded HTTP retries (`--http-retries`), error-class push/pull
+summaries, `diff --format json`, and optional minimal in-process SigV4
+(`--aws-sigv4`), plus `scripts/demo_http_retry.sh`. `.cfidx` / `.cfdir` v1 bytes
+and `ChunkSource` / `ChunkSink` signatures stay frozen; default retries=0 and
+diff text match **0.7.0**. No full AWS SDK, multipart, packfile, write mount,
+bidirectional sync, video analysis, remote scrub, or byte-range resume.
+
 ### Added
 
-- **Minimal in-process AWS SigV4** (Phase 8 M6 / P1 O1): `chunkforge-remote`
-  signs GET/HEAD/PUT with AWS4-HMAC-SHA256 (`hmac` + `sha2`; **no** `aws-sdk-*`).
-  Payload hash = `hex(SHA256(body))` (empty → empty hash; never `UNSIGNED-PAYLOAD`).
-  CLI `--aws-sigv4` (default **off** ≡ 0.7.0); credentials from
-  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (required when flag on), optional
-  `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` + warning). Conflicts
-  with `--header Authorization:…` → clear error. Golden-vector unit tests + stub
-  header assertions. Docs: `docs/sigv4.md`. Non-goals: ListObjects, multipart,
-  IMDS/SSO, full credential chain, chunked signing.
-
+- **`--http-retries N`** (Phase 8 M2 / G1–G4): extra HTTP attempts for transient
+  failures (default **0** ≡ 0.7.0 single attempt) on `push` / `pull` / `verify` /
+  `doctor` / `cat` / `extract` (and `mount` via shared HTTP args). Optional
+  `--http-retry-backoff-ms` (default 100; exponential + jitter, capped at 2s).
+  Local `--store` / `file://` ignore the flags. Shared `RetryPolicy` in
+  `chunkforge-remote` for `HttpChunkSource` / `HttpChunkSink`. `push` / `pull`
+  summaries include `retries=`; `doctor` ok line too — see `docs/http-retry.md`
+- **HTTP error classification** (Phase 8 M3): `ErrorClass` +
+  `classify_http_status` / `classify_source_error` / `classify_sink_error` (no
+  `ChunkSource`/`ChunkSink` signature change). push/pull summaries add
+  `failed_transient=` / `failed_permanent=` (Missing+Corrupt → permanent).
+  401 vs 503 distinguishable; hash / Corrupt failures are never retried
 - **`diff --format text|json`** (Phase 8 M4 / G5): default **`text`** ≡ 0.7.0
   path lists + `diff:` summary; **`json`** emits one object with stable
   `added` / `removed` / `changed` / `meta_changed` arrays plus
   `chunks_shared` / `chunks_only_left` / `chunks_only_right`. Exit codes
-  unchanged and format-independent. See `docs/diff.md`.
+  unchanged and format-independent — see `docs/diff.md`
+- **Minimal in-process AWS SigV4** (Phase 8 M6 / P1): `chunkforge-remote` signs
+  GET/HEAD/PUT with AWS4-HMAC-SHA256 (`hmac` + `sha2`; **no** `aws-sdk-*`).
+  Payload hash = `hex(SHA256(body))` (empty → empty hash; never
+  `UNSIGNED-PAYLOAD`). CLI `--aws-sigv4` (default **off** ≡ 0.7.0); credentials
+  from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (required when flag on),
+  optional `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` + warning).
+  Conflicts with `--header Authorization:…` → clear error. Golden-vector unit
+  tests + stub header assertions — see `docs/sigv4.md`
+- **`scripts/demo_http_retry.sh`** + docs: local smoke (`put_stub.py
+  --fail-transient` → `--http-retries 0` fails on 503; `≥2`/`3` succeeds;
+  summary contains `retries=`); `docs/http-retry.md`; cross-links in
+  remote-layout / sigv4 / diff
 
-- **HTTP error classification** (Phase 8 M3): `ErrorClass` + `classify_http_status` /
-  `classify_source_error` / `classify_sink_error` in `chunkforge-remote` (no
-  `ChunkSource`/`ChunkSink` signature change). push/pull summaries add
-  `failed_transient=` / `failed_permanent=` (Missing+Corrupt → permanent);
-  `docs/http-retry.md` status→class table. 401 vs 503 distinguishable; hash
-  failures never count as retries.
+### Not delivered / deferred (Phase 8)
 
-- **`--http-retries N`** (Phase 8 M2): extra HTTP attempts for transient failures
-  (default **0** ≡ 0.7.0 single attempt) on `push` / `pull` / `verify` / `doctor` /
-  `cat` / `extract` (and `mount` via shared HTTP args). Optional
-  `--http-retry-backoff-ms` (default 100). Local `--store` / `file://` ignore the
-  flags. `push` / `pull` summaries include `retries=`; `doctor` ok line too.
+- Full **`aws-sdk-*`** / credential provider chain / IMDS / SSO / ListObjects
+- Complete S3 **multipart** upload API (single-object PUT only)
+- **Packfile** / multi-chunk single object (loose `.cnk` layout unchanged)
+- Write mount / COW / writable FUSE
+- Bidirectional sync / watch directories / conflict resolution
+- Video analysis / GPU·LLM / P2P
+- **Remote scrub** / remote GC / lifecycle (use `verify --source` for listing
+  ref integrity; `store scrub` / `gc` stay **local** `--store` only)
+- Byte-range / partial-chunk resume (Phase 8 retries **whole chunks** only)
+- `push` still does **not** upload listings
+
+### Non-goals (Phase 8)
+
+- No rewrite of `.cfidx` / `.cfdir` v1 byte layouts
+- No change to `ChunkSource` / `ChunkSink` method signatures
+- No full AWS SDK / multipart / packfile; HTTP surface remains **ureq** (+
+  optional minimal SigV4)
+- No write mount; no bidirectional sync; no video analysis; no remote scrub;
+  no byte-range resume
+
+### Notes
+
+- Without new flags, HTTP / push / pull / verify / doctor / diff text behaviour
+  matches **0.7.0** (default `--http-retries 0`, `--format text`, SigV4 off)
+- Default HTTP chunk layout remains byte-compatible with **0.7.0** / **0.6.0**
+- Responsibilities: `verify --source` = remote listing-ref integrity (not
+  remote scrub); `doctor` = presence; `gc` / `store scrub` = local only;
+  `diff` = listing/tree compare (report only)
 
 ## [0.7.0] — 2026-09-29
 

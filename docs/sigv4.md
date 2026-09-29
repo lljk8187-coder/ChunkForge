@@ -108,4 +108,5 @@ Object examples with a fixed clock).
 | ❌ Full credential provider chain (IMDS/SSO/files) | Env only |
 | ❌ Presigned URL generation | Use external tools + `--url-template` if needed |
 
-See also [remote-layout.md](remote-layout.md) and [http-retry.md](http-retry.md).
+See also [remote-layout.md](remote-layout.md), [http-retry.md](http-retry.md),
+and [diff.md](diff.md) (`--format json`).

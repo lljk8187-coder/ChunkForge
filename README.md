@@ -13,8 +13,9 @@
 | **Phase 5** | **0.5.0** | `.cfdir` v1 directory archive + `DirFs` RO mount; `archive` / `extract` / tree `verify`; `push`/`doctor`/`gc` accept `.cfdir`; `push --verify`; `archive --dry-run` |
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
+| **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 
-## Non-goals (current / Phase 7–8)
+## Non-goals (current / Phase 8)
 
 | Not this | Why |
 |---|---|
@@ -27,11 +28,12 @@
 | ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ **Remote scrub** | `store scrub` only rehashes a **local** `--store`; no remote bitrot scan |
+| ❌ **Byte-range / partial-chunk resume** | Phase 8 retries **whole chunks** only (chunks ≤256KiB) |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), and incremental `archive --seed` + `pull` (Phase 6). Phase 7 (**0.7.0**) adds listing **`diff`**, local CAS **`store scrub`**, **`--seed-trust-mtime`**, and **`extract --force`**.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), and listing **`diff`** / **`store scrub`** (Phase 7). Phase 8 (**0.8.0**) adds HTTP **`--http-retries`**, error-class summaries, **`diff --format json`**, and optional minimal **`--aws-sigv4`**.
 
 ## Quick start (local CAS)
 
@@ -260,6 +262,54 @@ echo 'hello-diff-v2' > /tmp/cf-p7/src/a.txt
 ./target/debug/chunkforge store scrub --store /tmp/cf-p7/store
 # scrub: ok=N corrupt=0 unreadable=0
 ```
+
+## Phase 8: HTTP retries + diff JSON + minimal SigV4 (**0.8.0**)
+
+HTTP data-plane resilience and scriptable ops on top of Phase 7. Default
+`--http-retries 0`, `diff --format text`, and SigV4 **off** match **0.7.0**.
+
+- **`--http-retries N`** / **`--http-retry-backoff-ms`**: bounded whole-chunk
+  retries for transient HTTP failures (408/429/5xx/timeout); local `--store` /
+  `file://` ignore the flags — see [docs/http-retry.md](docs/http-retry.md)
+- **Error-class summaries**: push/pull report `failed_transient=` /
+  `failed_permanent=` / `retries=`; 401 vs 503 distinguishable; Corrupt never
+  retried
+- **`diff --format text|json`**: default text ≡ 0.7.0; JSON stable fields —
+  see [docs/diff.md](docs/diff.md)
+- **`--aws-sigv4`** (P1, default off): minimal in-process AWS4-HMAC-SHA256 from
+  env credentials; **no** `aws-sdk-*` — see [docs/sigv4.md](docs/sigv4.md)
+- Quickstart smoke: [`scripts/demo_http_retry.sh`](scripts/demo_http_retry.sh)
+  (local `put_stub --fail-transient`: retries=0 fails on 503; retries=3
+  succeeds; summary contains `retries=`)
+
+**Still not this Phase:** full AWS SDK / multipart / packfile / write mount /
+bidirectional sync / video analysis / remote scrub / byte-range resume. Remote
+listing-ref integrity → `verify --source` (not a remote scrub command).
+
+```bash
+# HTTP retry smoke (or: bash scripts/demo_http_retry.sh)
+cargo build -p chunkforge-cli
+mkdir -p /tmp/cf-p8/src /tmp/cf-p8/mirror
+echo 'hello-retry-v1' > /tmp/cf-p8/src/a.txt
+cp fixtures/hello.txt /tmp/cf-p8/src/b.txt
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p8/store -o /tmp/cf-p8/v1.cfdir /tmp/cf-p8/src
+
+# Terminal 1 (inject two 503s then succeed):
+#   python3 scripts/put_stub.py --root /tmp/cf-p8/mirror --port 8768 --fail-transient 2
+./target/debug/chunkforge push --store /tmp/cf-p8/store \
+  --dest http://127.0.0.1:8768 --http-retries 3 --http-retry-backoff-ms 0 \
+  /tmp/cf-p8/v1.cfdir
+# → uploaded≥1 failed=0 … retries=3
+
+./target/debug/chunkforge diff --format json \
+  /tmp/cf-p8/v1.cfdir /tmp/cf-p8/v1.cfdir
+# → identical JSON object; exit 0
+```
+
+Details: [docs/http-retry.md](docs/http-retry.md),
+[docs/remote-layout.md](docs/remote-layout.md),
+[docs/sigv4.md](docs/sigv4.md), [docs/diff.md](docs/diff.md).
 
 ## Incremental dedup demo
 
