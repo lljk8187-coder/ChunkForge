@@ -1,0 +1,23 @@
+[package]
+name = "chunkforge-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Local content-addressed chunk store (CAS) for ChunkForge"
+readme = false
+
+[features]
+default = []
+# Optional zstd compression for on-disk chunk payloads.
+# Hash is always over plaintext (before compress / after decompress).
+# A store's compression policy is uniform (recorded in meta.toml).
+zstd = ["dep:zstd"]
+
+[dependencies]
+chunkforge-chunk = { workspace = true }
+thiserror = { workspace = true }
+zstd = { version = "0.13", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

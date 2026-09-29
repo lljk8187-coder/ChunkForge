@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/chunkforge-chunk"]
+members = [
+    "crates/chunkforge-chunk",
+    "crates/chunkforge-store",
+]
 
 [workspace.package]
 edition = "2024"
@@ -12,3 +15,5 @@ version = "0.1.0"
 blake3 = "1"
 fastcdc = "5"
 thiserror = "2"
+tempfile = "3"
+chunkforge-chunk = { path = "crates/chunkforge-chunk" }

@@ -16,15 +16,18 @@
 
 ## Status
 
-**M1 (current):** workspace + `chunkforge-chunk` (FastCDC v2020 + BLAKE3 `ChunkId`).
+**M2 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` (local CAS: `put`/`get`/`has`, atomic writes, optional `zstd` feature).
 
-Later milestones add local CAS store, `.cfidx`, and the `chunkforge` CLI (`make` / `cat` / `verify`).
+Later milestones add `.cfidx` and the `chunkforge` CLI (`make` / `cat` / `verify`).
 
 ## Develop
 
 ```bash
 # Requires Rust 1.85+ (edition 2024); tested on stable 1.98+
 cargo test -p chunkforge-chunk
+cargo test -p chunkforge-store
+# optional compression:
+cargo test -p chunkforge-store --features zstd
 ```
 
 ## License
