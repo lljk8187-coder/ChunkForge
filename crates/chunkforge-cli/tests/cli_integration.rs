@@ -4578,3 +4578,194 @@ fn count_cfdirs(root: &Path) -> usize {
     }
     n
 }
+
+// --- Phase 7 M4: store scrub ---
+
+#[test]
+fn store_scrub_help_lists_flags() {
+    let help = run_ok(&["--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("store"),
+        "top-level help should list store:\n{help_s}"
+    );
+
+    let s = run_ok(&["store", "--help"]);
+    let s_out = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        s_out.contains("scrub"),
+        "store help should list scrub:\n{s_out}"
+    );
+
+    let scrub = run_ok(&["store", "scrub", "--help"]);
+    let scrub_s = String::from_utf8_lossy(&scrub.stdout);
+    assert!(scrub_s.contains("--store"), "{scrub_s}");
+    assert!(scrub_s.contains("--jobs"), "{scrub_s}");
+}
+
+#[test]
+fn store_scrub_healthy_store_ok() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("scrub: ok=")
+            && l.contains("corrupt=0")
+            && l.contains("unreadable=0")),
+        "expected healthy summary; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("scrub: corrupt "),
+        "healthy store must not print corrupt lines; stdout={stdout}"
+    );
+}
+
+#[test]
+fn store_scrub_empty_store_zeros_exit_zero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    // Create empty store via make of empty fixture, then remove all .cnk? Or
+    // open via Store::create. Empty chunks dir after create is fine.
+    {
+        use chunkforge_store::{Compression, Store};
+        Store::create(&store, Compression::None).unwrap();
+    }
+
+    let out = run_ok(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == "scrub: ok=0 corrupt=0 unreadable=0"),
+        "empty store summary; stdout={stdout}"
+    );
+}
+
+#[test]
+fn store_scrub_corrupt_byte_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (cnk_path, hex_id) = first_cnk_id(&store.join("chunks"));
+    let mut bytes = fs::read(&cnk_path).unwrap();
+    bytes[0] ^= 0xff;
+    fs::write(&cnk_path, &bytes).unwrap();
+
+    let fail = run_fail(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&fail.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == format!("scrub: corrupt {hex_id}")),
+        "must report corrupt id {hex_id}; stdout={stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| {
+            l.starts_with("scrub: ok=") && l.contains("corrupt=1") && l.contains("unreadable=0")
+        }),
+        "summary must show corrupt=1; stdout={stdout}"
+    );
+    // Read-only: file still present after scrub.
+    assert!(cnk_path.is_file(), "scrub must not delete corrupt chunk");
+}
+
+#[test]
+fn store_scrub_unreadable_chunk() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (cnk_path, hex_id) = first_cnk_id(&store.join("chunks"));
+    // Make the chunk unreadable to the current user.
+    let mut perms = fs::metadata(&cnk_path).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o000);
+    fs::set_permissions(&cnk_path, perms).unwrap();
+
+    let fail = run_fail(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&fail.stdout);
+    // Restore perms so tempdir cleanup succeeds.
+    let mut restore = fs::metadata(&cnk_path).unwrap().permissions();
+    restore.set_mode(0o644);
+    let _ = fs::set_permissions(&cnk_path, restore);
+
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == format!("scrub: unreadable {hex_id}")),
+        "must report unreadable id {hex_id}; stdout={stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| {
+            l.starts_with("scrub: ok=") && l.contains("unreadable=1") && l.contains("corrupt=0")
+        }),
+        "summary must show unreadable=1; stdout={stdout}"
+    );
+}
+
+#[test]
+fn store_scrub_jobs_flag_accepted() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("binary-256.bin");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("scrub: ok=")
+            && l.contains("corrupt=0")
+            && l.contains("unreadable=0")),
+        "jobs=4 healthy scrub; stdout={stdout}"
+    );
+}

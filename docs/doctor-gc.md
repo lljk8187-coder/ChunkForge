@@ -1,6 +1,7 @@
-# Doctor / GC
+# Doctor / GC / Scrub
 
-Phase 3 optional CLI utilities for store hygiene. **`doctor` (M4)** and **`gc` (M5)** are implemented.
+Phase 3 optional CLI utilities for store hygiene, plus Phase 7 CAS bitrot scrub.
+**`doctor`**, **`gc`**, and **`store scrub`** are implemented.
 
 ## `chunkforge doctor`
 
@@ -67,6 +68,54 @@ chunkforge gc --store ./store hello.cfidx release.cfdir --apply
 | `--apply` | Serial `remove` of those files; referenced chunks retained |
 | Remote | **Not supported** — `--store` is local only |
 | Exit code | 0 on success (including “nothing to reclaim”); non-zero on I/O / bad listing |
+
+
+## `chunkforge store scrub`
+
+Local-only **bitrot / integrity** check of every loose `.cnk` under `--store`.
+Does **not** take a listing: it walks `Store::list_chunk_ids()` and re-verifies
+plaintext BLAKE3 via `get_verify` (must equal the chunk id).
+
+**Read-only** — never deletes. Pair with `doctor` (presence of referenced chunks)
+and `gc` (reclaim unreferenced). See also [`diff.md`](diff.md) responsibility table.
+
+```bash
+# Healthy store → exit 0
+chunkforge store scrub --store ./store
+# → scrub: ok=N corrupt=0 unreadable=0
+
+# Parallel workers (default --jobs 1 ≡ serial)
+chunkforge store scrub --store ./store --jobs 4
+
+# Empty store → ok=0 corrupt=0 unreadable=0, exit 0
+chunkforge store scrub --store ./empty-store
+
+# Flip one byte in a .cnk → corrupt=1, exit non-zero
+# → scrub: corrupt <64-hex-id>
+# → scrub: ok=… corrupt=1 unreadable=0
+# → error: scrub: 1 bad chunk(s) …
+```
+
+| Rule | Behaviour |
+|---|---|
+| Scope | All layout-conforming loose chunks under local `--store` (no listing required) |
+| Check | `get_verify(id, true)` — decompress (if any) then plaintext BLAKE3 ≡ id |
+| Outcome | success → `ok++`; hash mismatch / corrupt payload → `corrupt++` + `scrub: corrupt <id>`; I/O / decode / other read failure → `unreadable++` + `scrub: unreadable <id>` |
+| Summary | One line: `scrub: ok=… corrupt=… unreadable=…` |
+| `--jobs N` | Bounded concurrency (default **1** = serial); same helper as other CLI commands |
+| Repair | **None** — report only; do not auto-delete (re-pull / replace bad objects separately) |
+| Exit code | corrupt+unreadable == 0 → **0**; else **non-zero** |
+
+## Presence vs scrub vs GC
+
+| Tool | Question it answers |
+|---|---|
+| **`doctor`** | Are chunks **referenced by listings** present? (`has`, optional `--deep` = `get`) |
+| **`store scrub`** | Are **objects already in the local CAS** bit-rot free? (re-BLAKE3; no listing) |
+| **`gc`** | Which loose chunks are **unreferenced** and can be reclaimed? (dry-run / `--apply`) |
+
+`doctor --deep` is still presence-oriented (fetch/discard), **not** a full-store
+scrub. Use `store scrub` when you want every on-disk `.cnk` rehashed.
 
 ## `.cfdir` notes (Phase5-M5)
 

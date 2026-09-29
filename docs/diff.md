@@ -97,9 +97,9 @@ diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunk
 | **`doctor`** | Presence of referenced chunks (`has`, optional `--deep` = `get`) | Yes | Read presence only |
 | **`gc`** | Delete (or dry-run) **unreferenced** loose `.cnk` under a local `--store` | Yes (reference set) | May delete unreferenced only (`--apply`) |
 | **`diff`** | Path / meta / chunk-**set** comparison of two listings, or tree↔listing | Yes (and optional live tree) | **Never** — report only |
-| **`store scrub`** *(upcoming)* | Local CAS **bitrot** check: traverse loose chunks and re-BLAKE3 (`get_verify`); report `ok=` / `corrupt=` / `unreadable=` | **No** (optional refs later) | Read-only rehash; does **not** delete |
+| **`store scrub`** | Local CAS **bitrot** check: traverse loose chunks and re-BLAKE3 (`get_verify`); report `ok=` / `corrupt=` / `unreadable=` | **No** (optional refs later) | Read-only rehash; does **not** delete |
 
-`diff` is **not** sync, merge, or verify. `store scrub` (Phase 7 M4) is the
-intended “deep integrity / bitrot” companion to `doctor` (presence) and `gc`
+`diff` is **not** sync, merge, or verify. `store scrub` is the
+“deep integrity / bitrot” companion to `doctor` (presence) and `gc`
 (unreferenced reclaim) — scrub does **not** require a listing and does **not**
-belong inside `doctor --deep`.
+belong inside `doctor --deep`. See [`doctor-gc.md`](doctor-gc.md).

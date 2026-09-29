@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store (+ chunk-id debug).
 
 mod parallel;
 
@@ -11,7 +11,9 @@ use chunkforge_index::{
     validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
-use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
+use chunkforge_store::{
+    CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
+};
 use clap::{Parser, Subcommand};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -25,7 +27,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store)",
     long_about = None
 )]
 struct Cli {
@@ -328,6 +330,15 @@ enum StoreCommands {
         /// Chunk id as 64 lowercase hex characters
         hex_id: String,
     },
+    /// Rehash every loose chunk in a local store (bitrot / integrity scrub)
+    Scrub {
+        /// Local CAS store directory
+        #[arg(long)]
+        store: PathBuf,
+        /// Parallel verify workers (default 1 = serial)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
+    },
 }
 
 /// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor` / `push` / `pull`.
@@ -513,6 +524,12 @@ fn run() -> Result<()> {
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
+        Commands::Store {
+            command: StoreCommands::Scrub { store, jobs },
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_store_scrub(&store, jobs)
+        }
     }
 }
 
@@ -2547,6 +2564,60 @@ fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
     } else {
         bail!("missing\t{id}");
     }
+}
+
+/// Read-only CAS integrity scrub: list loose chunks and `get_verify` each id.
+///
+/// Prints per-bad-chunk lines (`scrub: corrupt <id>` / `scrub: unreadable <id>`)
+/// and a summary `scrub: ok=… corrupt=… unreadable=…`. Never deletes. Exit
+/// non-zero iff corrupt+unreadable > 0 (empty store → all zeros, exit 0).
+fn cmd_store_scrub(store_path: &Path, jobs: usize) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+    let mut ids = store
+        .list_chunk_ids()
+        .with_context(|| format!("list chunks in {}", store_path.display()))?;
+    ids.sort();
+
+    #[derive(Clone, Copy)]
+    enum ScrubOne {
+        Ok,
+        Corrupt,
+        Unreadable,
+    }
+
+    let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| match store.get_verify(id, true) {
+        Ok(_) => ScrubOne::Ok,
+        Err(StoreError::Corrupt(_)) => ScrubOne::Corrupt,
+        Err(_) => ScrubOne::Unreadable,
+    });
+
+    let mut ok = 0u64;
+    let mut corrupt = 0u64;
+    let mut unreadable = 0u64;
+    for (id, outcome) in ids.iter().zip(outcomes.iter()) {
+        match outcome {
+            ScrubOne::Ok => ok += 1,
+            ScrubOne::Corrupt => {
+                corrupt += 1;
+                println!("scrub: corrupt {id}");
+            }
+            ScrubOne::Unreadable => {
+                unreadable += 1;
+                println!("scrub: unreadable {id}");
+            }
+        }
+    }
+
+    println!("scrub: ok={ok} corrupt={corrupt} unreadable={unreadable}");
+
+    if corrupt + unreadable > 0 {
+        bail!(
+            "scrub: {} bad chunk(s) (corrupt={corrupt} unreadable={unreadable})",
+            corrupt + unreadable
+        );
+    }
+    Ok(())
 }
 
 fn ensure_mount_supported() -> Result<()> {
