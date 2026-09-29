@@ -1,6 +1,6 @@
-//! Remote / external [`ChunkSource`] backends for ChunkForge Phase 2.
+//! Remote / external [`ChunkSource`] backends for ChunkForge.
 //!
-//! - [`HttpChunkSource`]: `GET {base}/chunks/<2hex>/<62hex>.cnk`
+//! - [`HttpChunkSource`]: `GET` via URL/header templates (default ≡ Phase 2 layout)
 //! - [`FileUrlSource`]: `file:///path/to/store` or a plain local path → [`Store::open`]
 //!
 //! See `docs/remote-layout.md` for URL layout and usage.
@@ -8,10 +8,12 @@
 mod file_url;
 mod http;
 mod layout;
+mod template;
 
 pub use file_url::{FileUrlSource, parse_store_location};
-pub use http::HttpChunkSource;
-pub use layout::chunk_http_path;
+pub use http::{DEFAULT_URL_TEMPLATE, HttpChunkSource, HttpChunkSourceBuilder};
+pub use layout::{chunk_http_path, chunk_url};
+pub use template::{TemplateCtx, TemplateError, expand_template, normalize_prefix};
 
 // Re-exports for convenience when depending only on this crate.
 pub use chunkforge_store::{CacheSource, ChunkId, ChunkSource, SourceError, Store};

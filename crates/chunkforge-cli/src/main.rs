@@ -240,7 +240,8 @@ fn open_primary_source(spec: &str) -> Result<Box<dyn ChunkSource>> {
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         let src = HttpChunkSource::builder(trimmed)
             .timeout(Some(Duration::from_secs(30)))
-            .build();
+            .build()
+            .context("build HTTP chunk source")?;
         return Ok(Box::new(src));
     }
     // Local path or file:// — FileUrlSource / Store::open (must already exist).
