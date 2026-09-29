@@ -662,3 +662,127 @@ fn file_url_source_works() {
     ]);
     assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
 }
+
+// --- Phase 2 M5: mount CLI ---
+
+#[test]
+fn mount_help_lists_source_cache_name() {
+    let help = run_ok(&["--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("mount"),
+        "top-level help should list mount:\n{help_s}"
+    );
+
+    let m = run_ok(&["mount", "--help"]);
+    let s = String::from_utf8_lossy(&m.stdout);
+    assert!(s.contains("--source"), "{s}");
+    assert!(s.contains("--cache"), "{s}");
+    assert!(s.contains("--store"), "{s}");
+    assert!(s.contains("--name"), "{s}");
+    assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
+}
+
+#[test]
+fn mount_rejects_both_store_and_source() {
+    let dir = tempdir().unwrap();
+    let mnt = dir.path().join("mnt");
+    fs::create_dir(&mnt).unwrap();
+    let idx = fixtures_dir().join("hello.txt"); // wrong type; clap should fail first on args
+    let out = Command::new(bin())
+        .args([
+            "mount",
+            "--store",
+            dir.path().to_str().unwrap(),
+            "--source",
+            dir.path().to_str().unwrap(),
+            idx.to_str().unwrap(),
+            mnt.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mount_missing_mountpoint_dir_fails_clearly() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let missing = dir.path().join("no-such-mnt");
+    let out = run_fail(&[
+        "mount",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        missing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("mountpoint") || err.contains("does not exist") || err.contains("fuse"),
+        "stderr={err}"
+    );
+}
+
+/// Real FUSE mount via CLI — needs fuse3 + /dev/fuse; skipped by default in CI.
+#[test]
+#[ignore = "requires fuse3 + /dev/fuse; run with --ignored when available"]
+fn mount_cli_hello_cmp_and_ro() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let mnt = dir.path().join("mnt");
+    fs::create_dir(&mnt).unwrap();
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let mnt_s = mnt.to_str().unwrap().to_string();
+    let store_s = store.to_str().unwrap().to_string();
+    let idx_s = idx.to_str().unwrap().to_string();
+    let bin_path = bin();
+
+    let handle = thread::spawn(move || {
+        Command::new(&bin_path)
+            .args(["mount", "--store", &store_s, &idx_s, &mnt_s])
+            .status()
+    });
+
+    let virtual_file = mnt.join("hello");
+    for _ in 0..50 {
+        if virtual_file.is_file() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        virtual_file.is_file(),
+        "mount did not appear at {}",
+        virtual_file.display()
+    );
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&virtual_file).unwrap());
+    assert!(
+        fs::write(&virtual_file, b"x").is_err(),
+        "write should fail on RO mount"
+    );
+
+    let _ = Command::new("fusermount3").args(["-u"]).arg(&mnt).status();
+    let _ = Command::new("fusermount").args(["-u"]).arg(&mnt).status();
+    let _ = handle.join();
+}

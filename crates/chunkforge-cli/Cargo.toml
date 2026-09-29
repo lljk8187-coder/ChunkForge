@@ -4,12 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "ChunkForge CLI: make / cat / verify local CAS indexes"
+description = "ChunkForge CLI: make / cat / verify / mount local CAS indexes"
 readme = false
 
 [[bin]]
 name = "chunkforge"
 path = "src/main.rs"
+
+[features]
+# Default on so Linux (Phase 2 first-class) builds get `mount`. Non-Linux or
+# environments without a FUSE stack: `cargo build -p chunkforge-cli --no-default-features`.
+# Runtime still needs fuse3 + usable /dev/fuse for an actual mount.
+default = ["fuse"]
+fuse = ["dep:chunkforge-fuse"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -19,6 +26,7 @@ chunkforge-chunk = { workspace = true }
 chunkforge-index = { workspace = true }
 chunkforge-store = { workspace = true }
 chunkforge-remote = { workspace = true }
+chunkforge-fuse = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

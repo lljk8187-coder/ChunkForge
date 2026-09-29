@@ -62,6 +62,17 @@ cargo test -p chunkforge-store --features zstd
 
 GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs fmt + clippy + test on push to `main`/`master` and on pull requests. The optional 64MiB `gen_large` smoke is **not** part of CI (timeout / disk); ignored large tests stay ignored.
 
+## Read-only mount (Phase 2)
+
+Linux + fuse3: mount a `.cfidx` as a single read-only file.
+
+```bash
+cargo build -p chunkforge-cli          # fuse feature on by default
+./scripts/demo_mount.sh                # local store: cmp + write-fail + unmount
+```
+
+Details: [docs/mount.md](docs/mount.md). Remote chunk layout: [docs/remote-layout.md](docs/remote-layout.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Changelog: [CHANGELOG.md](CHANGELOG.md).

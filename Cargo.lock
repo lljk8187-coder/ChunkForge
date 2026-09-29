@@ -154,6 +154,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "chunkforge-chunk",
+ "chunkforge-fuse",
  "chunkforge-index",
  "chunkforge-remote",
  "chunkforge-store",

@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / cat / verify (+ chunk-id debug).
+//! ChunkForge CLI: make / cat / verify / mount (+ chunk-id debug).
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
@@ -16,7 +16,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount)",
     long_about = None
 )]
 struct Cli {
@@ -82,6 +82,26 @@ enum Commands {
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
     },
+    /// Mount a .cfidx as a single read-only virtual file (Linux + fuse3)
+    #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
+    Mount {
+        /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Chunk source: local path, `file://`, or `http(s)://`
+        #[arg(long, value_name = "PATH|URL")]
+        source: Option<String>,
+        /// Optional local cache store (filled on miss; never writes primary)
+        #[arg(long, value_name = "DIR")]
+        cache: Option<PathBuf>,
+        /// Override the virtual file name (default: index stem without `.cfidx`)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Input .cfidx
+        index: PathBuf,
+        /// Empty directory to mount onto
+        mountpoint: PathBuf,
+    },
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -140,6 +160,18 @@ fn run() -> Result<()> {
             cmd_verify(src.as_ref(), &index)
         }
         Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
+        Commands::Mount {
+            store,
+            source,
+            cache,
+            name,
+            index,
+            mountpoint,
+        } => {
+            ensure_mount_supported()?;
+            let src = open_chunk_source(store.as_deref(), source.as_deref(), cache.as_deref())?;
+            cmd_mount(src, &index, &mountpoint, name.as_deref())
+        }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -429,4 +461,164 @@ fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
     } else {
         bail!("missing\t{id}");
     }
+}
+
+fn ensure_mount_supported() -> Result<()> {
+    #[cfg(feature = "fuse")]
+    {
+        Ok(())
+    }
+    #[cfg(not(feature = "fuse"))]
+    {
+        bail!(
+            "mount is unsupported in this build (cargo feature `fuse` disabled).\n\
+             On Linux, rebuild with: cargo build -p chunkforge-cli --features fuse\n\
+             Runtime requires fuse3 (Debian/Ubuntu: sudo apt install fuse3) and a usable /dev/fuse.\n\
+             macOS/Windows are not Phase 2 acceptance platforms (experimental only)."
+        );
+    }
+}
+
+fn cmd_mount(
+    source: Box<dyn ChunkSource>,
+    index_path: &Path,
+    mountpoint: &Path,
+    name: Option<&str>,
+) -> Result<()> {
+    #[cfg(feature = "fuse")]
+    {
+        cmd_mount_fuse(source, index_path, mountpoint, name)
+    }
+    #[cfg(not(feature = "fuse"))]
+    {
+        let _ = (source, index_path, mountpoint, name);
+        // ensure_mount_supported() already rejected; keep a defensive message.
+        ensure_mount_supported()
+    }
+}
+
+#[cfg(feature = "fuse")]
+fn cmd_mount_fuse(
+    source: Box<dyn ChunkSource>,
+    index_path: &Path,
+    mountpoint: &Path,
+    name: Option<&str>,
+) -> Result<()> {
+    use chunkforge_fuse::{BlobFs, MountOption, default_blob_name, mount_ro};
+
+    if !mountpoint.exists() {
+        bail!(
+            "mountpoint {} does not exist (create an empty directory first)",
+            mountpoint.display()
+        );
+    }
+    if !mountpoint.is_dir() {
+        bail!("mountpoint {} is not a directory", mountpoint.display());
+    }
+
+    let blob_name = match name {
+        Some(n) => {
+            if n.is_empty() || n.contains('/') || n.contains('\\') {
+                bail!("invalid --name {n:?}: must be a single non-empty path component");
+            }
+            n.to_string()
+        }
+        None => default_blob_name(index_path),
+    };
+
+    let index = load_index(index_path)?;
+    let fs = BlobFs::new(index, source, blob_name.clone());
+
+    eprintln!(
+        "mount: {} → {}/{} (read-only; Ctrl-C or fusermount3 -u to unmount)",
+        index_path.display(),
+        mountpoint.display(),
+        blob_name
+    );
+
+    mount_ro(
+        fs,
+        mountpoint,
+        [
+            MountOption::FSName("chunkforge".into()),
+            MountOption::AutoUnmount,
+            MountOption::DefaultPermissions,
+        ],
+    )
+    .map_err(explain_fuse_mount_error)?;
+
+    Ok(())
+}
+
+/// Turn a FUSE mount I/O failure into a readable install/permission hint.
+#[cfg(feature = "fuse")]
+fn explain_fuse_mount_error(err: std::io::Error) -> anyhow::Error {
+    let mut hints: Vec<String> = Vec::new();
+
+    let dev_fuse = Path::new("/dev/fuse");
+    if !dev_fuse.exists() {
+        hints.push(
+            "/dev/fuse is missing — load the fuse module or install fuse3 \
+             (Debian/Ubuntu: sudo apt install fuse3)."
+                .into(),
+        );
+    } else {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dev_fuse)
+        {
+            Ok(_) => {}
+            Err(e) => hints.push(format!(
+                "cannot open /dev/fuse ({e}); check group membership (often `fuse`) \
+                 or device permissions (ls -l /dev/fuse)."
+            )),
+        }
+    }
+
+    if which_cmd("fusermount3").is_none() && which_cmd("fusermount").is_none() {
+        hints.push(
+            "fusermount3/fusermount not found on PATH — install fuse3 \
+             (Debian/Ubuntu: sudo apt install fuse3)."
+                .into(),
+        );
+    }
+
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+    if lower.contains("permission")
+        || lower.contains("not permitted")
+        || err.raw_os_error() == Some(1)
+    {
+        hints.push(
+            "permission denied mounting — ensure you can use FUSE as this user \
+             (no need for allow_other unless mounting for other users)."
+                .into(),
+        );
+    }
+
+    if hints.is_empty() {
+        anyhow::anyhow!("FUSE mount failed: {err}")
+    } else {
+        anyhow::anyhow!(
+            "FUSE mount failed: {err}\n{}",
+            hints
+                .iter()
+                .map(|h| format!("  hint: {h}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    }
+}
+
+#[cfg(feature = "fuse")]
+fn which_cmd(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }

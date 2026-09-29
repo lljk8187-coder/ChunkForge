@@ -1,11 +1,15 @@
 # ChunkForge convenience targets (Phase 1).
-.PHONY: build test gen-large demo-dedup demo-dedup-small clean-gen
+.PHONY: build test gen-large demo-dedup demo-dedup-small demo-mount clean-gen
 
 CHUNKFORGE_GEN_MIB ?= 64
 CHUNKFORGE_GEN_DIR ?= fixtures/gen
 
 build:
 	cargo build -p chunkforge-cli
+
+# Linux FUSE smoke (needs fuse3 + /dev/fuse).
+demo-mount: build
+	./scripts/demo_mount.sh
 
 test:
 	cargo test --workspace
