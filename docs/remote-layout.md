@@ -8,6 +8,11 @@ Phase 3 extends `HttpChunkSource` with **URL / header templates** and an optiona
 **key prefix** so object-store–friendly read paths (MinIO, R2, S3 public/CDN,
 path-style endpoints) work **without** an AWS SDK or in-process SigV4.
 
+Phase 4 adds the symmetric write face: `HttpChunkSink` issues **single-object PUT**
+(optional POST) to the **same expanded URL** a GET would use, so
+`chunkforge push` followed by `verify --source` hits identical keys. See
+[push.md](push.md) for CLI semantics.
+
 ## Local store layout (unchanged)
 
 ```text
@@ -141,7 +146,7 @@ Rules:
 With template `{base}/{prefix}{path}` and `prefix = "data/"` the GET path always
 contains `/data/chunks/…`.
 
-## S3-compatible path conventions (read-only)
+## S3-compatible path conventions (GET + PUT)
 
 Default **object key** (relative to the bucket / document root):
 
@@ -210,15 +215,67 @@ pass as `base` / `prefix` / `url_template`.
    expansion. **Per-object signatures that differ for every key are not
    auto-generated** (out of scope).
 
-## Explicit non-goals (this layout / Phase 3)
+## HTTP chunk PUT (Phase 4)
+
+`HttpChunkSink` shares base / `url_template` / `prefix` / header templates with
+`HttpChunkSource`. For a given id and identical builder options:
+
+```text
+PUT  url_for(id)   ≡   GET url_for(id)
+body               =   plaintext chunk bytes (BLAKE3 == id)
+Content-Type       =   application/octet-stream   (default)
+```
+
+Default key under the document root / bucket:
+
+```text
+{prefix}chunks/{2hex}/{62hex}.cnk
+```
+
+Same examples as the GET section apply with `PUT` instead of `GET` — e.g.
+`base = http://127.0.0.1:8766`, default template:
+
+```text
+PUT http://127.0.0.1:8766/chunks/af/1349…3262.cnk
+```
+
+### Semantics (`HttpChunkSink`)
+
+| Case | Behaviour |
+|---|---|
+| `has` → true (HEAD, GET fallback) | Skip PUT → `PutOutcome::SkippedExists` (default `skip_if_exists`) |
+| PUT/POST **2xx** | `PutOutcome::Written` |
+| PUT/POST **409 Conflict** | Treated as skip when `accept_conflict` (default true) |
+| Other non-2xx / transport error | `SinkError::Backend` |
+| Hash mismatch before send | `SinkError::Corrupt` when `verify_hash` (default true) |
+| Bad template / missing `{env:…}` | Fail at **builder** (`build()`), not mid-request |
+
+CLI `chunkforge push` always builds an HTTP sink; non-`http(s)://` `--dest` is
+rejected. Body is always **plaintext** even if the local store used zstd
+(push decodes before PUT — remote layout = plaintext, matching GET assumptions).
+
+### Local PUT stub (demo)
+
+```bash
+# Accepts PUT/HEAD/GET; writes under ./mirror/chunks/...
+python3 scripts/put_stub.py --root ./mirror --port 8766
+chunkforge push --store ./store --dest http://127.0.0.1:8766 hello.cfidx
+chunkforge verify --source http://127.0.0.1:8766 hello.cfidx
+```
+
+Full smoke: [`scripts/demo_push.sh`](../scripts/demo_push.sh) / `make demo-push`.
+Details: [push.md](push.md).
+
+## Explicit non-goals (this layout / Phase 3–4)
 
 | Non-goal | Status |
 |---|---|
 | ❌ **`aws-sdk-*` / `aws-config` / ListObjects** | Forbidden — dependency surface stays `ureq` |
 | ❌ **In-process SigV4** (even GET-only HMAC) | Not in Phase 3; use external presign or header templates |
-| ❌ **Upload / multipart / PUT / POST** | Read path only |
+| ❌ **S3 multipart upload API** | No Initiate/UploadPart/Complete; Phase 4 uses **per-chunk single PUT** only |
 | ❌ **Remote GC / bucket lifecycle** | Local `chunkforge gc` only touches a local store |
 | ❌ **Auto batch-presign every chunk** | Static URL template only |
+| ❌ **In-process SigV4 for PUT** | Same as GET — header templates / external presign / open endpoints |
 
 ## `file://` (`FileUrlSource`)
 
@@ -233,13 +290,15 @@ let src = FileUrlSource::open("file:///tmp/cf-store")?;
 let bytes = src.get(&chunk_id)?;
 ```
 
-## Related CLI (Phase 3 delivered)
+## Related CLI
 
-- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor`
+- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4)
+- `chunkforge push` — serial per-chunk PUT; see [push.md](push.md)
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
 
 ## Still out of scope
 
 - Mixed compression over HTTP, range requests, smart retries beyond a simple timeout
-- In-process SigV4, `aws-sdk-*`, upload/multipart, remote GC (see non-goals above)
+- In-process SigV4, `aws-sdk-*`, S3 multipart upload API, remote GC (see non-goals above)
+- Uploading `.cfidx` into the chunk object layout (indexes stay out-of-band)

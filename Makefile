@@ -1,5 +1,5 @@
-# ChunkForge convenience targets (Phase 1).
-.PHONY: build test gen-large demo-dedup demo-dedup-small demo-mount clean-gen
+# ChunkForge convenience targets (Phase 1+).
+.PHONY: build test gen-large demo-dedup demo-dedup-small demo-mount demo-push clean-gen
 
 CHUNKFORGE_GEN_MIB ?= 64
 CHUNKFORGE_GEN_DIR ?= fixtures/gen
@@ -10,6 +10,10 @@ build:
 # Linux FUSE smoke (needs fuse3 + /dev/fuse).
 demo-mount: build
 	./scripts/demo_mount.sh
+
+# Phase 4 push smoke: local PUT stub → push → verify (no internet).
+demo-push: build
+	./scripts/demo_push.sh
 
 test:
 	cargo test --workspace
