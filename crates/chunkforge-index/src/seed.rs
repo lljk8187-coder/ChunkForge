@@ -1,9 +1,10 @@
-//! Seed / prior-index helpers for `archive --seed` (Phase 6).
+//! Seed / prior-index helpers for `archive --seed` (Phase 6 / Phase 7 P1).
 //!
 //! Build a path → file-entry map from a prior [`.cfdir`](crate::DirArchive), then
 //! decide [`Reuse`](SeedDecision::Reuse) vs [`Rechunk`](SeedDecision::Rechunk) by
-//! **content BLAKE3** (with a size fast-reject). mtime is **never** the sole
-//! reuse criterion on the default path; `--seed-trust-mtime` is out of scope here.
+//! **content BLAKE3** (with a size fast-reject). Optional `--seed-trust-mtime`
+//! (default **off**) may skip content hashing when size and `mtime_secs` both
+//! match the prior — see [`decide_seed_trust_mtime`].
 //!
 //! Does **not** change `.cfdir` / `.cfidx` v1 byte layouts.
 
@@ -42,15 +43,49 @@ pub fn seed_file_map(prior: &DirArchive) -> HashMap<&str, &DirEntry> {
 /// 2. Otherwise stream-hash `source` with BLAKE3; equal to `prior_blob_blake3` →
 ///    [`Reuse`](SeedDecision::Reuse), else [`Rechunk`](SeedDecision::Rechunk).
 ///
-/// Does **not** consult mtime.
+/// Does **not** consult mtime (≡ `--seed-trust-mtime` off / 0.6.0 path).
 pub fn decide_seed(
     prior_size: u64,
     prior_blob_blake3: &ChunkId,
     source_size: u64,
     source: &mut impl Read,
 ) -> Result<SeedDecision, Error> {
+    decide_seed_trust_mtime(
+        prior_size,
+        prior_blob_blake3,
+        /* prior_mtime_secs */ 0,
+        source_size,
+        /* source_mtime_secs */ 0,
+        source,
+        /* trust_mtime */ false,
+    )
+}
+
+/// Seed decision with optional mtime trust (Phase 7 `--seed-trust-mtime`).
+///
+/// Decision order (path miss is the caller's job via [`seed_file_map`]):
+/// 1. `source_size != prior_size` → [`Rechunk`](SeedDecision::Rechunk) (no read)
+/// 2. `trust_mtime` and `source_mtime_secs == prior_mtime_secs` → [`Reuse`](SeedDecision::Reuse)
+///    **without** reading `source` / computing content BLAKE3
+/// 3. else stream-hash `source` vs `prior_blob_blake3` (same as [`decide_seed`])
+///
+/// **Warning:** trusting mtime can miss content changes when mtime is forged or
+/// preserved incorrectly (e.g. `cp -p`, some network FS). Default callers should
+/// pass `trust_mtime = false`.
+pub fn decide_seed_trust_mtime(
+    prior_size: u64,
+    prior_blob_blake3: &ChunkId,
+    prior_mtime_secs: u64,
+    source_size: u64,
+    source_mtime_secs: u64,
+    source: &mut impl Read,
+    trust_mtime: bool,
+) -> Result<SeedDecision, Error> {
     if source_size != prior_size {
         return Ok(SeedDecision::Rechunk);
+    }
+    if trust_mtime && source_mtime_secs == prior_mtime_secs {
+        return Ok(SeedDecision::Reuse);
     }
     let blob = hash_reader(source)?;
     if &blob == prior_blob_blake3 {
@@ -63,16 +98,49 @@ pub fn decide_seed(
 /// Decide against a prior [`DirEntry`] (must be [`DirEntryKind::File`]).
 ///
 /// Directory priors return [`Error::InvalidStructure`]. Missing-path handling
-/// stays with the caller via [`seed_file_map`].
+/// stays with the caller via [`seed_file_map`]. Does **not** trust mtime
+/// (content BLAKE3 path).
 pub fn decide_seed_for_entry(
     prior: &DirEntry,
     source_size: u64,
     source: &mut impl Read,
 ) -> Result<SeedDecision, Error> {
+    decide_seed_for_entry_ex(
+        prior,
+        source_size,
+        /* source_mtime_secs */ 0,
+        source,
+        false,
+    )
+}
+
+/// Like [`decide_seed_for_entry`], with optional mtime trust.
+///
+/// When `trust_mtime` is true and prior is a File whose `size` and `mtime_secs`
+/// match the source, returns [`Reuse`](SeedDecision::Reuse) without reading
+/// `source`. See [`decide_seed_trust_mtime`].
+pub fn decide_seed_for_entry_ex(
+    prior: &DirEntry,
+    source_size: u64,
+    source_mtime_secs: u64,
+    source: &mut impl Read,
+    trust_mtime: bool,
+) -> Result<SeedDecision, Error> {
     match &prior.kind {
         DirEntryKind::File {
-            size, blob_blake3, ..
-        } => decide_seed(*size, blob_blake3, source_size, source),
+            size,
+            mtime_secs,
+            blob_blake3,
+            ..
+        } => decide_seed_trust_mtime(
+            *size,
+            blob_blake3,
+            *mtime_secs,
+            source_size,
+            source_mtime_secs,
+            source,
+            trust_mtime,
+        ),
         DirEntryKind::Dir { .. } => Err(Error::InvalidStructure(
             "seed decision requires a File prior entry, got Dir".into(),
         )),
@@ -99,11 +167,11 @@ mod tests {
     use crate::IndexEntry;
     use std::io::{self, Cursor};
 
-    /// Reader that panics if touched — proves size fast-reject skips hashing.
+    /// Reader that panics if touched — proves size / mtime fast-path skips hashing.
     struct PanicRead;
     impl Read for PanicRead {
         fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            panic!("size fast-reject must not read source content");
+            panic!("fast-path must not read source content");
         }
     }
 
@@ -273,7 +341,8 @@ mod tests {
 
     #[test]
     fn same_mtime_different_content_rechunks() {
-        // Same size + same recorded mtime, but content flipped → must Rechunk.
+        // Same size + same recorded mtime, but content flipped → must Rechunk
+        // on the default (no trust) path.
         let prior_bytes = b"aaaaaaaa";
         let changed = b"aaaaaaab";
         assert_eq!(prior_bytes.len(), changed.len());
@@ -306,5 +375,115 @@ mod tests {
         let data = b"stream-me-please";
         let mut src = Cursor::new(data.as_slice());
         assert_eq!(hash_reader(&mut src).unwrap(), ChunkId::hash(data));
+    }
+
+    // --- Phase 7 P1: --seed-trust-mtime ---
+
+    #[test]
+    fn trust_mtime_same_size_mtime_reuses_without_reading() {
+        // Proves content hash is not required when trust hits: PanicRead would
+        // panic if touched. Deliberately wrong prior blake3 still Reuse — documents
+        // the risk that forged/preserved mtime can miss content changes.
+        let prior_bytes = b"aaaaaaaa";
+        let wrong_blob = ChunkId::hash(b"not-the-real-content!!!!");
+        let mtime = 1_700_000_042u64;
+        let prior = file_entry(
+            "risk.txt",
+            prior_bytes.len() as u64,
+            mtime,
+            wrong_blob,
+            vec![],
+        );
+        let mut src = PanicRead;
+        let d = decide_seed_for_entry_ex(&prior, prior_bytes.len() as u64, mtime, &mut src, true)
+            .unwrap();
+        assert_eq!(d, SeedDecision::Reuse);
+    }
+
+    #[test]
+    fn trust_mtime_same_size_mtime_empty_reader_ok() {
+        let content = b"trusted-bytes";
+        let blob = ChunkId::hash(content);
+        let mtime = 99u64;
+        let prior = file_entry("t.txt", content.len() as u64, mtime, blob, vec![]);
+        let mut src = io::empty();
+        let d =
+            decide_seed_for_entry_ex(&prior, content.len() as u64, mtime, &mut src, true).unwrap();
+        assert_eq!(d, SeedDecision::Reuse);
+    }
+
+    #[test]
+    fn trust_mtime_size_match_mtime_differ_falls_through_to_blake3() {
+        let content = b"same-size-ok";
+        let blob = ChunkId::hash(content);
+        let prior = file_entry(
+            "z.txt",
+            content.len() as u64,
+            100,
+            blob,
+            vec![IndexEntry {
+                end_offset: content.len() as u64,
+                chunk_id: ChunkId::hash(content),
+            }],
+        );
+        // mtime differs → must hash; matching content → Reuse
+        let mut src = Cursor::new(content.as_slice());
+        let d =
+            decide_seed_for_entry_ex(&prior, content.len() as u64, 999, &mut src, true).unwrap();
+        assert_eq!(d, SeedDecision::Reuse);
+
+        // mtime differs + content differs → Rechunk
+        let changed = b"same-size-NO";
+        assert_eq!(content.len(), changed.len());
+        let mut src = Cursor::new(changed.as_slice());
+        let d =
+            decide_seed_for_entry_ex(&prior, changed.len() as u64, 999, &mut src, true).unwrap();
+        assert_eq!(d, SeedDecision::Rechunk);
+    }
+
+    #[test]
+    fn without_trust_same_mtime_different_content_rechunks() {
+        // Existing contract: trust off + same mtime + different content → Rechunk
+        let prior_bytes = b"aaaaaaaa";
+        let changed = b"aaaaaaab";
+        assert_eq!(prior_bytes.len(), changed.len());
+        let blob = ChunkId::hash(prior_bytes);
+        let mtime = 42u64;
+        let prior = file_entry(
+            "y.txt",
+            prior_bytes.len() as u64,
+            mtime,
+            blob,
+            vec![IndexEntry {
+                end_offset: prior_bytes.len() as u64,
+                chunk_id: ChunkId::hash(prior_bytes),
+            }],
+        );
+        let mut src = Cursor::new(changed.as_slice());
+        let d =
+            decide_seed_for_entry_ex(&prior, changed.len() as u64, mtime, &mut src, false).unwrap();
+        assert_eq!(d, SeedDecision::Rechunk);
+    }
+
+    #[test]
+    fn trust_mtime_size_mismatch_rechunks_without_reading() {
+        let blob = ChunkId::hash(b"abc");
+        let mut src = PanicRead;
+        let d = decide_seed_trust_mtime(3, &blob, 10, 4, 10, &mut src, true).unwrap();
+        assert_eq!(d, SeedDecision::Rechunk);
+    }
+
+    #[test]
+    fn trust_off_ignores_matching_mtime() {
+        // trust_mtime=false with matching mtime still requires blake3 (PanicRead
+        // would panic) — so we feed matching content via Cursor.
+        let content = b"need-hash";
+        let blob = ChunkId::hash(content);
+        let mtime = 7u64;
+        let prior = file_entry("n.txt", content.len() as u64, mtime, blob, vec![]);
+        let mut src = Cursor::new(content.as_slice());
+        let d =
+            decide_seed_for_entry_ex(&prior, content.len() as u64, mtime, &mut src, false).unwrap();
+        assert_eq!(d, SeedDecision::Reuse);
     }
 }

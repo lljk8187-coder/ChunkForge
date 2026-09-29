@@ -25,7 +25,6 @@
 | ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay local (git / release artifact / optional manual URL) |
 | ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
 | ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
-| ❌ **`--seed-trust-mtime`** | Seed always content-BLAKE3 (size fast-reject); no mtime-only shortcut |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |

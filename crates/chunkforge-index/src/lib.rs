@@ -2,7 +2,7 @@
 //!
 //! - [`.cfidx` v1](Index) — single-blob chunk map (Phase 1; **byte-frozen**)
 //! - [`.cfdir` v1](DirArchive) — multi-file directory listing (Phase 5)
-//! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse decision (Phase 6)
+//! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse (+ optional mtime trust, Phase 7)
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
@@ -28,7 +28,10 @@ pub use index::{
     MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE, entry_length,
 };
 pub use path::validate_archive_path;
-pub use seed::{SeedDecision, decide_seed, decide_seed_for_entry, hash_reader, seed_file_map};
+pub use seed::{
+    SeedDecision, decide_seed, decide_seed_for_entry, decide_seed_for_entry_ex,
+    decide_seed_trust_mtime, hash_reader, seed_file_map,
+};
 
 #[cfg(test)]
 mod tests {

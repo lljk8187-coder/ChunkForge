@@ -7,7 +7,7 @@ use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
-    decide_seed_for_entry, diff_dir_archives, entry_length, hash_reader, seed_file_map,
+    decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader, seed_file_map,
     validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
@@ -79,6 +79,12 @@ enum Commands {
         /// fingerprint (BLAKE3); changed or missing-chunk files are rechunked
         #[arg(long = "seed", value_name = "PRIOR.cfdir")]
         seed: Option<PathBuf>,
+        /// With `--seed`: if size and mtime_secs both match the prior entry,
+        /// reuse without content BLAKE3. Default off (≡ 0.6.0 content path).
+        /// WARNING: forged or incorrectly preserved mtimes can miss content
+        /// changes — prefer content fingerprint unless you accept that risk.
+        #[arg(long = "seed-trust-mtime", requires = "seed")]
+        seed_trust_mtime: bool,
         /// Max concurrent per-file chunking (default 1 = serial). Seed map is
         /// read-only; store puts stay atomic / race-safe.
         #[arg(long, default_value_t = 1, value_name = "N")]
@@ -89,7 +95,8 @@ enum Commands {
     /// Reads the `.cfdir` listing and reconstitutes regular files under `-o`
     /// from `--store` / `--source` (same origin flags as `cat` / `verify`).
     /// Parent directories are created as needed. If a destination path already
-    /// exists, extract fails (non-zero); `--force` is deferred. Empty `Dir`
+    /// exists, extract fails (non-zero) unless `--force` is set (overwrites
+    /// existing regular files; type mismatches still error). Empty `Dir`
     /// entries create directories; file modes are restored on Unix when recorded.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Extract {
@@ -109,9 +116,16 @@ enum Commands {
         jobs: u32,
         /// Input `.cfdir`
         archive: PathBuf,
-        /// Output directory (created if missing; must not collide with existing files)
+        /// Output directory (created if missing; without `--force` must not
+        /// collide with existing files)
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
+        /// Overwrite existing regular files at destination paths. Without this
+        /// flag, an existing path fails (≡ 0.6.0). Directory↔file type
+        /// mismatches still error (refusing to replace a directory with a file
+        /// or vice versa).
+        #[arg(long = "force")]
+        force: bool,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -384,6 +398,7 @@ fn run() -> Result<()> {
             chunk_size,
             dry_run,
             seed,
+            seed_trust_mtime,
             jobs,
         } => {
             let jobs = parse_jobs(jobs)?;
@@ -393,7 +408,7 @@ fn run() -> Result<()> {
                 &src_dir,
                 chunk_size.as_deref(),
                 dry_run,
-                seed.as_deref(),
+                seed.as_deref().map(|p| (p, seed_trust_mtime)),
                 jobs,
             )
         }
@@ -405,6 +420,7 @@ fn run() -> Result<()> {
             jobs,
             archive,
             output,
+            force,
         } => {
             let jobs = parse_jobs(jobs)?;
             let src = open_chunk_source(
@@ -413,7 +429,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_extract(src.as_ref(), &archive, &output, jobs)
+            cmd_extract(src.as_ref(), &archive, &output, jobs, force)
         }
         Commands::Cat {
             store,
@@ -730,7 +746,7 @@ fn cmd_archive(
     src_dir: &Path,
     chunk_size: Option<&str>,
     dry_run: bool,
-    seed: Option<&Path>,
+    seed: Option<(&Path, bool)>,
     jobs: usize,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
@@ -742,9 +758,11 @@ fn cmd_archive(
         );
     }
 
+    let seed_trust_mtime = seed.map(|(_, t)| t).unwrap_or(false);
+
     // Load prior `.cfdir` for --seed (fail non-zero on bad magic / decode / .cfidx).
     let prior_arch = match seed {
-        Some(seed_path) => Some(load_seed_cfdir(seed_path)?),
+        Some((seed_path, _)) => Some(load_seed_cfdir(seed_path)?),
         None => None,
     };
     let seed_map: Option<HashMap<&str, &DirEntry>> =
@@ -797,13 +815,14 @@ fn cmd_archive(
     // Dry-run cross-file dedup set (Mutex so --jobs > 1 stays correct).
     let dry_seen: Mutex<HashSet<ChunkId>> = Mutex::new(HashSet::new());
 
+    let seed_ctx = seed_map.as_ref().map(|m| (m, seed_trust_mtime));
     let outcomes = parallel::map_indexed(&file_paths, jobs, |_idx, full| {
         archive_one_file(
             src_dir,
             full,
             &params,
             store.as_ref(),
-            seed_map.as_ref(),
+            seed_ctx,
             dry_run,
             &dry_seen,
         )
@@ -948,7 +967,7 @@ fn archive_one_file(
     full: &Path,
     params: &ChunkParams,
     store: Option<&Store>,
-    seed_map: Option<&HashMap<&str, &DirEntry>>,
+    seed: Option<(&HashMap<&str, &DirEntry>, bool)>,
     dry_run: bool,
     dry_seen: &Mutex<HashSet<ChunkId>>,
 ) -> Result<ArchiveFileOutcome> {
@@ -989,14 +1008,21 @@ fn archive_one_file(
     }
 
     let source_size = meta.len();
+    let source_mtime_secs = file_mtime_secs(&meta);
 
     // --- Seed reuse path -------------------------------------------------
-    if let Some(map) = seed_map {
+    if let Some((map, seed_trust_mtime)) = seed {
         if let Some(prior_entry) = map.get(rel.as_str()) {
             let mut f = File::open(full)
                 .with_context(|| format!("open {} for seed hash", full.display()))?;
-            let decision = decide_seed_for_entry(prior_entry, source_size, &mut f)
-                .map_err(|e| anyhow::anyhow!("seed decide for {rel}: {e}"))?;
+            let decision = decide_seed_for_entry_ex(
+                prior_entry,
+                source_size,
+                source_mtime_secs,
+                &mut f,
+                seed_trust_mtime,
+            )
+            .map_err(|e| anyhow::anyhow!("seed decide for {rel}: {e}"))?;
             if decision == SeedDecision::Reuse {
                 let prior_chunks = match &prior_entry.kind {
                     DirEntryKind::File { chunks, .. } => chunks.as_slice(),
@@ -1900,6 +1926,7 @@ fn cmd_extract(
     archive_path: &Path,
     out_dir: &Path,
     jobs: usize,
+    force: bool,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -1916,6 +1943,7 @@ fn cmd_extract(
 
     if out_dir.exists() {
         if out_dir.is_file() {
+            // Never replace the output root with a directory tree, even with --force.
             bail!(
                 "extract output {} exists and is a file (refusing to overwrite)",
                 out_dir.display()
@@ -1936,8 +1964,13 @@ fn cmd_extract(
                 if dest.exists() {
                     if !dest.is_dir() {
                         bail!(
-                            "extract target {} already exists and is not a directory",
-                            dest.display()
+                            "extract target {} already exists and is not a directory (refusing to replace a file with a directory{})",
+                            dest.display(),
+                            if force {
+                                "; --force does not change type"
+                            } else {
+                                ""
+                            },
                         );
                     }
                 } else {
@@ -1955,10 +1988,24 @@ fn cmd_extract(
                 ..
             } => {
                 if dest.exists() {
-                    bail!(
-                        "extract target {} already exists (refusing to overwrite; no --force in this milestone)",
-                        dest.display()
-                    );
+                    if dest.is_dir() {
+                        bail!(
+                            "extract target {} already exists and is a directory (refusing to replace a directory with a file{})",
+                            dest.display(),
+                            if force {
+                                "; --force does not change type"
+                            } else {
+                                ""
+                            },
+                        );
+                    }
+                    if !force {
+                        bail!(
+                            "extract target {} already exists (refusing to overwrite; pass --force)",
+                            dest.display()
+                        );
+                    }
+                    // --force: truncate/overwrite existing regular file via File::create below.
                 }
                 if let Some(parent) = dest.parent() {
                     if !parent.as_os_str().is_empty() {

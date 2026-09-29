@@ -7,8 +7,8 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--dry-run] [--jobs N] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--dry-run`: stats only; `--jobs`: per-file parallel chunking, default 1) |
-| `chunkforge extract --store\|--source … archive.cfdir -o <out-dir>` | Materialize the tree (parents created; existing paths → non-zero) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--seed-trust-mtime`: with `--seed`, size+mtime match → skip content BLAKE3; `--dry-run`: stats only; `--jobs`: per-file parallel chunking, default 1) |
+| `chunkforge extract --store\|--source … archive.cfdir -o <out-dir> [--force]` | Materialize the tree (parents created; existing paths → non-zero unless `--force`) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
 | `chunkforge push --store <cas> --dest http(s)://… archive.cfdir` | Upload **chunks only** referenced by the `.cfdir` |
@@ -89,12 +89,15 @@ source file whose relative path exists in the prior listing:
 
 1. **Size fast-reject**: if the on-disk size differs from the prior entry, the
    file is rechunked (no full-file hash).
-2. **Content fingerprint**: otherwise the file is streamed and compared to
-   `blob_blake3`. A match reuses the prior chunk table (and recorded
-   `mode` / `size` / `mtime_secs` / `blob_blake3`) and skips FastCDC / store
-   `put` for that file.
-3. **mtime is not the sole criterion** — content BLAKE3 decides reuse (mtime
-   alone never marks a file unchanged).
+2. **Optional `--seed-trust-mtime`** (default **off**): if size **and**
+   `mtime_secs` both equal the prior entry → **Reuse** without content BLAKE3.
+3. **Content fingerprint** (default path, or when trust is off / mtime differs):
+   the file is streamed and compared to `blob_blake3`. A match reuses the prior
+   chunk table (and recorded `mode` / `size` / `mtime_secs` / `blob_blake3`) and
+   skips FastCDC / store `put` for that file.
+
+Without `--seed-trust-mtime`, mtime is **never** the sole criterion — content
+BLAKE3 decides reuse (≡ 0.6.0).
 
 Reuse copies the prior chunk table into the **new** listing. If any reused chunk
 id is missing from `--store`, that file is forced to rechunk and a stderr warning
@@ -110,6 +113,23 @@ Write-path stderr (no `--dry-run`) reports `seed_reused_files=` /
 
 Optional `--jobs N` (default **1**) parallelizes per-file work; the seed map is
 read-only across workers and store puts remain content-addressed / race-safe.
+
+### `--seed-trust-mtime` (opt-in)
+
+Requires `--seed`. When set, a path that matches the prior on **both size and
+`mtime_secs`** is reused **without** hashing file contents.
+
+> **Warning:** trusting mtime can **miss content changes** if mtime is forged,
+> truncated (coarse FS precision), or preserved across edits (`cp -p`, some
+> backup/restore tools, network filesystems). Prefer the default content-BLAKE3
+> path unless you accept that risk for large trees where re-reading every file
+> is too expensive. Missing chunks after a trust-based Reuse still force rechunk
+> + `seed_missing_chunks=` (same as 0.6.0).
+
+```bash
+chunkforge archive --store ./store -o v2.cfdir \
+  --seed v1.cfdir --seed-trust-mtime ./src
+```
 
 ### Dry-run × seed
 
@@ -144,10 +164,19 @@ chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
 - Chunk params default to FastCDC 16KiB / 64KiB / 256KiB; override with
   `--chunk-size min:avg:max`.
 
-## Extract conflicts
+## Extract conflicts / `--force`
 
-If any destination path already exists, `extract` exits non-zero. There is no
-`--force` yet — remove or choose a fresh `-o` directory.
+Without `--force` (≡ 0.6.0): if any destination path already exists, `extract`
+exits non-zero — remove or choose a fresh `-o` directory.
+
+With `--force`:
+
+- **Existing regular files** are truncated and overwritten.
+- **Type mismatches** still fail with a clear error: a directory where a file is
+  expected (or a file where a directory is expected) is **not** replaced;
+  `--force` does not `rm -rf` directories.
+- The `-o` output root itself, if it already exists as a **file**, is never
+  overwritten (even with `--force`).
 
 ## Related
 

@@ -4769,3 +4769,329 @@ fn store_scrub_jobs_flag_accepted() {
         "jobs=4 healthy scrub; stdout={stdout}"
     );
 }
+
+// --- Phase 7 M6: archive --seed-trust-mtime + extract --force ---
+
+#[test]
+fn archive_help_lists_seed_trust_mtime_with_warning() {
+    let help = run_ok(&["archive", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--seed-trust-mtime"),
+        "archive --help should list --seed-trust-mtime:\n{s}"
+    );
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("mtime")
+            && (lower.contains("warn")
+                || lower.contains("forged")
+                || lower.contains("risk")
+                || lower.contains("miss")),
+        "archive --help --seed-trust-mtime should warn about mtime risk:\n{s}"
+    );
+}
+
+#[test]
+fn archive_seed_trust_mtime_requires_seed() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out.cfdir");
+    let fail = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed-trust-mtime",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("seed-trust-mtime")
+            || err.contains("--seed")
+            || err.to_lowercase().contains("require"),
+        "without --seed, --seed-trust-mtime must error; stderr={err}"
+    );
+}
+
+#[test]
+fn archive_seed_trust_mtime_same_tree_reuses() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"trust-a\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"trust-b\n").unwrap();
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        "--seed-trust-mtime",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("seed_reused_files=2") && err.contains("rechunked_files=0"),
+        "unchanged tree + trust-mtime should reuse all; stderr={err}"
+    );
+}
+
+/// Same size + restored mtime + different content: with `--seed-trust-mtime`
+/// → Reuse (documents the risk); without → Rechunk (0.6.0 safety).
+#[test]
+fn archive_seed_trust_mtime_forged_mtime_misses_content_change() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"AAAAAAAA").unwrap(); // 8 bytes
+    fs::write(src.join("b.txt"), b"keep-me\n").unwrap();
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2_trust = dir.path().join("v2-trust.cfdir");
+    let v2_safe = dir.path().join("v2-safe.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Read prior mtime for a.txt from the listing (authoritative for trust).
+    let bytes = fs::read(&v1).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let prior_mtime = arch
+        .entries
+        .iter()
+        .find_map(|e| match (&e.path[..], &e.kind) {
+            ("a.txt", chunkforge_index::DirEntryKind::File { mtime_secs, .. }) => Some(*mtime_secs),
+            _ => None,
+        })
+        .expect("a.txt in prior");
+
+    // Same size, different content; restore mtime to prior so trust would hit.
+    fs::write(src.join("a.txt"), b"BBBBBBBB").unwrap();
+    restore_mtime_secs(&src.join("a.txt"), prior_mtime);
+
+    let out_trust = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2_trust.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        "--seed-trust-mtime",
+        src.to_str().unwrap(),
+    ]);
+    let err_trust = String::from_utf8_lossy(&out_trust.stderr);
+    assert!(
+        err_trust.contains("seed_reused_files=2") && err_trust.contains("rechunked_files=0"),
+        "trust-mtime + forged mtime must wrongly Reuse dirty a.txt; stderr={err_trust}"
+    );
+
+    // Default path (no trust): same dirty tree must Rechunk a.txt.
+    let out_safe = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2_safe.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err_safe = String::from_utf8_lossy(&out_safe.stderr);
+    assert!(
+        err_safe.contains("seed_reused_files=1") && err_safe.contains("rechunked_files=1"),
+        "without trust, dirty a.txt must rechunk; stderr={err_safe}"
+    );
+}
+
+#[test]
+fn archive_seed_trust_mtime_mtime_differ_falls_to_blake3() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"stable-bytes\n").unwrap();
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Bump mtime only (content unchanged) → trust cannot short-circuit; blake3 still Reuse.
+    restore_mtime_secs(&src.join("a.txt"), 9_999_999_999);
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        "--seed-trust-mtime",
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("would_seed_reuse=1") && err.contains("would_rechunk=0"),
+        "mtime differ + same content should blake3-Reuse; stderr={err}"
+    );
+}
+
+#[test]
+fn extract_help_lists_force() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--force"),
+        "extract --help should list --force:\n{s}"
+    );
+    assert!(
+        s.to_lowercase().contains("overwrite") || s.to_lowercase().contains("existing"),
+        "extract --help --force should mention overwrite/existing:\n{s}"
+    );
+}
+
+#[test]
+fn extract_force_overwrites_existing_regular_files() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"original-a\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"original-b\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    // Corrupt extracted tree, then --force must restore.
+    fs::write(out.join("a.txt"), b"DIRTY\n").unwrap();
+    fs::write(out.join("sub/b.txt"), b"ALSO-DIRTY\n").unwrap();
+
+    // Without --force still fails.
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let fail_err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        fail_err.contains("already exists") || fail_err.contains("refusing"),
+        "without --force must refuse; stderr={fail_err}"
+    );
+
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--force",
+    ]);
+
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"original-a\n");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"original-b\n");
+}
+
+#[test]
+fn extract_force_refuses_dir_file_type_mismatch() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"file-payload\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    fs::create_dir_all(&out).unwrap();
+    // Place a directory where a.txt (file) should land.
+    fs::create_dir_all(out.join("a.txt")).unwrap();
+
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--force",
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("directory") && (err.contains("refusing") || err.contains("force")),
+        "force must not replace dir with file; stderr={err}"
+    );
+}
+
+/// Restore `path`'s mtime to `secs` since Unix epoch (Linux `touch -d @secs`).
+fn restore_mtime_secs(path: &Path, secs: u64) {
+    let status = Command::new("touch")
+        .args(["-d", &format!("@{secs}"), path.to_str().expect("utf8 path")])
+        .status()
+        .expect("spawn touch");
+    assert!(
+        status.success(),
+        "touch -d @{secs} {} failed",
+        path.display()
+    );
+}
