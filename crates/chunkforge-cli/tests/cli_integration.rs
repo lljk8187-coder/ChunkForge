@@ -786,3 +786,232 @@ fn mount_cli_hello_cmp_and_ro() {
     let _ = Command::new("fusermount").args(["-u"]).arg(&mnt).status();
     let _ = handle.join();
 }
+
+// --- Phase 3 M3: --url-template / --prefix / --header ---
+
+use std::sync::{Arc, Mutex};
+
+#[test]
+fn help_mentions_url_template_prefix_header() {
+    for cmd in ["cat", "verify", "mount"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--url-template"),
+            "{cmd} --help missing --url-template:\n{s}"
+        );
+        assert!(
+            s.contains("--prefix"),
+            "{cmd} --help missing --prefix:\n{s}"
+        );
+        assert!(
+            s.contains("--header"),
+            "{cmd} --help missing --header:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn verify_explicit_default_url_template_matches_bare_source() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (base, _handle) = spawn_static_store_server(remote_store);
+
+    // Bare --source (0.2.0 behaviour).
+    run_ok(&["verify", "--source", &base, idx.to_str().unwrap()]);
+
+    // Explicit default template must behave identically.
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--url-template",
+        "{base}/{path}",
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn verify_header_flag_observed_by_mock_server() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let seen_auth = Arc::new(Mutex::new(None::<String>));
+    let seen_auth2 = Arc::clone(&seen_auth);
+    let store_root = remote_store.clone();
+
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let auth = request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Authorization"))
+                .map(|h| h.value.as_str().to_string());
+            if let Some(v) = auth {
+                *seen_auth2.lock().unwrap() = Some(v);
+            }
+
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            if request.method() == &Method::Head || request.method() == &Method::Get {
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    if request.method() == &Method::Head {
+                        let response = Response::empty(200).with_header(
+                            Header::from_bytes(&b"Content-Length"[..], data.len().to_string())
+                                .unwrap(),
+                        );
+                        let _ = request.respond(response);
+                    } else {
+                        let _ = request.respond(Response::from_data(data));
+                    }
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--header",
+        "Authorization: Bearer cli-m3-token",
+        idx.to_str().unwrap(),
+    ]);
+
+    let observed = seen_auth.lock().unwrap().clone();
+    assert_eq!(
+        observed.as_deref(),
+        Some("Bearer cli-m3-token"),
+        "mock server must observe Authorization from --header"
+    );
+}
+
+#[test]
+fn template_flags_rejected_for_local_source() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&[
+        "verify",
+        "--source",
+        store.to_str().unwrap(),
+        "--url-template",
+        "{base}/{path}",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("http") && (err.contains("url-template") || err.contains("template")),
+        "expected readable non-HTTP + template error, got: {err}"
+    );
+
+    let out2 = run_fail(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--header",
+        "X-Test: 1",
+        idx.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&out2.stderr).to_lowercase();
+    assert!(
+        err2.contains("http") && (err2.contains("header") || err2.contains("template")),
+        "expected readable non-HTTP + --header error, got: {err2}"
+    );
+}
+
+#[test]
+fn verify_prefix_url_template_against_prefixed_layout() {
+    let dir = tempdir().unwrap();
+    let cas = dir.path().join("cas");
+    let mirror = dir.path().join("mirror");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        cas.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Serve store contents under /data/… (S3-style prefix).
+    let data_root = mirror.join("data");
+    fs::create_dir_all(&data_root).unwrap();
+    copy_dir_recursive(&cas, &data_root);
+
+    let (base, _handle) = spawn_static_store_server(mirror);
+
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--prefix",
+        "data/",
+        "--url-template",
+        "{base}/{prefix}{path}",
+        idx.to_str().unwrap(),
+    ]);
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+}

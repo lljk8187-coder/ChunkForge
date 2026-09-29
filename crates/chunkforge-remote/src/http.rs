@@ -625,10 +625,7 @@ mod tests {
         let src = HttpChunkSource::builder(&base)
             .url_template("{base}/{prefix}{path}")
             .prefix("data/")
-            .header(
-                "Authorization",
-                "Bearer {env:CHUNKFORGE_M2_S3_AUTH_TOKEN}",
-            )
+            .header("Authorization", "Bearer {env:CHUNKFORGE_M2_S3_AUTH_TOKEN}")
             .verify_hash(false)
             .timeout(Some(Duration::from_secs(5)))
             .build()

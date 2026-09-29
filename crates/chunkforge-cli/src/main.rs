@@ -52,6 +52,8 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
         /// Input .cfidx
         index: PathBuf,
         /// Output file path
@@ -70,6 +72,8 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
         /// Input .cfidx
         index: PathBuf,
     },
@@ -94,6 +98,8 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
         /// Override the virtual file name (default: index stem without `.cfidx`)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
@@ -121,6 +127,23 @@ enum StoreCommands {
     },
 }
 
+/// Optional HTTP URL / header templates for `cat` / `verify` / `mount`.
+///
+/// Only meaningful with an `http(s)://` `--source`. Omitting all three flags
+/// preserves 0.2.0 / Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
+#[derive(Debug, Clone, Default, clap::Args)]
+struct HttpTemplateArgs {
+    /// URL template expanded per chunk id (HTTP sources only; default `{base}/{path}`)
+    #[arg(long = "url-template", value_name = "TMPL")]
+    url_template: Option<String>,
+    /// Key prefix for `{prefix}` in templates (HTTP only; normalized to `foo/` or empty)
+    #[arg(long, value_name = "PREFIX")]
+    prefix: Option<String>,
+    /// Extra request header as `Name: value-template` (repeatable; HTTP only)
+    #[arg(long = "header", value_name = "NAME: VALUE", action = clap::ArgAction::Append)]
+    headers: Vec<String>,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -144,19 +167,31 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            http_tmpl,
             index,
             output,
         } => {
-            let src = open_chunk_source(store.as_deref(), source.as_deref(), cache.as_deref())?;
+            let src = open_chunk_source(
+                store.as_deref(),
+                source.as_deref(),
+                cache.as_deref(),
+                &http_tmpl,
+            )?;
             cmd_cat(src.as_ref(), &index, &output)
         }
         Commands::Verify {
             store,
             source,
             cache,
+            http_tmpl,
             index,
         } => {
-            let src = open_chunk_source(store.as_deref(), source.as_deref(), cache.as_deref())?;
+            let src = open_chunk_source(
+                store.as_deref(),
+                source.as_deref(),
+                cache.as_deref(),
+                &http_tmpl,
+            )?;
             cmd_verify(src.as_ref(), &index)
         }
         Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
@@ -164,12 +199,18 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            http_tmpl,
             name,
             index,
             mountpoint,
         } => {
             ensure_mount_supported()?;
-            let src = open_chunk_source(store.as_deref(), source.as_deref(), cache.as_deref())?;
+            let src = open_chunk_source(
+                store.as_deref(),
+                source.as_deref(),
+                cache.as_deref(),
+                &http_tmpl,
+            )?;
             cmd_mount(src, &index, &mountpoint, name.as_deref())
         }
         Commands::Store {
@@ -209,14 +250,16 @@ fn open_or_create_store(root: &Path) -> Result<Store> {
     }
 }
 
-/// Resolve `--store` / `--source` / `--cache` into a boxed [`ChunkSource`].
+/// Resolve `--store` / `--source` / `--cache` (+ optional HTTP templates) into a boxed [`ChunkSource`].
 ///
 /// `--store PATH` is a Phase 1 synonym for `--source PATH` (local only).
 /// With `--cache`, reads go through [`CacheSource`] (fill on miss; never write primary).
+/// `--url-template` / `--prefix` / `--header` apply only to `http(s)://` sources.
 fn open_chunk_source(
     store: Option<&Path>,
     source: Option<&str>,
     cache: Option<&Path>,
+    http_tmpl: &HttpTemplateArgs,
 ) -> Result<Box<dyn ChunkSource>> {
     let spec = match (store, source) {
         (Some(path), None) => path.to_string_lossy().into_owned(),
@@ -225,7 +268,7 @@ fn open_chunk_source(
         (None, None) => bail!("missing chunk origin: pass --store <path> or --source <PATH|URL>"),
     };
 
-    let primary = open_primary_source(&spec)?;
+    let primary = open_primary_source(&spec, http_tmpl)?;
     match cache {
         None => Ok(primary),
         Some(cache_path) => {
@@ -235,15 +278,49 @@ fn open_chunk_source(
     }
 }
 
-fn open_primary_source(spec: &str) -> Result<Box<dyn ChunkSource>> {
+fn http_template_flags_set(http_tmpl: &HttpTemplateArgs) -> bool {
+    http_tmpl.url_template.is_some() || http_tmpl.prefix.is_some() || !http_tmpl.headers.is_empty()
+}
+
+/// Parse `--header 'Name: value-template'` into (name, value_template).
+fn parse_header_flag(raw: &str) -> Result<(String, String)> {
+    let Some((name, value)) = raw.split_once(':') else {
+        bail!("invalid --header {raw:?}: expected 'Name: value-template' (colon-separated)");
+    };
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() {
+        bail!("invalid --header {raw:?}: header name must not be empty");
+    }
+    Ok((name.to_string(), value.to_string()))
+}
+
+fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn ChunkSource>> {
     let trimmed = spec.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        let src = HttpChunkSource::builder(trimmed)
-            .timeout(Some(Duration::from_secs(30)))
-            .build()
-            .context("build HTTP chunk source")?;
+    let is_http = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+
+    if !is_http && http_template_flags_set(http_tmpl) {
+        bail!(
+            "--url-template / --prefix / --header apply only to http(s):// sources;              got non-HTTP source {trimmed:?}"
+        );
+    }
+
+    if is_http {
+        let mut builder = HttpChunkSource::builder(trimmed).timeout(Some(Duration::from_secs(30)));
+        if let Some(ref tmpl) = http_tmpl.url_template {
+            builder = builder.url_template(tmpl.clone());
+        }
+        if let Some(ref prefix) = http_tmpl.prefix {
+            builder = builder.prefix(prefix.clone());
+        }
+        for raw in &http_tmpl.headers {
+            let (name, value_tmpl) = parse_header_flag(raw)?;
+            builder = builder.header(name, value_tmpl);
+        }
+        let src = builder.build().context("build HTTP chunk source")?;
         return Ok(Box::new(src));
     }
+
     // Local path or file:// — FileUrlSource / Store::open (must already exist).
     let src = FileUrlSource::open(trimmed)
         .with_context(|| format!("open chunk source {trimmed:?} (local path or file:// URL)"))?;
