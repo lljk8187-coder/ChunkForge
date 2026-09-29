@@ -1,12 +1,12 @@
-//! ChunkForge CLI: make / archive / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
 
 mod parallel;
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
-    DirArchive, DirEntry, DirEntryKind, FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry,
-    entry_length, validate_archive_path,
+    DIR_MAGIC_PREFIX, DirArchive, DirEntry, DirEntryKind, FLAG_CHUNKS_COMPRESSED_IN_STORE, Index,
+    IndexEntry, MAGIC_PREFIX, entry_length, validate_archive_path,
 };
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
@@ -22,7 +22,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / cat / verify / mount / doctor / gc / push)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push)",
     long_about = None
 )]
 struct Cli {
@@ -68,6 +68,35 @@ enum Commands {
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
     },
+    /// Materialize a directory tree from a `.cfdir` + chunk source
+    ///
+    /// Reads the `.cfdir` listing and reconstitutes regular files under `-o`
+    /// from `--store` / `--source` (same origin flags as `cat` / `verify`).
+    /// Parent directories are created as needed. If a destination path already
+    /// exists, extract fails (non-zero); `--force` is deferred. Empty `Dir`
+    /// entries create directories; file modes are restored on Unix when recorded.
+    #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
+    Extract {
+        /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Chunk source: local path, `file://`, or `http(s)://`
+        #[arg(long, value_name = "PATH|URL")]
+        source: Option<String>,
+        /// Optional local cache store (filled on miss; never writes primary)
+        #[arg(long, value_name = "DIR")]
+        cache: Option<PathBuf>,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
+        /// Max concurrent chunk fetches (default 1 = serial)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
+        /// Input `.cfdir`
+        archive: PathBuf,
+        /// Output directory (created if missing; must not collide with existing files)
+        #[arg(short = 'o', long = "output")]
+        output: PathBuf,
+    },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Cat {
@@ -91,7 +120,10 @@ enum Commands {
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
     },
-    /// Verify index integrity, chunk presence/hashes, and blob_blake3
+    /// Verify `.cfidx` / `.cfdir` integrity, chunk presence/hashes, and blob_blake3
+    ///
+    /// Magic-dispatches: `.cfidx` → single-blob verify (unchanged); `.cfdir` →
+    /// tree verify (structure + per-file `blob_blake3` + missing chunks fail with id).
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Verify {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -108,7 +140,7 @@ enum Commands {
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
-        /// Input .cfidx
+        /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
     },
     /// Debug: chunk + hash only; print offset/len/id (no store write)
@@ -264,6 +296,24 @@ fn run() -> Result<()> {
             src_dir,
             chunk_size,
         } => cmd_archive(&store, &output, &src_dir, chunk_size.as_deref()),
+        Commands::Extract {
+            store,
+            source,
+            cache,
+            http_tmpl,
+            jobs,
+            archive,
+            output,
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            let src = open_chunk_source(
+                store.as_deref(),
+                source.as_deref(),
+                cache.as_deref(),
+                &http_tmpl,
+            )?;
+            cmd_extract(src.as_ref(), &archive, &output, jobs)
+        }
         Commands::Cat {
             store,
             source,
@@ -805,6 +855,66 @@ fn load_index(path: &Path) -> Result<Index> {
     Index::decode(&bytes).map_err(|e| anyhow::anyhow!("decode index {}: {e}", path.display()))
 }
 
+fn load_dir_archive(path: &Path) -> Result<DirArchive> {
+    let bytes = fs::read(path).with_context(|| format!("read archive {}", path.display()))?;
+    DirArchive::decode(&bytes)
+        .map_err(|e| anyhow::anyhow!("decode archive {}: {e}", path.display()))
+}
+
+/// Peek listing magic: `.cfidx` vs `.cfdir`.
+enum ListingKind {
+    Index,
+    DirArchive,
+}
+
+fn peek_listing_kind(path: &Path) -> Result<ListingKind> {
+    use std::io::Read;
+    let mut file = File::open(path).with_context(|| format!("open listing {}", path.display()))?;
+    let mut magic = [0u8; 8];
+    file.read_exact(&mut magic)
+        .with_context(|| format!("read magic from {}", path.display()))?;
+    if magic[..7] == MAGIC_PREFIX {
+        Ok(ListingKind::Index)
+    } else if magic[..7] == DIR_MAGIC_PREFIX {
+        Ok(ListingKind::DirArchive)
+    } else {
+        bail!(
+            "unrecognized listing magic in {} (expected CFIDX or CFDIR, got {:02x?})",
+            path.display(),
+            &magic[..]
+        );
+    }
+}
+
+/// Join a validated `/`-separated archive path onto `out_root`.
+fn join_archive_path(out_root: &Path, rel: &str) -> Result<PathBuf> {
+    // Paths are validated by DirArchive; still refuse absolute / escape defensively.
+    validate_archive_path(rel).map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+    let mut dest = out_root.to_path_buf();
+    for seg in rel.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            bail!("refusing path segment {seg:?} in {rel:?}");
+        }
+        dest.push(seg);
+    }
+    Ok(dest)
+}
+
+fn apply_file_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(mode);
+        fs::set_permissions(path, perms)
+            .with_context(|| format!("set mode {:#o} on {}", mode, path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+    Ok(())
+}
+
 fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usize) -> Result<()> {
     let index = load_index(index_path)?;
 
@@ -819,7 +929,7 @@ fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usi
     let mut writer = BufWriter::new(file);
 
     // Fetch plaintext (optionally concurrent); always write in entry order.
-    let plains = fetch_index_plains(source, &index, jobs, "cat")?;
+    let plains = fetch_entry_plains(source, &index.entries, jobs, "cat")?;
     for plain in &plains {
         writer
             .write_all(plain)
@@ -841,22 +951,21 @@ fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usi
     Ok(())
 }
 
-/// Fetch every index entry's plaintext with bounded concurrency; results in entry order.
+/// Fetch every entry's plaintext with bounded concurrency; results in entry order.
 ///
 /// When `jobs == 1`, work is serial and fail-fast on the calling thread (≡ 0.3.0).
 /// Errors always include the chunk id.
-fn fetch_index_plains(
+fn fetch_entry_plains(
     source: &dyn ChunkSource,
-    index: &Index,
+    entries: &[IndexEntry],
     jobs: usize,
     op: &str,
 ) -> Result<Vec<Vec<u8>>> {
-    let tasks: Vec<(usize, ChunkId, u64)> = index
-        .entries
+    let tasks: Vec<(usize, ChunkId, u64)> = entries
         .iter()
         .enumerate()
         .map(|(i, entry)| {
-            let expected_len = entry_length(&index.entries, i).expect("entry index in range");
+            let expected_len = entry_length(entries, i).expect("entry index in range");
             (i, entry.chunk_id, expected_len)
         })
         .collect();
@@ -919,7 +1028,14 @@ fn fetch_index_plains(
     Ok(plains)
 }
 
-fn cmd_verify(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Result<()> {
+fn cmd_verify(source: &dyn ChunkSource, listing_path: &Path, jobs: usize) -> Result<()> {
+    match peek_listing_kind(listing_path)? {
+        ListingKind::Index => cmd_verify_index(source, listing_path, jobs),
+        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs),
+    }
+}
+
+fn cmd_verify_index(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Result<()> {
     let index = load_index(index_path)?;
     index
         .validate()
@@ -959,7 +1075,7 @@ fn cmd_verify(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Resul
         plains
     } else {
         // Concurrent get (presence implied); length-checked; errors include chunk id.
-        fetch_index_plains(source, &index, jobs, "verify failed")?
+        fetch_entry_plains(source, &index.entries, jobs, "verify failed")?
     };
 
     let mut hasher = blake3::Hasher::new();
@@ -989,6 +1105,211 @@ fn cmd_verify(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Resul
         index.total_size,
         index.chunk_count(),
         if index.chunk_count() == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+fn cmd_verify_dir(source: &dyn ChunkSource, archive_path: &Path, jobs: usize) -> Result<()> {
+    let archive = load_dir_archive(archive_path)?;
+    archive
+        .validate()
+        .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
+
+    let mut file_count = 0usize;
+    let mut total_chunks = 0usize;
+
+    for entry in &archive.entries {
+        match &entry.kind {
+            DirEntryKind::Dir { .. } => {
+                // Structure already validated; nothing to fetch.
+            }
+            DirEntryKind::File {
+                size,
+                blob_blake3,
+                chunks,
+                ..
+            } => {
+                file_count += 1;
+                total_chunks += chunks.len();
+                let op = format!("verify failed (file {})", entry.path);
+                let plains = if jobs <= 1 {
+                    let mut plains = Vec::with_capacity(chunks.len());
+                    for (i, chunk_entry) in chunks.iter().enumerate() {
+                        let expected_len = entry_length(chunks, i).expect("entry index in range");
+                        match source.has(&chunk_entry.chunk_id) {
+                            Ok(true) => {}
+                            Ok(false) => bail!(
+                                "{op}: chunk {} missing from source (entry {i})",
+                                chunk_entry.chunk_id
+                            ),
+                            Err(e) => bail!(
+                                "{op}: chunk {} presence check error (entry {i}): {e}",
+                                chunk_entry.chunk_id
+                            ),
+                        }
+                        let plain = source.get(&chunk_entry.chunk_id).with_context(|| {
+                            format!(
+                                "{op}: chunk {} unreadable or hash mismatch (entry {i})",
+                                chunk_entry.chunk_id
+                            )
+                        })?;
+                        if plain.len() as u64 != expected_len {
+                            bail!(
+                                "{op}: chunk {} length mismatch (got {}, expected {expected_len})",
+                                chunk_entry.chunk_id,
+                                plain.len()
+                            );
+                        }
+                        plains.push(plain);
+                    }
+                    plains
+                } else {
+                    fetch_entry_plains(source, chunks, jobs, &op)?
+                };
+
+                let mut hasher = blake3::Hasher::new();
+                let mut assembled: u64 = 0;
+                for plain in &plains {
+                    hasher.update(plain);
+                    assembled += plain.len() as u64;
+                }
+                if assembled != *size {
+                    bail!("{op}: assembled size {assembled} != file size {size}");
+                }
+                let blob_id = ChunkId::from_bytes(*hasher.finalize().as_bytes());
+                if blob_id != *blob_blake3 {
+                    bail!("{op}: blob_blake3 mismatch (got {blob_id}, archive has {blob_blake3})");
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "verify: ok ({} file{}, {} chunk{})",
+        file_count,
+        if file_count == 1 { "" } else { "s" },
+        total_chunks,
+        if total_chunks == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+fn cmd_extract(
+    source: &dyn ChunkSource,
+    archive_path: &Path,
+    out_dir: &Path,
+    jobs: usize,
+) -> Result<()> {
+    match peek_listing_kind(archive_path)? {
+        ListingKind::DirArchive => {}
+        ListingKind::Index => bail!(
+            "extract expects a `.cfdir` archive; {} looks like a `.cfidx` (use `cat` for single-blob)",
+            archive_path.display()
+        ),
+    }
+
+    let archive = load_dir_archive(archive_path)?;
+    archive
+        .validate()
+        .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
+
+    if out_dir.exists() {
+        if out_dir.is_file() {
+            bail!(
+                "extract output {} exists and is a file (refusing to overwrite)",
+                out_dir.display()
+            );
+        }
+    } else {
+        fs::create_dir_all(out_dir)
+            .with_context(|| format!("create output dir {}", out_dir.display()))?;
+    }
+
+    let mut file_count = 0usize;
+    let mut dir_count = 0usize;
+
+    for entry in &archive.entries {
+        let dest = join_archive_path(out_dir, &entry.path)?;
+        match &entry.kind {
+            DirEntryKind::Dir { mode } => {
+                if dest.exists() {
+                    if !dest.is_dir() {
+                        bail!(
+                            "extract target {} already exists and is not a directory",
+                            dest.display()
+                        );
+                    }
+                } else {
+                    fs::create_dir_all(&dest)
+                        .with_context(|| format!("create dir {}", dest.display()))?;
+                }
+                apply_file_mode(&dest, *mode)?;
+                dir_count += 1;
+            }
+            DirEntryKind::File {
+                mode,
+                size,
+                blob_blake3,
+                chunks,
+                ..
+            } => {
+                if dest.exists() {
+                    bail!(
+                        "extract target {} already exists (refusing to overwrite; no --force in this milestone)",
+                        dest.display()
+                    );
+                }
+                if let Some(parent) = dest.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)
+                            .with_context(|| format!("create parent dir {}", parent.display()))?;
+                    }
+                }
+
+                let op = format!("extract (file {})", entry.path);
+                let plains = fetch_entry_plains(source, chunks, jobs, &op)?;
+
+                let file = File::create(&dest)
+                    .with_context(|| format!("create file {}", dest.display()))?;
+                let mut writer = BufWriter::new(file);
+                let mut hasher = blake3::Hasher::new();
+                let mut assembled: u64 = 0;
+                for plain in &plains {
+                    writer
+                        .write_all(plain)
+                        .with_context(|| format!("write {}", dest.display()))?;
+                    hasher.update(plain);
+                    assembled += plain.len() as u64;
+                }
+                writer
+                    .flush()
+                    .with_context(|| format!("flush {}", dest.display()))?;
+                writer
+                    .into_inner()
+                    .with_context(|| format!("finalize {}", dest.display()))?
+                    .sync_all()
+                    .with_context(|| format!("fsync {}", dest.display()))?;
+
+                if assembled != *size {
+                    bail!("{op}: assembled size {assembled} != archive size {size}");
+                }
+                let blob_id = ChunkId::from_bytes(*hasher.finalize().as_bytes());
+                if blob_id != *blob_blake3 {
+                    bail!("{op}: blob_blake3 mismatch (got {blob_id}, archive has {blob_blake3})");
+                }
+                apply_file_mode(&dest, *mode)?;
+                file_count += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "extract: wrote {} ({} file{}, {} dir{})",
+        out_dir.display(),
+        file_count,
+        if file_count == 1 { "" } else { "s" },
+        dir_count,
+        if dir_count == 1 { "" } else { "s" }
     );
     Ok(())
 }

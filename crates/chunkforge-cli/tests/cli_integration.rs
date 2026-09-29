@@ -93,6 +93,7 @@ fn help_and_version() {
     let help_s = String::from_utf8_lossy(&help.stdout);
     assert!(help_s.contains("make"), "{help_s}");
     assert!(help_s.contains("archive"), "{help_s}");
+    assert!(help_s.contains("extract"), "{help_s}");
     assert!(help_s.contains("cat"), "{help_s}");
     assert!(help_s.contains("verify"), "{help_s}");
 
@@ -1854,7 +1855,7 @@ fn push_missing_local_chunk_fails() {
 
 #[test]
 fn jobs_help_listed_on_cat_verify_doctor_push() {
-    for cmd in ["cat", "verify", "doctor", "push"] {
+    for cmd in ["cat", "verify", "doctor", "push", "extract"] {
         let out = run_ok(&[cmd, "--help"]);
         let s = String::from_utf8_lossy(&out.stdout);
         assert!(
@@ -2366,6 +2367,196 @@ fn make_single_file_unchanged_alongside_archive() {
     ]);
     let bytes = fs::read(&idx).unwrap();
     assert_eq!(&bytes[0..5], b"CFIDX");
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+// --- Phase 5 M3: extract + verify .cfdir ---
+
+#[test]
+fn extract_help_lists_store_source_output() {
+    let help = run_ok(&["extract", "--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(help_s.contains("--store"), "{help_s}");
+    assert!(help_s.contains("--source"), "{help_s}");
+    assert!(
+        help_s.contains("-o") || help_s.contains("--output"),
+        "{help_s}"
+    );
+    assert!(help_s.contains("--jobs"), "{help_s}");
+}
+
+#[test]
+fn archive_extract_roundtrip_diff_qr() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    let sub = src.join("sub");
+    let nested = sub.join("deep");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(src.join("a.txt"), b"hello-tree\n").unwrap();
+    fs::write(sub.join("b.txt"), b"hello-tree\n").unwrap(); // cross-file dedup
+    fs::write(nested.join("c.bin"), b"unique-payload-xyz").unwrap();
+    fs::write(src.join("empty-file"), b"").unwrap();
+
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("release.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // verify .cfdir before extract
+    let ver = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let ver_err = String::from_utf8_lossy(&ver.stderr);
+    assert!(ver_err.contains("verify: ok"), "stderr={ver_err}");
+    assert!(ver_err.contains("file"), "stderr={ver_err}");
+
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    // Content-equivalent to source for regular files (diff -qr).
+    let diff = Command::new("diff")
+        .args(["-qr", src.to_str().unwrap(), out.to_str().unwrap()])
+        .output()
+        .expect("spawn diff");
+    assert!(
+        diff.status.success(),
+        "diff -qr failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&diff.stdout),
+        String::from_utf8_lossy(&diff.stderr)
+    );
+
+    // Existing target must fail (no --force).
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let fail_err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        fail_err.contains("already exists") || fail_err.contains("refusing"),
+        "stderr={fail_err}"
+    );
+}
+
+#[test]
+fn verify_cfdir_missing_chunk_includes_id() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    // Multi-chunk file so deleting one .cnk is meaningful.
+    let mut data = Vec::with_capacity(24 * 1024);
+    for i in 0..(24 * 1024) {
+        data.push(((i * 13 + 5) % 251) as u8);
+    }
+    fs::write(src.join("big.bin"), &data).unwrap();
+    fs::write(src.join("sub/small.txt"), b"tiny\n").unwrap();
+
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        src.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+
+    // Pick one chunk id from the archive and delete its .cnk.
+    let bytes = fs::read(&cfdir).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let chunk_id = arch
+        .all_chunk_ids()
+        .next()
+        .expect("archive should reference at least one chunk");
+    let hex_id = chunk_id.to_string();
+    assert_eq!(hex_id.len(), 64);
+    let cnk = store
+        .join("chunks")
+        .join(&hex_id[..2])
+        .join(format!("{}.cnk", &hex_id[2..]));
+    assert!(cnk.is_file(), "expected {}", cnk.display());
+    fs::remove_file(&cnk).unwrap();
+
+    let out = run_fail(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(&hex_id),
+        "error must include chunk id {hex_id}; stderr={err}"
+    );
+
+    // extract should also fail with the chunk id.
+    let out_dir = dir.path().join("out");
+    let ext = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out_dir.to_str().unwrap(),
+    ]);
+    let ext_err = String::from_utf8_lossy(&ext.stderr);
+    assert!(
+        ext_err.contains(&hex_id),
+        "extract error must include chunk id {hex_id}; stderr={ext_err}"
+    );
+}
+
+#[test]
+fn verify_cfidx_still_works_alongside_cfdir_dispatch() {
+    // Regression: magic dispatch must not break single-blob verify.
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
     run_ok(&[
         "verify",
         "--store",
