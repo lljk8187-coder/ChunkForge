@@ -18,6 +18,8 @@ clap = { workspace = true }
 chunkforge-chunk = { workspace = true }
 chunkforge-index = { workspace = true }
 chunkforge-store = { workspace = true }
+chunkforge-remote = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tiny_http = { workspace = true }

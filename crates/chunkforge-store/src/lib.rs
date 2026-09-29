@@ -16,9 +16,10 @@
 //! Optional `zstd` cargo feature enables zstd on-disk encoding.
 //!
 //! Phase 2 adds [`ChunkSource`]: a read-only trait implemented by [`Store`]
-//! (and later by remote / cache backends) so `cat` / `verify` / FUSE share one
+//! (and by remote / [`CacheSource`] backends) so `cat` / `verify` / FUSE share one
 //! fetch path without breaking the Phase 1 `put`/`get`/`has`/`create`/`open` API.
 
+mod cache;
 mod error;
 mod meta;
 mod outcome;
@@ -26,6 +27,7 @@ mod path;
 mod source;
 mod store;
 
+pub use cache::CacheSource;
 pub use error::{Error, StoreError};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
 pub use outcome::PutOutcome;

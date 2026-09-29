@@ -24,7 +24,7 @@ Hash is always over **plaintext**. With `Compression::None`, the `.cnk` file byt
 are the plaintext. (Compressed stores write encoded payloads; HTTP Phase 2 skeleton
 treats the response body as plaintext — serve uncompressed stores for demos.)
 
-## `--source` URL forms (CLI wiring is M3+)
+## `--source` URL forms
 
 ```text
 /path/to/store                 # plain local path
@@ -66,7 +66,7 @@ http://127.0.0.1:8765/chunks/af/1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc
 ```bash
 # After `chunkforge make --store ./store …`
 cd ./store && python3 -m http.server 8765
-# Clients use --source http://127.0.0.1:8765  (M3+)
+# Clients use --source http://127.0.0.1:8765
 ```
 
 ## `file://` (`FileUrlSource`)

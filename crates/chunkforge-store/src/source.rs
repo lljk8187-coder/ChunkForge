@@ -51,6 +51,26 @@ pub trait ChunkSource: Send + Sync {
     fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError>;
 }
 
+impl<T: ChunkSource + ?Sized> ChunkSource for Box<T> {
+    fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
+        (**self).has(id)
+    }
+
+    fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
+        (**self).get(id)
+    }
+}
+
+impl<T: ChunkSource + ?Sized> ChunkSource for std::sync::Arc<T> {
+    fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
+        (**self).has(id)
+    }
+
+    fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
+        (**self).get(id)
+    }
+}
+
 impl ChunkSource for Store {
     fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
         Ok(Store::has(self, id))

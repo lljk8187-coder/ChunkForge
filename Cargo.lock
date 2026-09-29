@@ -149,9 +149,11 @@ dependencies = [
  "blake3",
  "chunkforge-chunk",
  "chunkforge-index",
+ "chunkforge-remote",
  "chunkforge-store",
  "clap",
  "tempfile",
+ "tiny_http",
 ]
 
 [[package]]

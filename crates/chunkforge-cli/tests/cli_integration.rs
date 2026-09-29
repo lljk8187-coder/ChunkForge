@@ -460,3 +460,205 @@ fn count_cnk(root: &Path) -> usize {
     }
     n
 }
+
+// --- Phase 2 M3: --source / --cache ---
+
+use std::thread;
+use std::time::Duration;
+use tiny_http::{Header, Method, Response, Server, StatusCode};
+
+fn spawn_static_store_server(store_root: PathBuf) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            if request.method() == &Method::Head || request.method() == &Method::Get {
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    if request.method() == &Method::Head {
+                        let response = Response::empty(200).with_header(
+                            Header::from_bytes(&b"Content-Length"[..], data.len().to_string())
+                                .unwrap(),
+                        );
+                        let _ = request.respond(response);
+                    } else {
+                        let _ = request.respond(Response::from_data(data));
+                    }
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
+#[test]
+fn help_mentions_source_and_cache() {
+    let cat = run_ok(&["cat", "--help"]);
+    let cat_s = String::from_utf8_lossy(&cat.stdout);
+    assert!(cat_s.contains("--source"), "{cat_s}");
+    assert!(cat_s.contains("--cache"), "{cat_s}");
+    assert!(cat_s.contains("--store"), "{cat_s}");
+
+    let ver = run_ok(&["verify", "--help"]);
+    let ver_s = String::from_utf8_lossy(&ver.stdout);
+    assert!(ver_s.contains("--source"), "{ver_s}");
+    assert!(ver_s.contains("--cache"), "{ver_s}");
+}
+
+#[test]
+fn source_path_synonym_for_store() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "verify",
+        "--source",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "cat",
+        "--source",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}
+
+#[test]
+fn http_source_verify_fills_empty_cache_then_cat_from_cache() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("from-cache");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(count_cnk(&cache.join("chunks")), 0);
+
+    let (base, _handle) = spawn_static_store_server(remote_store.clone());
+
+    // Remote has chunks; cache empty → verify succeeds and fills cache.
+    run_ok(&[
+        "verify",
+        "--source",
+        &base,
+        "--cache",
+        cache.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let cached = count_cnk(&cache.join("chunks"));
+    assert!(
+        cached >= 1,
+        "cache should gain .cnk files after verify, got {cached}"
+    );
+
+    // After fill, cat from cache-only (no HTTP) works.
+    run_ok(&[
+        "cat",
+        "--source",
+        cache.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}
+
+#[test]
+fn http_source_cat_with_cache() {
+    let dir = tempdir().unwrap();
+    let remote_store = dir.path().join("remote");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("binary-256.bin");
+
+    run_ok(&[
+        "make",
+        "--store",
+        remote_store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (base, _handle) = spawn_static_store_server(remote_store);
+
+    run_ok(&[
+        "cat",
+        "--source",
+        &base,
+        "--cache",
+        cache.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+    assert!(count_cnk(&cache.join("chunks")) >= 1);
+}
+
+#[test]
+fn file_url_source_works() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let url = format!("file://{}", store.display());
+    run_ok(&["verify", "--source", &url, idx.to_str().unwrap()]);
+    run_ok(&[
+        "cat",
+        "--source",
+        &url,
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}

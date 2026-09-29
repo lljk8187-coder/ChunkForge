@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Phase 2 M1: `ChunkSource` + `SourceError` in `chunkforge-store` (`impl` for `Store`)
 - Phase 2 M2: `chunkforge-remote` — `HttpChunkSource` (ureq) + `FileUrlSource`; `docs/remote-layout.md`
+- Phase 2 M3: `CacheSource<P, S>` in `chunkforge-store`; CLI `cat`/`verify` accept `--source` / `--cache` (`--store` retained)
 
 ## [0.1.0] — 2026-09-29
 

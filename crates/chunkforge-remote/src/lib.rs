@@ -14,4 +14,4 @@ pub use http::HttpChunkSource;
 pub use layout::chunk_http_path;
 
 // Re-exports for convenience when depending only on this crate.
-pub use chunkforge_store::{ChunkId, ChunkSource, SourceError, Store};
+pub use chunkforge_store::{CacheSource, ChunkId, ChunkSource, SourceError, Store};
