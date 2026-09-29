@@ -139,7 +139,7 @@ checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "chunkforge-chunk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "fastcdc",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "chunkforge-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "chunkforge-fuse"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chunkforge-chunk",
  "chunkforge-index",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "chunkforge-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "chunkforge-chunk",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "chunkforge-remote"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chunkforge-store",
  "tempfile",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "chunkforge-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chunkforge-chunk",
  "tempfile",

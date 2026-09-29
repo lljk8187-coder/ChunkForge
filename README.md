@@ -1,24 +1,30 @@
 # ChunkForge
 
-**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — local make / cat / verify / incremental reuse as a foundation for later multi-backend fetch and read-only mount.
-
-## Non-goals (Phase 1)
-
-| Not this | Why |
-|---|---|
-| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune semantics; commands avoid `backup`/`restore` |
-| ❌ Not syncthing-style **realtime P2P sync** | No device discovery, continuous watch, or bidirectional conflict resolution |
-| ❌ **No GPU / no LLM** | Pure CPU data plane |
-| ❌ Phase 1 has **no FUSE** | Read-only mount is Phase 2 |
-| ❌ Phase 1 has **no network / remote store** | No HTTP/S3/SFTP; remote backends are Phase 2+ |
-| ❌ Not a casync **binary drop-in** | Semantically aligned with casync/desync; **index is NOT casync-compatible** (native `.cfidx`, not `.caibx`) |
-| ❌ No full directory-tree archive (`.catar` equivalent) | Phase 1 is **single-blob** (file) only |
+**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`) and **read-only** FUSE mount of a single blob.
 
 ## Status
 
-**Phase 1 complete (0.1.0):** M1–M6 — chunk / store / index / CLI / fixtures+dedup demo / CI+README.
+| Phase | Version | Delivered |
+|---|---|---|
+| **Phase 1** | **0.1.0** | Local chunk / store / index / CLI (`make` `cat` `verify` `chunk-id` `store has`) / fixtures + dedup demo / CI |
+| **Phase 2** | **0.2.0** | `ChunkSource` + HTTP/`file://` remote + `--source`/`--cache` + read-only `mount` |
 
-## Quick start
+## Non-goals (Phase 2)
+
+| Not this | Why |
+|---|---|
+| ❌ **Bidirectional sync** | No watch directories, conflict resolution, or “two machines push each other” |
+| ❌ **Write mount** | FUSE is always `RO`; writes return `EROFS` / `EACCES`; no COW write-back |
+| ❌ **Full S3 SDK** | No `aws-sdk-s3` / multipart / SigV4; static HTTP GET (or CDN) over store layout is enough |
+| ❌ **P2P** | No device discovery, DHT, or node reputation |
+| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune; commands avoid `backup`/`restore` |
+| ❌ Not a casync **binary drop-in** | Native `.cfidx` (not `.caibx`); single-blob only — no directory-tree archive |
+| ❌ **GPU / LLM** | Pure CPU data plane |
+| ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
+
+Phase 1 also had no FUSE and no network store; those are now in Phase 2 as above.
+
+## Quick start (local CAS)
 
 ```bash
 # Requires Rust 1.85+ (edition 2024)
@@ -30,6 +36,34 @@ cmp ./fixtures/hello.txt /tmp/hello.out
 ```
 
 Or via Make: `make build` then the same `make` / `cat` / `verify` flow above.
+
+## Phase 2: remote source + read-only mount
+
+Chunks are read through `ChunkSource`: local store, `file://`, or HTTP static directory
+(`GET {base}/chunks/ab/<62hex>.cnk`). Optional `--cache` fills a local store on miss.
+
+```bash
+# Remote verify / cat (HTTP static store root — same layout as local CAS)
+python3 -m http.server 8765 --directory ./store &
+./target/debug/chunkforge verify --source http://127.0.0.1:8765 v1.cfidx
+./target/debug/chunkforge cat --source http://127.0.0.1:8765 --cache ./cache \
+  v1.cfidx -o /tmp/hello.http.out
+```
+
+Linux + fuse3: mount a `.cfidx` as a **single** read-only file:
+
+```bash
+cargo build -p chunkforge-cli          # fuse feature on by default
+mkdir -p ./mnt
+./target/debug/chunkforge mount --store ./store v1.cfidx ./mnt
+# other terminal: cmp ./fixtures/hello.txt ./mnt/v1
+# HTTP + cache:
+#   chunkforge mount --source http://127.0.0.1:8765 --cache ./cache v1.cfidx ./mnt
+fusermount3 -u ./mnt
+./scripts/demo_mount.sh                # local-store smoke: cmp + write-fail + unmount
+```
+
+Details: [docs/mount.md](docs/mount.md). Remote chunk layout: [docs/remote-layout.md](docs/remote-layout.md).
 
 ## Incremental dedup demo
 
@@ -58,20 +92,11 @@ cargo test --workspace
 cargo test -p chunkforge-store --features zstd
 # optional large-file dedup (generates fixtures; ignored by default in CI):
 # CHUNKFORGE_GEN_MIB=8 cargo test -p chunkforge-cli --test cli_integration large_file_dedup -- --ignored --nocapture
+# optional real FUSE mount (needs fuse3 + /dev/fuse; ignored by default):
+# cargo test -p chunkforge-fuse -- --ignored
 ```
 
-GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs fmt + clippy + test on push to `main`/`master` and on pull requests. The optional 64MiB `gen_large` smoke is **not** part of CI (timeout / disk); ignored large tests stay ignored.
-
-## Read-only mount (Phase 2)
-
-Linux + fuse3: mount a `.cfidx` as a single read-only file.
-
-```bash
-cargo build -p chunkforge-cli          # fuse feature on by default
-./scripts/demo_mount.sh                # local store: cmp + write-fail + unmount
-```
-
-Details: [docs/mount.md](docs/mount.md). Remote chunk layout: [docs/remote-layout.md](docs/remote-layout.md).
+GitHub Actions: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs fmt + clippy + test on push to `main`/`master` and on pull requests. Real FUSE mounts and the optional 64MiB `gen_large` smoke stay **`#[ignore]`** (not part of default CI).
 
 ## License
 
