@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/chunkforge-chunk",
+    "crates/chunkforge-index",
     "crates/chunkforge-store",
 ]
 

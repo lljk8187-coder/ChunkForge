@@ -16,9 +16,9 @@
 
 ## Status
 
-**M2 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` (local CAS: `put`/`get`/`has`, atomic writes, optional `zstd` feature).
+**M3 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` + `chunkforge-index` (`.cfidx` v1 encode/decode).
 
-Later milestones add `.cfidx` and the `chunkforge` CLI (`make` / `cat` / `verify`).
+Later milestones add the `chunkforge` CLI (`make` / `cat` / `verify`).
 
 ## Develop
 
@@ -26,6 +26,7 @@ Later milestones add `.cfidx` and the `chunkforge` CLI (`make` / `cat` / `verify
 # Requires Rust 1.85+ (edition 2024); tested on stable 1.98+
 cargo test -p chunkforge-chunk
 cargo test -p chunkforge-store
+cargo test -p chunkforge-index
 # optional compression:
 cargo test -p chunkforge-store --features zstd
 ```

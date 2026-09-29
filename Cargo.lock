@@ -56,6 +56,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chunkforge-index"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chunkforge-chunk",
+ "thiserror",
+]
+
+[[package]]
 name = "chunkforge-store"
 version = "0.1.0"
 dependencies = [

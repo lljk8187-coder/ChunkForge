@@ -1,0 +1,13 @@
+[package]
+name = "chunkforge-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = ".cfidx v1 encode/decode for ChunkForge indexes"
+readme = false
+
+[dependencies]
+blake3 = { workspace = true }
+chunkforge-chunk = { workspace = true }
+thiserror = { workspace = true }
