@@ -7,13 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Phase 6 in progress toward **0.6.0** (crate version still **0.5.0** until M7).
+
 ### Added
 
+- **`archive --seed <prior.cfdir>`** (Phase 6 P0): incremental directory
+  archive — reuse unchanged files' chunk tables via content BLAKE3 (size
+  fast-reject); stderr `seed_reused_files=` / `rechunked_files=`; missing
+  reused chunks force rechunk + `seed_missing_chunks=`; dry-run prints
+  `would_seed_reuse=` / `would_rechunk=`; output remains full `.cfdir` v1 —
+  see `docs/archive.md`
+- **`archive --jobs N`** (Phase 6 P1): per-file parallel chunking (default
+  **1** ≡ serial); seed map read-only; local store puts stay atomic /
+  race-safe
 - **`chunkforge pull`** (Phase 6 P1): fill a local CAS `--store` with missing
   chunks referenced by `.cfidx` / `.cfdir` listings from `--source`
   (path / `file://` / `http(s)://`); `--jobs` / `--dry-run`; stderr
   `skipped=` / `fetched=` / `failed=`; does not extract trees or upload/download
   listings — see `docs/pull.md`
+- **`scripts/demo_seed.sh`**: local ~10 min smoke (archive → change one file →
+  `--seed` → verify / extract / optional `pull` via `put_stub`)
+
+### Notes
+
+- Version bump / annotated tag **0.6.0** deferred to Phase6-M7
+- Still deferred / non-goals: in-process SigV4 / `aws-sdk-*` / multipart; write
+  mount; bidirectional sync; packfile; video analysis; `push` does **not**
+  upload listings; `--seed-trust-mtime` not shipped
 
 ## [0.5.0] — 2026-09-29
 

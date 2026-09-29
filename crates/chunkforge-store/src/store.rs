@@ -8,6 +8,10 @@ use chunkforge_chunk::ChunkId;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-process counter so concurrent `put` calls never share a tmp path.
+static PUT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A local ChunkForge CAS store rooted at a directory.
 ///
@@ -111,13 +115,16 @@ impl Store {
         let payload = encode_payload(plain, self.meta.compression)?;
 
         // Unique tmp name in the same directory so rename stays atomic.
+        // Include a per-process sequence so concurrent puts (archive --jobs)
+        // never collide on the same *.tmp path within one process.
         let tmp_name = format!(
-            "{}.{:x}.tmp",
+            "{}.{:x}.{:x}.tmp",
             final_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("chunk"),
-            std::process::id()
+            std::process::id(),
+            PUT_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
         );
         let tmp_path = parent.join(tmp_name);
 

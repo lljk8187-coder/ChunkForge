@@ -17,6 +17,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -75,6 +76,10 @@ enum Commands {
         /// fingerprint (BLAKE3); changed or missing-chunk files are rechunked
         #[arg(long = "seed", value_name = "PRIOR.cfdir")]
         seed: Option<PathBuf>,
+        /// Max concurrent per-file chunking (default 1 = serial). Seed map is
+        /// read-only; store puts stay atomic / race-safe.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -339,14 +344,19 @@ fn run() -> Result<()> {
             chunk_size,
             dry_run,
             seed,
-        } => cmd_archive(
-            &store,
-            &output,
-            &src_dir,
-            chunk_size.as_deref(),
-            dry_run,
-            seed.as_deref(),
-        ),
+            jobs,
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_archive(
+                &store,
+                &output,
+                &src_dir,
+                chunk_size.as_deref(),
+                dry_run,
+                seed.as_deref(),
+                jobs,
+            )
+        }
         Commands::Extract {
             store,
             source,
@@ -669,6 +679,7 @@ fn cmd_archive(
     chunk_size: Option<&str>,
     dry_run: bool,
     seed: Option<&Path>,
+    jobs: usize,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -731,6 +742,21 @@ fn cmd_archive(
         );
     }
 
+    // Dry-run cross-file dedup set (Mutex so --jobs > 1 stays correct).
+    let dry_seen: Mutex<HashSet<ChunkId>> = Mutex::new(HashSet::new());
+
+    let outcomes = parallel::map_indexed(&file_paths, jobs, |_idx, full| {
+        archive_one_file(
+            src_dir,
+            full,
+            &params,
+            store.as_ref(),
+            seed_map.as_ref(),
+            dry_run,
+            &dry_seen,
+        )
+    });
+
     let mut entries: Vec<DirEntry> = Vec::with_capacity(file_paths.len());
     let mut total_chunks = 0usize;
     let mut new_chunks = 0usize;
@@ -738,145 +764,24 @@ fn cmd_archive(
     let mut seed_reused_files = 0usize;
     let mut rechunked_files = 0usize;
     let mut seed_missing_chunks = 0usize;
-    // Dry-run: track ids we would write this run so cross-file dedup is counted.
-    let mut dry_seen: HashSet<ChunkId> = HashSet::new();
 
-    for full in &file_paths {
-        let rel = relative_archive_path(src_dir, full)?;
-        validate_archive_path(&rel)
-            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
-
-        let meta =
-            fs::symlink_metadata(full).with_context(|| format!("stat {}", full.display()))?;
-        if meta.file_type().is_symlink() {
-            // Race: became a symlink after collect — skip (summary already printed).
-            eprintln!(
-                "archive: skip symlink {} (policy: skip+warn; not recorded)",
-                full.display()
-            );
-            continue;
+    for outcome in outcomes {
+        let outcome = outcome?;
+        total_chunks += outcome.chunk_count;
+        new_chunks += outcome.new_chunks;
+        reused_chunks += outcome.reused_chunks;
+        if outcome.seed_reused {
+            seed_reused_files += 1;
         }
-        if !meta.is_file() {
-            eprintln!(
-                "archive: skip special file {} (fifo/socket/device)",
-                full.display()
-            );
-            continue;
+        if outcome.rechunked {
+            rechunked_files += 1;
         }
-
-        let source_size = meta.len();
-
-        // --- Seed reuse path -------------------------------------------------
-        let mut reused_from_seed = false;
-        if let Some(ref map) = seed_map {
-            if let Some(prior_entry) = map.get(rel.as_str()) {
-                let mut f = File::open(full)
-                    .with_context(|| format!("open {} for seed hash", full.display()))?;
-                let decision = decide_seed_for_entry(prior_entry, source_size, &mut f)
-                    .map_err(|e| anyhow::anyhow!("seed decide for {rel}: {e}"))?;
-                if decision == SeedDecision::Reuse {
-                    let prior_chunks = match &prior_entry.kind {
-                        DirEntryKind::File { chunks, .. } => chunks.as_slice(),
-                        DirEntryKind::Dir { .. } => unreachable!("seed map is files only"),
-                    };
-                    let all_present = match store.as_ref() {
-                        Some(s) => prior_chunks.iter().all(|e| s.has(&e.chunk_id)),
-                        // Dry-run with no store: cannot verify → force rechunk.
-                        None => false,
-                    };
-                    if all_present {
-                        // Copy prior fields; do not FastCDC / do not put.
-                        let chunk_n = prior_chunks.len();
-                        total_chunks += chunk_n;
-                        reused_chunks += chunk_n;
-                        seed_reused_files += 1;
-                        entries.push(DirEntry {
-                            path: rel.clone(),
-                            kind: prior_entry.kind.clone(),
-                        });
-                        reused_from_seed = true;
-                    } else {
-                        let missing: Vec<_> = match store.as_ref() {
-                            Some(s) => prior_chunks
-                                .iter()
-                                .filter(|e| !s.has(&e.chunk_id))
-                                .map(|e| e.chunk_id.to_string())
-                                .collect(),
-                            None => prior_chunks
-                                .iter()
-                                .map(|e| e.chunk_id.to_string())
-                                .collect(),
-                        };
-                        eprintln!(
-                            "archive: seed: missing {} chunk{} in store for {rel} \
-                             (rechunking; first missing: {})",
-                            missing.len(),
-                            if missing.len() == 1 { "" } else { "s" },
-                            missing.first().map(|s| s.as_str()).unwrap_or("?"),
-                        );
-                        seed_missing_chunks += 1;
-                    }
-                }
-            }
+        if outcome.seed_missing {
+            seed_missing_chunks += 1;
         }
-
-        if reused_from_seed {
-            continue;
+        if let Some(entry) = outcome.entry {
+            entries.push(entry);
         }
-
-        // --- FastCDC + store put (unchanged / rechunk / no seed) ------------
-        rechunked_files += 1;
-        let data = fs::read(full).with_context(|| format!("read {}", full.display()))?;
-        let mode = file_mode_u32(&meta);
-        let mtime_secs = file_mtime_secs(&meta);
-        let blob_blake3 = ChunkId::hash(&data);
-        let chunks = chunk_bytes(&data, &params);
-
-        let mut index_entries = Vec::with_capacity(chunks.len());
-        for c in &chunks {
-            let start = c.offset as usize;
-            let end = (c.offset + c.length) as usize;
-            let slice = data.get(start..end).with_context(|| {
-                format!(
-                    "chunk range {start}..{end} out of bounds in {}",
-                    full.display()
-                )
-            })?;
-            if dry_run {
-                let exists_in_store = store.as_ref().is_some_and(|s| s.has(&c.id));
-                if exists_in_store || dry_seen.contains(&c.id) {
-                    reused_chunks += 1;
-                } else {
-                    dry_seen.insert(c.id);
-                    new_chunks += 1;
-                }
-            } else {
-                let store = store.as_ref().expect("store open when not dry-run");
-                let outcome = store
-                    .put_with_id(&c.id, slice)
-                    .with_context(|| format!("put chunk {} (file {rel})", c.id))?;
-                match outcome {
-                    PutOutcome::Written => new_chunks += 1,
-                    PutOutcome::SkippedExists => reused_chunks += 1,
-                }
-            }
-            total_chunks += 1;
-            index_entries.push(IndexEntry {
-                end_offset: c.offset + c.length,
-                chunk_id: c.id,
-            });
-        }
-
-        entries.push(DirEntry {
-            path: rel,
-            kind: DirEntryKind::File {
-                mode,
-                size: data.len() as u64,
-                mtime_secs,
-                blob_blake3,
-                chunks: index_entries,
-            },
-        });
     }
 
     let file_count = entries.len();
@@ -969,6 +874,204 @@ fn cmd_archive(
         );
     }
     Ok(())
+}
+
+/// Per-file result from [`archive_one_file`] (order-preserving aggregation).
+struct ArchiveFileOutcome {
+    entry: Option<DirEntry>,
+    chunk_count: usize,
+    new_chunks: usize,
+    reused_chunks: usize,
+    seed_reused: bool,
+    rechunked: bool,
+    seed_missing: bool,
+}
+
+/// Process one source file for `archive` (seed reuse or FastCDC + put).
+///
+/// Seed map is read-only. Store puts are atomic / race-safe (`Store::put_with_id`).
+/// `dry_seen` tracks would-write ids across files under `--dry-run`.
+fn archive_one_file(
+    src_dir: &Path,
+    full: &Path,
+    params: &ChunkParams,
+    store: Option<&Store>,
+    seed_map: Option<&HashMap<&str, &DirEntry>>,
+    dry_run: bool,
+    dry_seen: &Mutex<HashSet<ChunkId>>,
+) -> Result<ArchiveFileOutcome> {
+    let rel = relative_archive_path(src_dir, full)?;
+    validate_archive_path(&rel)
+        .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+
+    let meta = fs::symlink_metadata(full).with_context(|| format!("stat {}", full.display()))?;
+    if meta.file_type().is_symlink() {
+        eprintln!(
+            "archive: skip symlink {} (policy: skip+warn; not recorded)",
+            full.display()
+        );
+        return Ok(ArchiveFileOutcome {
+            entry: None,
+            chunk_count: 0,
+            new_chunks: 0,
+            reused_chunks: 0,
+            seed_reused: false,
+            rechunked: false,
+            seed_missing: false,
+        });
+    }
+    if !meta.is_file() {
+        eprintln!(
+            "archive: skip special file {} (fifo/socket/device)",
+            full.display()
+        );
+        return Ok(ArchiveFileOutcome {
+            entry: None,
+            chunk_count: 0,
+            new_chunks: 0,
+            reused_chunks: 0,
+            seed_reused: false,
+            rechunked: false,
+            seed_missing: false,
+        });
+    }
+
+    let source_size = meta.len();
+
+    // --- Seed reuse path -------------------------------------------------
+    if let Some(map) = seed_map {
+        if let Some(prior_entry) = map.get(rel.as_str()) {
+            let mut f = File::open(full)
+                .with_context(|| format!("open {} for seed hash", full.display()))?;
+            let decision = decide_seed_for_entry(prior_entry, source_size, &mut f)
+                .map_err(|e| anyhow::anyhow!("seed decide for {rel}: {e}"))?;
+            if decision == SeedDecision::Reuse {
+                let prior_chunks = match &prior_entry.kind {
+                    DirEntryKind::File { chunks, .. } => chunks.as_slice(),
+                    DirEntryKind::Dir { .. } => unreachable!("seed map is files only"),
+                };
+                let all_present = match store {
+                    Some(s) => prior_chunks.iter().all(|e| s.has(&e.chunk_id)),
+                    // Dry-run with no store: cannot verify → force rechunk.
+                    None => false,
+                };
+                if all_present {
+                    let chunk_n = prior_chunks.len();
+                    return Ok(ArchiveFileOutcome {
+                        entry: Some(DirEntry {
+                            path: rel,
+                            kind: prior_entry.kind.clone(),
+                        }),
+                        chunk_count: chunk_n,
+                        new_chunks: 0,
+                        reused_chunks: chunk_n,
+                        seed_reused: true,
+                        rechunked: false,
+                        seed_missing: false,
+                    });
+                }
+                let missing: Vec<_> = match store {
+                    Some(s) => prior_chunks
+                        .iter()
+                        .filter(|e| !s.has(&e.chunk_id))
+                        .map(|e| e.chunk_id.to_string())
+                        .collect(),
+                    None => prior_chunks
+                        .iter()
+                        .map(|e| e.chunk_id.to_string())
+                        .collect(),
+                };
+                eprintln!(
+                    "archive: seed: missing {} chunk{} in store for {rel} \
+                     (rechunking; first missing: {})",
+                    missing.len(),
+                    if missing.len() == 1 { "" } else { "s" },
+                    missing.first().map(|s| s.as_str()).unwrap_or("?"),
+                );
+                // Fall through to rechunk; mark seed_missing below.
+                let outcome =
+                    archive_rechunk_file(full, &rel, &meta, params, store, dry_run, dry_seen)?;
+                return Ok(ArchiveFileOutcome {
+                    seed_missing: true,
+                    ..outcome
+                });
+            }
+        }
+    }
+
+    archive_rechunk_file(full, &rel, &meta, params, store, dry_run, dry_seen)
+}
+
+fn archive_rechunk_file(
+    full: &Path,
+    rel: &str,
+    meta: &std::fs::Metadata,
+    params: &ChunkParams,
+    store: Option<&Store>,
+    dry_run: bool,
+    dry_seen: &Mutex<HashSet<ChunkId>>,
+) -> Result<ArchiveFileOutcome> {
+    let data = fs::read(full).with_context(|| format!("read {}", full.display()))?;
+    let mode = file_mode_u32(meta);
+    let mtime_secs = file_mtime_secs(meta);
+    let blob_blake3 = ChunkId::hash(&data);
+    let chunks = chunk_bytes(&data, params);
+
+    let mut index_entries = Vec::with_capacity(chunks.len());
+    let mut new_chunks = 0usize;
+    let mut reused_chunks = 0usize;
+    for c in &chunks {
+        let start = c.offset as usize;
+        let end = (c.offset + c.length) as usize;
+        let slice = data.get(start..end).with_context(|| {
+            format!(
+                "chunk range {start}..{end} out of bounds in {}",
+                full.display()
+            )
+        })?;
+        if dry_run {
+            let exists_in_store = store.is_some_and(|s| s.has(&c.id));
+            let mut seen = dry_seen.lock().expect("dry_seen lock");
+            if exists_in_store || seen.contains(&c.id) {
+                reused_chunks += 1;
+            } else {
+                seen.insert(c.id);
+                new_chunks += 1;
+            }
+        } else {
+            let store = store.expect("store open when not dry-run");
+            let outcome = store
+                .put_with_id(&c.id, slice)
+                .with_context(|| format!("put chunk {} (file {rel})", c.id))?;
+            match outcome {
+                PutOutcome::Written => new_chunks += 1,
+                PutOutcome::SkippedExists => reused_chunks += 1,
+            }
+        }
+        index_entries.push(IndexEntry {
+            end_offset: c.offset + c.length,
+            chunk_id: c.id,
+        });
+    }
+
+    Ok(ArchiveFileOutcome {
+        entry: Some(DirEntry {
+            path: rel.to_string(),
+            kind: DirEntryKind::File {
+                mode,
+                size: data.len() as u64,
+                mtime_secs,
+                blob_blake3,
+                chunks: index_entries,
+            },
+        }),
+        chunk_count: chunks.len(),
+        new_chunks,
+        reused_chunks,
+        seed_reused: false,
+        rechunked: true,
+        seed_missing: false,
+    })
 }
 
 /// Load a prior `.cfdir` for `--seed` (rejects `.cfidx` / bad magic / decode errors).

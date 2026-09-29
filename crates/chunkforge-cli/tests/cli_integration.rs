@@ -3089,6 +3089,60 @@ fn archive_help_lists_seed() {
         lower.contains("chunk table") || lower.contains("chunk tables") || lower.contains("reuse"),
         "archive --help --seed should mention reuse of chunk tables:\n{s}"
     );
+    assert!(
+        s.contains("--jobs"),
+        "archive --help should list --jobs:\n{s}"
+    );
+}
+
+#[test]
+fn archive_jobs_four_matches_serial_listing() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"jobs-a\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"jobs-b\n").unwrap();
+    fs::write(src.join("c.txt"), b"jobs-c\n").unwrap();
+    fs::write(src.join("d.txt"), b"jobs-d\n").unwrap();
+
+    let store1 = dir.path().join("store1");
+    let store4 = dir.path().join("store4");
+    let out1 = dir.path().join("j1.cfdir");
+    let out4 = dir.path().join("j4.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store1.to_str().unwrap(),
+        "-o",
+        out1.to_str().unwrap(),
+        "--jobs",
+        "1",
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "archive",
+        "--store",
+        store4.to_str().unwrap(),
+        "-o",
+        out4.to_str().unwrap(),
+        "--jobs",
+        "4",
+        src.to_str().unwrap(),
+    ]);
+
+    let b1 = fs::read(&out1).unwrap();
+    let b4 = fs::read(&out4).unwrap();
+    assert_eq!(
+        b1, b4,
+        "archive --jobs 1 and --jobs 4 must produce identical .cfdir bytes"
+    );
+    run_ok(&[
+        "verify",
+        "--store",
+        store4.to_str().unwrap(),
+        out4.to_str().unwrap(),
+    ]);
 }
 
 #[test]

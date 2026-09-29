@@ -11,8 +11,9 @@
 | **Phase 3** | **0.3.0** | URL/header templates + S3 path conventions; `doctor`; local `gc` dry-run / `--apply` |
 | **Phase 4** | **0.4.0** | `ChunkSink` + `HttpChunkSink` per-chunk PUT; CLI `push`; `--jobs` on cat/verify/doctor/push |
 | **Phase 5** | **0.5.0** | `.cfdir` v1 directory archive + `DirFs` RO mount; `archive` / `extract` / tree `verify`; `push`/`doctor`/`gc` accept `.cfdir`; `push --verify`; `archive --dry-run` |
+| **Phase 6** | **toward 0.6.0** (features on `main`; crate version still **0.5.0** until M7) | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 
-## Non-goals (Phase 5)
+## Non-goals (current / Phase 6)
 
 | Not this | Why |
 |---|---|
@@ -20,15 +21,16 @@
 | ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential chain — dependency surface stays **ureq** |
 | ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
 | ❌ **Write mount / COW** | FUSE stays `RO` (single blob **and** directory tree); writes return `EROFS` / `EACCES` |
-| ❌ **Bidirectional sync** | `archive` / `extract` / `push` are explicit one-way — no watch directories, conflict resolution, or mutual sync |
+| ❌ **Bidirectional sync** | `archive` / `extract` / `push` / `pull` are explicit one-way — no watch directories, conflict resolution, or mutual sync |
+| ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay local (git / release artifact / optional manual URL) |
 | ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
-| ❌ **Seed archive** (`archive --seed`) | Incremental skip-rechunk deferred; not in 0.5.0 |
+| ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), and per-chunk PUT / `push` / `--jobs` (Phase 4). Phase 5 adds multi-file `.cfdir` archive + directory FUSE and lands `push --verify`.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), and multi-file `.cfdir` + DirFs (Phase 5). Phase 6 (in progress toward **0.6.0**) adds incremental `archive --seed` and `pull`.
 
 ## Quick start (local CAS)
 
@@ -176,6 +178,41 @@ mkdir -p /tmp/cf-p5/mnt
 Or one-shot: [`scripts/demo_archive.sh`](scripts/demo_archive.sh). Details:
 [docs/archive.md](docs/archive.md), [docs/dir-format.md](docs/dir-format.md),
 [docs/mount.md](docs/mount.md), [docs/push.md](docs/push.md).
+
+## Phase 6 (toward 0.6.0): seed archive + pull
+
+Features are already on `main`; the workspace version remains **0.5.0** until
+Phase 6 closeout (M7 → **0.6.0**).
+
+- **`archive --seed prior.cfdir`**: reuse unchanged files' chunk tables via
+  content BLAKE3 (size fast-reject); stderr `seed_reused_files=` /
+  `rechunked_files=`; output is still a full `.cfdir` v1 — see
+  [docs/archive.md](docs/archive.md)
+- **`archive --jobs N`**: per-file parallel chunking (default **1** ≡ serial);
+  seed map is read-only; store puts stay atomic
+- **`chunkforge pull`**: fill a local `--store` from `--source` for missing
+  chunks referenced by `.cfidx` / `.cfdir` — see [docs/pull.md](docs/pull.md)
+- Smoke: [`scripts/demo_seed.sh`](scripts/demo_seed.sh) (~10 min local:
+  archive → change one file → `--seed` → verify / extract / optional pull)
+
+```bash
+# Incremental archive (or: bash scripts/demo_seed.sh)
+mkdir -p /tmp/cf-p6/src/sub
+echo 'hello-seed-v1' > /tmp/cf-p6/src/a.txt
+cp fixtures/hello.txt /tmp/cf-p6/src/sub/b.txt
+cp /tmp/cf-p6/src/a.txt /tmp/cf-p6/src/a-copy.txt
+
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p6/store -o /tmp/cf-p6/v1.cfdir /tmp/cf-p6/src
+
+echo 'hello-seed-v2' > /tmp/cf-p6/src/a.txt
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p6/store -o /tmp/cf-p6/v2.cfdir \
+  --seed /tmp/cf-p6/v1.cfdir /tmp/cf-p6/src
+# stderr: seed_reused_files=2, rechunked_files=1
+
+./target/debug/chunkforge verify --store /tmp/cf-p6/store /tmp/cf-p6/v2.cfdir
+```
 
 ## Incremental dedup demo
 

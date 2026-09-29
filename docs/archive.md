@@ -7,13 +7,13 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--dry-run] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--dry-run`: stats only, no store/.cfdir write) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--dry-run] [--jobs N] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--dry-run`: stats only; `--jobs`: per-file parallel chunking, default 1) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir>` | Materialize the tree (parents created; existing paths → non-zero) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
 | `chunkforge push --store <cas> --dest http(s)://… archive.cfdir` | Upload **chunks only** referenced by the `.cfdir` |
 
-`--jobs N` on extract / verify / push / doctor defaults to **1** (serial).
+`--jobs N` on archive / extract / verify / push / doctor / pull defaults to **1** (serial). For `archive`, jobs parallelize **per file** (seed map is read-only; store puts are atomic).
 
 ## Typical flow
 
@@ -51,15 +51,20 @@ python3 scripts/put_stub.py --root /tmp/cf-arch/mirror --port 8766
   /tmp/cf-arch/release.cfdir
 ```
 
-### Smoke script
+### Smoke scripts
 
 ```bash
-./scripts/demo_archive.sh
+./scripts/demo_archive.sh   # Phase 5 tree / push / mount smoke
+./scripts/demo_seed.sh      # Phase 6 seed: change one file → reuse stats → verify / extract / optional pull
 ```
 
-Covers archive → verify → extract → diff, optional FUSE mount (skipped if fuse
-unavailable), push via `put_stub.py` + `verify --source`, and a `.cfidx`
-make/verify regression path.
+`demo_archive.sh` covers archive → verify → extract → diff, optional FUSE mount
+(skipped if fuse unavailable), push via `put_stub.py` + `verify --source`, and a
+`.cfidx` make/verify regression path.
+
+`demo_seed.sh` covers first archive → edit one file → `archive --seed` (expect
+`seed_reused_files` / `rechunked_files=1`) → verify → extract+diff → dry-run full
+reuse → optional `pull` via local `put_stub`.
 
 ## `--dry-run`
 
@@ -102,6 +107,9 @@ not need the seed file.
 
 Write-path stderr (no `--dry-run`) reports `seed_reused_files=` /
 `rechunked_files=` (plus the usual `new=` / `reused=` chunk counters).
+
+Optional `--jobs N` (default **1**) parallelizes per-file work; the seed map is
+read-only across workers and store puts remain content-addressed / race-safe.
 
 ### Dry-run × seed
 
