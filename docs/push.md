@@ -44,7 +44,7 @@ identical to Phase 2/3 GET layout.
 2. For each id (sorted): read plaintext from the local store; remote `has`
    (HEAD, GET fallback) → skip; otherwise `PUT` the body.
 3. Print a summary on stderr:
-   `push: skipped=… uploaded=… failed=… retries=… (N unique chunk ids, M listings, dry_run=…)`.
+   `push: skipped=… uploaded=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md).
 4. Exit **non-zero** if `failed > 0`.
 5. If `--verify` and push succeeded and not `--dry-run`: build `HttpChunkSource` from
    `--dest` (same templates) and run the same verify path as `verify --source` for

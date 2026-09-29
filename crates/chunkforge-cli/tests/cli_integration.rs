@@ -2320,6 +2320,28 @@ fn http_retries_help_listed_on_http_commands() {
     }
 }
 
+/// PUT/HEAD stub that always responds with a fixed status (body discarded).
+fn spawn_fixed_status_put_server(status: u16) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            // Consume PUT/POST body so the client does not hang.
+            match request.method() {
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                }
+                _ => {}
+            }
+            let _ = request.respond(Response::empty(StatusCode(status)));
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
 /// Phase8-M2: stub returns 503 then succeeds — `--http-retries 0` fails;
 /// `--http-retries 3` succeeds and summary includes `retries=3`.
 #[test]
@@ -2357,8 +2379,10 @@ fn push_http_retries_zero_fails_three_succeeds_on_transient_503() {
     ]);
     let fail_err = String::from_utf8_lossy(&fail.stderr);
     assert!(
-        fail_err.contains("failed=") && !fail_err.contains("failed=0"),
-        "retries=0 should fail on 503; stderr={fail_err}"
+        fail_err.contains("failed_transient=")
+            && !fail_err.contains("failed=0 ")
+            && !fail_err.contains("failed_transient=0"),
+        "retries=0 should fail on 503 as transient; stderr={fail_err}"
     );
     assert!(
         fail_err.contains("retries=0"),
@@ -2389,7 +2413,9 @@ fn push_http_retries_zero_fails_three_succeeds_on_transient_503() {
     ]);
     let ok_err = String::from_utf8_lossy(&ok.stderr);
     assert!(
-        ok_err.contains("failed=0"),
+        ok_err.contains("failed=0 ")
+            && ok_err.contains("failed_transient=0")
+            && ok_err.contains("failed_permanent=0"),
         "retries=3 should succeed after transient 503s; stderr={ok_err}"
     );
     assert!(
@@ -2411,6 +2437,80 @@ fn push_http_retries_zero_fails_three_succeeds_on_transient_503() {
         "0",
         idx.to_str().unwrap(),
     ]);
+}
+
+/// Phase8-M3: 401 → failed_permanent; 503 → failed_transient (distinguishable).
+#[test]
+fn push_summary_distinguishes_401_permanent_vs_503_transient() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // --- 401 permanent ---
+    let (base401, _h401) = spawn_fixed_status_put_server(401);
+    let fail401 = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base401,
+        "--http-retries",
+        "3",
+        "--http-retry-backoff-ms",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let err401 = String::from_utf8_lossy(&fail401.stderr);
+    assert!(
+        err401.contains("401"),
+        "error path should mention 401; stderr={err401}"
+    );
+    assert!(
+        err401.contains("failed_permanent=") && !err401.contains("failed_permanent=0"),
+        "401 must count as failed_permanent; stderr={err401}"
+    );
+    assert!(
+        err401.contains("failed_transient=0"),
+        "401 must not count as transient; stderr={err401}"
+    );
+
+    // --- 503 transient ---
+    let (base503, _h503) = spawn_fixed_status_put_server(503);
+    let fail503 = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base503,
+        "--http-retries",
+        "0",
+        "--http-retry-backoff-ms",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let err503 = String::from_utf8_lossy(&fail503.stderr);
+    assert!(
+        err503.contains("503"),
+        "error path should mention 503; stderr={err503}"
+    );
+    assert!(
+        err503.contains("failed_transient=") && !err503.contains("failed_transient=0"),
+        "503 must count as failed_transient; stderr={err503}"
+    );
+    assert!(
+        err503.contains("failed_permanent=0"),
+        "503 must not count as permanent; stderr={err503}"
+    );
 }
 
 /// Local `--store` path ignores `--http-retries` (no-op; behaviour unchanged).

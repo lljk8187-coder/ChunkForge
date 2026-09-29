@@ -295,6 +295,7 @@ let bytes = src.get(&chunk_id)?;
 
 - CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4); `pull` / `extract` share the same template flags
 - `--http-retries N` / `--http-retry-backoff-ms` (Phase 8): bounded retries for transient HTTP failures (default **0** ≡ single attempt); local `--store` / `file://` ignore them
+- Error classification + push/pull `failed_transient=` / `failed_permanent=` — see [http-retry.md](http-retry.md)
 - `chunkforge push` — per-chunk PUT with optional `--jobs` concurrency; see [push.md](push.md)
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)

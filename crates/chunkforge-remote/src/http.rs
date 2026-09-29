@@ -854,6 +854,92 @@ mod tests {
             matches!(err, SourceError::Backend(ref s) if s.contains("401")),
             "{err:?}"
         );
+        assert_eq!(
+            crate::classify_source_error(&err),
+            crate::ErrorClass::Permanent,
+            "401 must classify as Permanent"
+        );
+        assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// Phase8-M3: exhausted 503 maps to Transient class (distinct from 401).
+    #[test]
+    fn get_503_classifies_as_transient() {
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                *attempts2.lock().unwrap() += 1;
+                let _ = request.respond(Response::empty(StatusCode(503)));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let src = HttpChunkSource::builder(&base)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        let id = ChunkId::hash(b"outage");
+        let err = src.get(&id).unwrap_err();
+        assert!(
+            matches!(err, SourceError::Backend(ref s) if s.contains("503")),
+            "{err:?}"
+        );
+        assert_eq!(
+            crate::classify_source_error(&err),
+            crate::ErrorClass::Transient,
+            "503 must classify as Transient"
+        );
+        assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// Phase8-M3: hash mismatch → Corrupt; not retryable / permanent bucket.
+    #[test]
+    fn get_corrupt_classifies_as_corrupt_not_transient() {
+        let body = b"phase8-m3-wrong-body";
+        let claimed = ChunkId::hash(b"different-id-payload");
+        let body2 = body.to_vec();
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                *attempts2.lock().unwrap() += 1;
+                let _ = request.respond(Response::from_data(body2.clone()));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let policy = RetryPolicy {
+            max_retries: 3,
+            base_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let src = HttpChunkSource::builder(&base)
+            .retry_policy(policy)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        let err = src.get(&claimed).unwrap_err();
+        assert!(
+            matches!(err, SourceError::Corrupt(c) if c == claimed),
+            "{err:?}"
+        );
+        assert_eq!(
+            crate::classify_source_error(&err),
+            crate::ErrorClass::Corrupt
+        );
+        assert!(!crate::classify_source_error(&err).is_retryable());
+        // Hash failure must not be retried (single GET).
         assert_eq!(*attempts.lock().unwrap(), 1);
     }
 }

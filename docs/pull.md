@@ -38,7 +38,7 @@ chunkforge pull \
 2. For each id (sorted): local `store.has` → **skip**; otherwise `source.get` →
    `store.put` (plaintext into the local CAS; hash checked on put).
 3. Print a summary on stderr:
-   `pull: skipped=… fetched=… failed=… retries=… (N unique chunk ids, M listings, dry_run=…)`.
+   `pull: skipped=… fetched=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md).
 4. Exit **non-zero** if `failed > 0`.
 
 ### What pull does **not** do

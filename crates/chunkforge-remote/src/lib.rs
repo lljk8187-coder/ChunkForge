@@ -19,7 +19,10 @@ pub use file_url::{FileUrlSource, parse_store_location};
 pub use http::{DEFAULT_URL_TEMPLATE, HttpChunkSource, HttpChunkSourceBuilder};
 pub use http_sink::{HttpChunkSink, HttpChunkSinkBuilder, HttpPutMethod};
 pub use layout::{chunk_http_path, chunk_url};
-pub use retry::{RetryPolicy, http_status_is_transient, ureq_error_is_transient};
+pub use retry::{
+    ErrorClass, RetryPolicy, SummaryFailureBucket, classify_http_status, classify_sink_error,
+    classify_source_error, classify_ureq_error, http_status_is_transient, ureq_error_is_transient,
+};
 pub use template::{TemplateCtx, TemplateError, expand_template, normalize_prefix};
 
 // Re-exports for convenience when depending only on this crate.

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HTTP error classification** (Phase 8 M3): `ErrorClass` + `classify_http_status` /
+  `classify_source_error` / `classify_sink_error` in `chunkforge-remote` (no
+  `ChunkSource`/`ChunkSink` signature change). push/pull summaries add
+  `failed_transient=` / `failed_permanent=` (Missing+Corrupt → permanent);
+  `docs/http-retry.md` status→class table. 401 vs 503 distinguishable; hash
+  failures never count as retries.
+
 - **`--http-retries N`** (Phase 8 M2): extra HTTP attempts for transient failures
   (default **0** ≡ 0.7.0 single attempt) on `push` / `pull` / `verify` / `doctor` /
   `cat` / `extract` (and `mount` via shared HTTP args). Optional

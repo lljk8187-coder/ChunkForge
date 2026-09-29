@@ -135,6 +135,158 @@ fn io_error_is_transient(e: &io::Error) -> bool {
     )
 }
 
+/// High-level HTTP / chunk-error class (Phase 8 M3).
+///
+/// Used by CLI summaries (`failed_transient=` / `failed_permanent=`) and by
+/// callers that need to distinguish auth failures from outages without breaking
+/// existing `SourceError` / `SinkError` exhaustiveness.
+///
+/// **Summary bucketing (stable):**
+/// - `failed_transient` ← [`ErrorClass::Transient`]
+/// - `failed_permanent` ← [`ErrorClass::Missing`] + [`ErrorClass::Permanent`]
+///   + [`ErrorClass::Corrupt`]
+/// - `failed` = transient + permanent (backward-compatible total)
+///
+/// Hash / corrupt failures are **never** retried (see [`RetryPolicy`]); they
+/// still land in the permanent summary bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorClass {
+    /// 404 / 410 — object absent.
+    Missing,
+    /// 408 / 429 / selected 5xx / timeout / connection reset — retry-eligible.
+    Transient,
+    /// Other 4xx (incl. 401 / 403) and non-retryable transport / protocol errors.
+    Permanent,
+    /// BLAKE3 / content hash mismatch after a successful read.
+    Corrupt,
+}
+
+impl ErrorClass {
+    /// Whether this class is eligible for [`RetryPolicy`] retries.
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Transient)
+    }
+
+    /// Roll into the push/pull `failed_transient` vs `failed_permanent` bucket.
+    ///
+    /// Missing and Corrupt count as **permanent** (non-retryable) for summary
+    /// purposes — matching Phase8 O3 `failed_transient=` / `failed_permanent=`.
+    pub fn summary_bucket(self) -> SummaryFailureBucket {
+        match self {
+            Self::Transient => SummaryFailureBucket::Transient,
+            Self::Missing | Self::Permanent | Self::Corrupt => SummaryFailureBucket::Permanent,
+        }
+    }
+}
+
+/// Push/pull summary counter bucket (two-way split).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SummaryFailureBucket {
+    Transient,
+    Permanent,
+}
+
+/// Classify an HTTP status code into [`ErrorClass`].
+///
+/// | Status | Class |
+/// |---|---|
+/// | 404, 410 | Missing |
+/// | 408, 429, 500–504, 520–524 | Transient |
+/// | other 4xx (401/403/…) | Permanent |
+/// | other | Permanent |
+pub fn classify_http_status(code: u16) -> ErrorClass {
+    match code {
+        404 | 410 => ErrorClass::Missing,
+        c if http_status_is_transient(c) => ErrorClass::Transient,
+        400..=499 => ErrorClass::Permanent,
+        _ => ErrorClass::Permanent,
+    }
+}
+
+/// Classify a ureq error (status / timeout / connection) into [`ErrorClass`].
+pub fn classify_ureq_error(err: &ureq::Error) -> ErrorClass {
+    match err {
+        ureq::Error::StatusCode(code) => classify_http_status(*code),
+        ureq::Error::Timeout(_) => ErrorClass::Transient,
+        ureq::Error::ConnectionFailed => ErrorClass::Transient,
+        ureq::Error::Io(e) => {
+            if io_error_is_transient(e) {
+                ErrorClass::Transient
+            } else {
+                ErrorClass::Permanent
+            }
+        }
+        _ => ErrorClass::Permanent,
+    }
+}
+
+/// Classify a [`chunkforge_store::SourceError`] without changing its variants.
+///
+/// Parses `HTTP {code} …` Backend messages produced by `HttpChunkSource`.
+pub fn classify_source_error(err: &chunkforge_store::SourceError) -> ErrorClass {
+    use chunkforge_store::SourceError;
+    match err {
+        SourceError::NotFound(_) => ErrorClass::Missing,
+        SourceError::Corrupt(_) => ErrorClass::Corrupt,
+        SourceError::Io(e) => {
+            if io_error_is_transient(e) {
+                ErrorClass::Transient
+            } else {
+                ErrorClass::Permanent
+            }
+        }
+        SourceError::Backend(msg) => classify_backend_message(msg),
+    }
+}
+
+/// Classify a [`chunkforge_store::SinkError`] without changing its variants.
+pub fn classify_sink_error(err: &chunkforge_store::SinkError) -> ErrorClass {
+    use chunkforge_store::SinkError;
+    match err {
+        SinkError::NotFound(_) => ErrorClass::Missing,
+        SinkError::Corrupt(_) => ErrorClass::Corrupt,
+        SinkError::IdMismatch { .. } => ErrorClass::Permanent,
+        SinkError::Io(e) => {
+            if io_error_is_transient(e) {
+                ErrorClass::Transient
+            } else {
+                ErrorClass::Permanent
+            }
+        }
+        SinkError::Backend(msg) => classify_backend_message(msg),
+    }
+}
+
+/// Parse `HTTP {code}` prefix from Backend messages, else heuristic / Permanent.
+fn classify_backend_message(msg: &str) -> ErrorClass {
+    if let Some(code) = parse_http_status_from_backend(msg) {
+        return classify_http_status(code);
+    }
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("timeout")
+        || lower.contains("connection reset")
+        || lower.contains("connection aborted")
+        || lower.contains("connection refused")
+        || lower.contains("connection failed")
+        || lower.contains("broken pipe")
+        || lower.contains("timed out")
+        || lower.contains("temporarily")
+    {
+        return ErrorClass::Transient;
+    }
+    ErrorClass::Permanent
+}
+
+/// Extract `code` from messages shaped like `HTTP {code} …` (source/sink mapping).
+fn parse_http_status_from_backend(msg: &str) -> Option<u16> {
+    let rest = msg.strip_prefix("HTTP ")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Outcome of one attempt inside [`run_with_retry`].
 pub(crate) enum Attempt<T, E> {
     Ok(T),
@@ -264,5 +416,92 @@ mod tests {
         });
         assert_eq!(out, Err("503"));
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn classify_http_status_401_vs_503() {
+        assert_eq!(classify_http_status(401), ErrorClass::Permanent);
+        assert_eq!(classify_http_status(403), ErrorClass::Permanent);
+        assert_eq!(classify_http_status(503), ErrorClass::Transient);
+        assert_eq!(classify_http_status(429), ErrorClass::Transient);
+        assert_eq!(classify_http_status(408), ErrorClass::Transient);
+        assert_eq!(classify_http_status(404), ErrorClass::Missing);
+        assert_eq!(classify_http_status(410), ErrorClass::Missing);
+        assert_eq!(classify_http_status(400), ErrorClass::Permanent);
+        // Align with http_status_is_transient
+        assert!(classify_http_status(503).is_retryable());
+        assert!(!classify_http_status(401).is_retryable());
+        assert!(!classify_http_status(404).is_retryable());
+    }
+
+    #[test]
+    fn classify_source_error_distinguishes_401_503_corrupt() {
+        use chunkforge_store::ChunkId;
+        use chunkforge_store::SourceError;
+
+        let id = ChunkId::hash(b"cls");
+        assert_eq!(
+            classify_source_error(&SourceError::NotFound(id)),
+            ErrorClass::Missing
+        );
+        assert_eq!(
+            classify_source_error(&SourceError::Corrupt(id)),
+            ErrorClass::Corrupt
+        );
+        assert_eq!(
+            classify_source_error(&SourceError::Backend(format!(
+                "HTTP 401 fetching chunk {id}"
+            ))),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_source_error(&SourceError::Backend(format!(
+                "HTTP 503 fetching chunk {id}"
+            ))),
+            ErrorClass::Transient
+        );
+        assert_eq!(
+            classify_source_error(&SourceError::Backend(format!(
+                "HTTP 404 fetching chunk {id}"
+            ))),
+            ErrorClass::Missing
+        );
+        // Corrupt / Missing / Permanent → permanent summary bucket
+        assert_eq!(
+            ErrorClass::Corrupt.summary_bucket(),
+            SummaryFailureBucket::Permanent
+        );
+        assert_eq!(
+            ErrorClass::Missing.summary_bucket(),
+            SummaryFailureBucket::Permanent
+        );
+        assert_eq!(
+            ErrorClass::Permanent.summary_bucket(),
+            SummaryFailureBucket::Permanent
+        );
+        assert_eq!(
+            ErrorClass::Transient.summary_bucket(),
+            SummaryFailureBucket::Transient
+        );
+    }
+
+    #[test]
+    fn classify_sink_error_401_vs_503() {
+        use chunkforge_store::ChunkId;
+        use chunkforge_store::SinkError;
+
+        let id = ChunkId::hash(b"sink-cls");
+        assert_eq!(
+            classify_sink_error(&SinkError::Backend(format!("HTTP 401 writing chunk {id}"))),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_sink_error(&SinkError::Backend(format!("HTTP 503 writing chunk {id}"))),
+            ErrorClass::Transient
+        );
+        assert_eq!(
+            classify_sink_error(&SinkError::Corrupt(id)),
+            ErrorClass::Corrupt
+        );
     }
 }

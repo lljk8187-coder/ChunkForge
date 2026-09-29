@@ -10,7 +10,10 @@ use chunkforge_index::{
     decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader, seed_file_map,
     validate_archive_path,
 };
-use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy};
+use chunkforge_remote::{
+    FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SummaryFailureBucket,
+    classify_sink_error, classify_source_error,
+};
 use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
 };
@@ -2362,7 +2365,7 @@ fn cmd_push(
     enum PushOne {
         Skipped,
         Uploaded,
-        Failed,
+        Failed(SummaryFailureBucket),
     }
 
     let store_display = store_path.display().to_string();
@@ -2372,7 +2375,8 @@ fn cmd_push(
             Err(e) => {
                 let msg = format!("local chunk {id} unavailable from store {store_display}: {e}");
                 eprintln!("push: fail {id}: {msg}");
-                return (PushOne::Failed, Some(msg));
+                // Local store miss / I/O → permanent (not an HTTP transient).
+                return (PushOne::Failed(SummaryFailureBucket::Permanent), Some(msg));
             }
         };
 
@@ -2382,7 +2386,8 @@ fn cmd_push(
             Err(e) => {
                 let msg = format!("remote has check failed for {id}: {e}");
                 eprintln!("push: fail {id}: {msg}");
-                return (PushOne::Failed, Some(msg));
+                let bucket = classify_sink_error(&e).summary_bucket();
+                return (PushOne::Failed(bucket), Some(msg));
             }
         }
 
@@ -2396,32 +2401,37 @@ fn cmd_push(
             Err(e) => {
                 let msg = format!("put failed for {id}: {e}");
                 eprintln!("push: fail {id}: {msg}");
-                (PushOne::Failed, Some(msg))
+                let bucket = classify_sink_error(&e).summary_bucket();
+                (PushOne::Failed(bucket), Some(msg))
             }
         }
     });
 
     let mut skipped = 0usize;
     let mut uploaded = 0usize;
-    let mut failed = 0usize;
+    let mut failed_transient = 0usize;
+    let mut failed_permanent = 0usize;
     let mut first_error: Option<String> = None;
     for (outcome, err) in outcomes {
         match outcome {
             PushOne::Skipped => skipped += 1,
             PushOne::Uploaded => uploaded += 1,
-            PushOne::Failed => {
-                failed += 1;
+            PushOne::Failed(bucket) => {
+                match bucket {
+                    SummaryFailureBucket::Transient => failed_transient += 1,
+                    SummaryFailureBucket::Permanent => failed_permanent += 1,
+                }
                 if first_error.is_none() {
                     first_error = err;
                 }
             }
         }
     }
+    let failed = failed_transient + failed_permanent;
 
     let retries = http_tmpl.http_retries;
     eprintln!(
-        "push: skipped={skipped} uploaded={uploaded} failed={failed} retries={retries} \
-         ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
+        "push: skipped={skipped} uploaded={uploaded} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
         ids.len(),
         if ids.len() == 1 { "" } else { "s" },
         listings_ok,
@@ -2506,7 +2516,7 @@ fn cmd_pull(
     enum PullOne {
         Skipped,
         Fetched,
-        Failed,
+        Failed(SummaryFailureBucket),
     }
 
     let store_display = store_path.display().to_string();
@@ -2532,7 +2542,8 @@ fn cmd_pull(
             Err(e) => {
                 let msg = format!("source get failed for {id} (store {store_display}): {e}");
                 eprintln!("pull: fail {id}: {msg}");
-                return (PullOne::Failed, Some(msg));
+                let bucket = classify_source_error(&e).summary_bucket();
+                return (PullOne::Failed(bucket), Some(msg));
             }
         };
 
@@ -2542,31 +2553,37 @@ fn cmd_pull(
             Err(e) => {
                 let msg = format!("store put failed for {id}: {e}");
                 eprintln!("pull: fail {id}: {msg}");
-                (PullOne::Failed, Some(msg))
+                let bucket = classify_sink_error(&e).summary_bucket();
+                (PullOne::Failed(bucket), Some(msg))
             }
         }
     });
 
     let mut skipped = 0usize;
     let mut fetched = 0usize;
-    let mut failed = 0usize;
+    let mut failed_transient = 0usize;
+    let mut failed_permanent = 0usize;
     let mut first_error: Option<String> = None;
     for (outcome, err) in outcomes {
         match outcome {
             PullOne::Skipped => skipped += 1,
             PullOne::Fetched => fetched += 1,
-            PullOne::Failed => {
-                failed += 1;
+            PullOne::Failed(bucket) => {
+                match bucket {
+                    SummaryFailureBucket::Transient => failed_transient += 1,
+                    SummaryFailureBucket::Permanent => failed_permanent += 1,
+                }
                 if first_error.is_none() {
                     first_error = err;
                 }
             }
         }
     }
+    let failed = failed_transient + failed_permanent;
 
     let retries = http_tmpl.http_retries;
     eprintln!(
-        "pull: skipped={skipped} fetched={fetched} failed={failed} retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
+        "pull: skipped={skipped} fetched={fetched} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
         ids.len(),
         if ids.len() == 1 { "" } else { "s" },
         listings_ok,
