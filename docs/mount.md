@@ -100,4 +100,6 @@ session also tears down the mount when possible.
 ## Out of scope
 
 - Writable mounts / COW write-back
+- Sequential prefetch / readahead (Phase 9 P1 O2 **not** delivered; reads stay
+  on-demand per chunk)
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

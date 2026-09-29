@@ -433,10 +433,13 @@ struct HttpTemplateArgs {
     )]
     http_retry_backoff_ms: u64,
     /// Sign HTTP GET/HEAD/PUT with AWS SigV4 (AWS4-HMAC-SHA256). Default **off**
-    /// ≡ 0.7.0 (no SigV4 headers). Credentials from env only:
-    /// `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (required when set);
-    /// optional `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` with a
-    /// warning). Conflicts with `--header Authorization:…`. See `docs/sigv4.md`.
+    /// ≡ 0.7.0 (no SigV4 headers). Credentials from env
+    /// (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`); if those are missing,
+    /// fall back to the shared credentials file (`~/.aws/credentials` or
+    /// `AWS_SHARED_CREDENTIALS_FILE`, default profile / `AWS_PROFILE`). Optional
+    /// `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` with a warning).
+    /// No IMDS/SSO/`aws-sdk-*`. Conflicts with `--header Authorization:…`.
+    /// See `docs/sigv4.md`.
     #[arg(long = "aws-sigv4", default_value_t = false)]
     aws_sigv4: bool,
 }

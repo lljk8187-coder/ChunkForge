@@ -1,16 +1,17 @@
 //! Minimal in-process AWS Signature Version 4 (AWS4-HMAC-SHA256).
 //!
 //! Signs GET / HEAD / PUT for S3-compatible endpoints using env-style
-//! credentials. Payload hash is always `hex(SHA256(body))` (empty body =
-//! SHA256 of empty bytes — never `UNSIGNED-PAYLOAD`). No chunked/streaming
-//! signing, no aws-sdk, no credential provider chain beyond what the caller
-//! supplies.
+//! credentials, with an optional thin fallback to the shared credentials
+//! file when env keys are missing. Payload hash is always `hex(SHA256(body))`
+//! (empty body = SHA256 of empty bytes — never `UNSIGNED-PAYLOAD`). No
+//! chunked/streaming signing, no aws-sdk, no IMDS / SSO.
 //!
 //! See `docs/sigv4.md` and `docs/remote-layout.md`.
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -44,13 +45,13 @@ impl fmt::Display for SigV4Error {
             Self::MissingAccessKey => {
                 write!(
                     f,
-                    "--aws-sigv4 requires AWS_ACCESS_KEY_ID (env); set it or omit --aws-sigv4"
+                    "--aws-sigv4 requires AWS_ACCESS_KEY_ID (env) or                      aws_access_key_id in the shared credentials file                      (~/.aws/credentials or AWS_SHARED_CREDENTIALS_FILE);                      set credentials or omit --aws-sigv4"
                 )
             }
             Self::MissingSecretKey => {
                 write!(
                     f,
-                    "--aws-sigv4 requires AWS_SECRET_ACCESS_KEY (env); set it or omit --aws-sigv4"
+                    "--aws-sigv4 requires AWS_SECRET_ACCESS_KEY (env) or                      aws_secret_access_key in the shared credentials file                      (~/.aws/credentials or AWS_SHARED_CREDENTIALS_FILE);                      set credentials or omit --aws-sigv4"
                 )
             }
             Self::InvalidUrl(s) => write!(f, "SigV4: invalid URL: {s}"),
@@ -98,6 +99,100 @@ impl AwsCredentials {
             session_token,
         })
     }
+
+    /// Env first; if access or secret is missing in the environment, fall back
+    /// to the shared credentials file (`AWS_SHARED_CREDENTIALS_FILE`, else
+    /// `~/.aws/credentials`) **default** profile (or `AWS_PROFILE` when set).
+    ///
+    /// Still **no** IMDS / SSO / ECS task role / automatic refresh / `aws-sdk-*`.
+    pub fn from_env_or_shared_file() -> Result<Self, SigV4Error> {
+        match Self::from_env() {
+            Ok(c) => Ok(c),
+            Err(SigV4Error::MissingAccessKey) | Err(SigV4Error::MissingSecretKey) => {
+                Self::from_shared_credentials_file(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read `aws_access_key_id` / `aws_secret_access_key` / optional
+    /// `aws_session_token` from a shared credentials INI file.
+    ///
+    /// `path_override`: when `Some`, use that path; when `None`, use
+    /// `AWS_SHARED_CREDENTIALS_FILE` or `~/.aws/credentials`.
+    /// Profile: `AWS_PROFILE` if set and non-empty, else `"default"`.
+    pub fn from_shared_credentials_file(path_override: Option<&Path>) -> Result<Self, SigV4Error> {
+        let path = match path_override {
+            Some(p) => p.to_path_buf(),
+            None => shared_credentials_path().ok_or(SigV4Error::MissingAccessKey)?,
+        };
+        let text = std::fs::read_to_string(&path).map_err(|_| SigV4Error::MissingAccessKey)?;
+        let profile = std::env::var("AWS_PROFILE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        parse_shared_credentials_ini(&text, &profile)
+    }
+}
+
+fn shared_credentials_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("AWS_SHARED_CREDENTIALS_FILE") {
+        let t = p.trim();
+        if !t.is_empty() {
+            return Some(PathBuf::from(t));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".aws").join("credentials"))
+}
+
+/// Minimal INI parse for AWS shared credentials (std only; no aws-sdk).
+fn parse_shared_credentials_ini(text: &str, profile: &str) -> Result<AwsCredentials, SigV4Error> {
+    let mut in_profile = false;
+    let mut access: Option<String> = None;
+    let mut secret: Option<String> = None;
+    let mut session: Option<String> = None;
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let name = line[1..line.len() - 1].trim();
+            in_profile = name == profile;
+            continue;
+        }
+        if !in_profile {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let val = v.trim().trim_matches('"').to_string();
+        match key {
+            "aws_access_key_id" => access = Some(val),
+            "aws_secret_access_key" => secret = Some(val),
+            "aws_session_token" if !val.is_empty() => {
+                session = Some(val);
+            }
+            _ => {}
+        }
+    }
+
+    let access_key_id = access
+        .filter(|s| !s.is_empty())
+        .ok_or(SigV4Error::MissingAccessKey)?;
+    let secret_access_key = secret
+        .filter(|s| !s.is_empty())
+        .ok_or(SigV4Error::MissingSecretKey)?;
+    Ok(AwsCredentials {
+        access_key_id,
+        secret_access_key,
+        session_token: session.filter(|s| !s.is_empty()),
+    })
 }
 
 /// SigV4 signing configuration for S3-compatible GET/HEAD/PUT.
@@ -111,12 +206,13 @@ pub struct SigV4Config {
 }
 
 impl SigV4Config {
-    /// Build config from env credentials + optional `AWS_REGION`.
+    /// Build config from env credentials (with shared-file fallback) + optional
+    /// `AWS_REGION`.
     ///
     /// Returns `(config, region_was_default)` so the CLI can warn when the
     /// region fell back to [`DEFAULT_REGION`].
     pub fn from_env() -> Result<(Self, bool), SigV4Error> {
-        let credentials = AwsCredentials::from_env()?;
+        let credentials = AwsCredentials::from_env_or_shared_file()?;
         let (region, was_default) = match std::env::var("AWS_REGION") {
             Ok(r) => {
                 let t = r.trim().to_string();
@@ -701,5 +797,49 @@ mod tests {
                 .iter()
                 .any(|(n, v)| n.eq_ignore_ascii_case("x-amz-security-token") && v == "sess-tok")
         );
+    }
+
+    #[test]
+    fn parse_shared_credentials_default_profile() {
+        let ini = "\
+[default]\n\
+aws_access_key_id = AKIIDEFAULT\n\
+aws_secret_access_key = secret-default\n\
+aws_session_token = tok-default\n\
+\n\
+[other]\n\
+aws_access_key_id = AKIAOTHER\n\
+aws_secret_access_key = secret-other\n\
+";
+        let c = parse_shared_credentials_ini(ini, "default").unwrap();
+        assert_eq!(c.access_key_id, "AKIIDEFAULT");
+        assert_eq!(c.secret_access_key, "secret-default");
+        assert_eq!(c.session_token.as_deref(), Some("tok-default"));
+        let o = parse_shared_credentials_ini(ini, "other").unwrap();
+        assert_eq!(o.access_key_id, "AKIAOTHER");
+        assert!(o.session_token.is_none());
+    }
+
+    #[test]
+    fn from_shared_credentials_file_reads_path() {
+        let dir = std::env::temp_dir().join(format!("cf-sigv4-creds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("credentials");
+        std::fs::write(
+            &path,
+            "[default]\naws_access_key_id=AKIIFILE\naws_secret_access_key=file-secret\n",
+        )
+        .unwrap();
+        let c = AwsCredentials::from_shared_credentials_file(Some(&path)).unwrap();
+        assert_eq!(c.access_key_id, "AKIIFILE");
+        assert_eq!(c.secret_access_key, "file-secret");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_profile_in_shared_file_errors() {
+        let err = parse_shared_credentials_ini("[default]\nx=y\n", "missing").unwrap_err();
+        assert_eq!(err, SigV4Error::MissingAccessKey);
     }
 }

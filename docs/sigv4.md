@@ -32,17 +32,18 @@ chunkforge verify --source 'https://minio.example:9000/mybucket' \
 already accept `--url-template` / `--header` / `--http-retries`
 (`cat` / `verify` / `doctor` / `push` / `pull` / `extract` / `mount`).
 
-## Credentials (env only)
+## Credentials (env, then shared file)
 
-| Variable | Required when `--aws-sigv4` | Notes |
+| Source | When used | Notes |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID` | **yes** | Clear error if missing/empty |
-| `AWS_SECRET_ACCESS_KEY` | **yes** | Clear error if missing/empty |
-| `AWS_SESSION_TOKEN` | no | Sent as `x-amz-security-token` and included in the signature |
-| `AWS_REGION` | no | Default **`us-east-1`** with a stderr warning |
+| Env `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | **Preferred** when both are set and non-empty | Optional `AWS_SESSION_TOKEN` |
+| Shared credentials file | Only if env access **or** secret is missing | `AWS_SHARED_CREDENTIALS_FILE`, else `~/.aws/credentials`; profile = `AWS_PROFILE` or **`default`**; keys `aws_access_key_id` / `aws_secret_access_key` / optional `aws_session_token` |
+| `AWS_REGION` | Optional | Default **`us-east-1`** with a stderr warning |
 
-**Not implemented:** shared credentials file, IMDS / instance role, SSO, ECS
-task role, automatic refresh, or any other credential provider chain.
+Clear error if neither env nor the shared file yields both access and secret.
+
+**Still not implemented:** IMDS / instance role, SSO, ECS task role, automatic
+refresh, or any other credential provider chain. **No** `aws-sdk-*`.
 
 ## What is signed
 
@@ -105,7 +106,7 @@ Object examples with a fixed clock).
 | ❌ ListObjects / bucket listing / remote scrub | Out of scope |
 | ❌ S3 multipart upload API | Out of scope (single-object PUT only) |
 | ❌ `UNSIGNED-PAYLOAD` / chunked signing | Out of scope |
-| ❌ Full credential provider chain (IMDS/SSO/files) | Env only |
+| ❌ Full credential provider chain (IMDS/SSO) | Env + thin shared-file fallback only |
 | ❌ Presigned URL generation | Use external tools + `--url-template` if needed |
 
 See also [remote-layout.md](remote-layout.md), [http-retry.md](http-retry.md),

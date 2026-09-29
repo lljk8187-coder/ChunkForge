@@ -5681,7 +5681,8 @@ fn aws_sigv4_without_credentials_errors_clearly() {
         input.to_str().unwrap(),
     ]);
 
-    // Ensure credentials are absent for this process invocation.
+    // Ensure credentials are absent for this process invocation (env + shared file).
+    let missing_shared = dir.path().join("no-such-aws-credentials");
     let out = Command::new(bin())
         .args([
             "verify",
@@ -5693,6 +5694,7 @@ fn aws_sigv4_without_credentials_errors_clearly() {
         .env_remove("AWS_ACCESS_KEY_ID")
         .env_remove("AWS_SECRET_ACCESS_KEY")
         .env_remove("AWS_SESSION_TOKEN")
+        .env("AWS_SHARED_CREDENTIALS_FILE", &missing_shared)
         .output()
         .expect("spawn");
     assert!(!out.status.success());
@@ -5701,6 +5703,55 @@ fn aws_sigv4_without_credentials_errors_clearly() {
         err.contains("AWS_ACCESS_KEY_ID") || err.contains("aws-sigv4"),
         "expected clear credentials error, got: {err}"
     );
+}
+
+#[test]
+fn aws_sigv4_shared_credentials_file_fallback() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("t.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"phase9-m6-shared-creds").unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let creds_path = dir.path().join("credentials");
+    fs::write(
+        &creds_path,
+        "[default]\naws_access_key_id = AKIISHARED\naws_secret_access_key = shared-secret\n",
+    )
+    .unwrap();
+
+    // Env keys absent → shared file must satisfy --aws-sigv4 (connection may fail;
+    // credentials error must NOT appear).
+    let out = Command::new(bin())
+        .args([
+            "verify",
+            "--source",
+            "http://127.0.0.1:9",
+            "--aws-sigv4",
+            idx.to_str().unwrap(),
+        ])
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .env("AWS_SHARED_CREDENTIALS_FILE", &creds_path)
+        .env("AWS_REGION", "us-east-1")
+        .output()
+        .expect("spawn");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("requires AWS_ACCESS_KEY_ID"),
+        "shared file should supply credentials; got: {err}"
+    );
+    // Port 9 is closed → backend/connect failure, not missing-creds.
+    assert!(!out.status.success());
 }
 
 #[test]

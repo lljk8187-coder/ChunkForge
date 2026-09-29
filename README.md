@@ -14,7 +14,7 @@
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
-| **Phase 9** | *Unreleased* | `extract --skip-unchanged` / `--dry-run`; `docs/extract.md`; `scripts/demo_extract_skip.sh` (0.9.0 closeout = M7) |
+| **Phase 9** | *Unreleased* | `extract --skip-unchanged` / `--dry-run`; `docs/extract.md` + `docs/perf.md`; `scripts/demo_extract_skip.sh` + `bench_loose_http.sh`; SigV4 shared-creds fallback (0.9.0 closeout = M7) |
 
 ## Non-goals (current / Phase 8)
 
@@ -325,6 +325,12 @@ Incremental materialize on top of Phase 8. Default extract (no new flags) stays
 - Docs: [docs/extract.md](docs/extract.md) (flag overlap; **no prune** of extra
   files under `-o`)
 - Smoke: [`scripts/demo_extract_skip.sh`](scripts/demo_extract_skip.sh)
+- **P1 O1** loose HTTP perf baseline: [docs/perf.md](docs/perf.md) +
+  [`scripts/bench_loose_http.sh`](scripts/bench_loose_http.sh) (**pack not**
+  implemented; defaults stay jobs=1 / retries=0)
+- **P1 O3** `--aws-sigv4` falls back to `~/.aws/credentials` when env keys are
+  missing (still no IMDS/SSO/`aws-sdk-*`) — [docs/sigv4.md](docs/sigv4.md)
+- **P1 O2** FUSE sequential prefetch: **not** delivered this milestone
 
 **Still not this Phase (draft):** packfile / full AWS SDK / write mount /
 bidirectional sync / **extract prune (`--delete`)** / remote scrub / byte-range
@@ -334,6 +340,9 @@ resume / push listing upload. `extract` ≠ sync.
 bash scripts/demo_extract_skip.sh
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → dry-run glance
+
+bash scripts/bench_loose_http.sh
+# optional: bash scripts/bench_loose_http.sh --also-jobs-4
 ```
 
 ## Incremental dedup demo

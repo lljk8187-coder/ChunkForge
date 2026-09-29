@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exit **0** when the listing is valid (even if `would_fail>0`); invalid listing
   → non-zero. Mismatch + `--force` → `would_write`.
 - **Docs + demo** (Phase 9 M4 / G5): `docs/extract.md` (`--skip-unchanged` / `--force` / `--dry-run` overlap; explicitly **no prune**); `scripts/demo_extract_skip.sh`; README Phase 9 draft section
+- **Loose HTTP perf baseline** (Phase 9 M6 / P1 **O1**): `docs/perf.md` (how to
+  measure local loose push/pull; **pack promotion checklist**; pack **not**
+  implemented this phase) + `scripts/bench_loose_http.sh` (local `put_stub`
+  wall-clock / chunk/s for `--jobs 1`, optional `--also-jobs-4`; machine-parseable
+  one-line stdout; product defaults remain jobs=1 / retries=0)
+- **SigV4 shared credentials fallback** (Phase 9 M6 / P1 **O3**): when
+  `--aws-sigv4` and env access/secret are missing, read
+  `~/.aws/credentials` (or `AWS_SHARED_CREDENTIALS_FILE`), profile
+  `AWS_PROFILE` or `default`. Still **no** IMDS / SSO / `aws-sdk-*`. See
+  `docs/sigv4.md`
+
+### Not delivered (Phase 9 P1)
+
+- **O2 FUSE sequential prefetch** — not delivered this milestone (RO mount
+  unchanged; no readahead / prefetch cache)
 
 ## [0.8.0] — 2026-09-29
 
