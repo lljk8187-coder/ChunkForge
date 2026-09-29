@@ -571,4 +571,101 @@ mod tests {
             TemplateError::MissingEnv("CHUNKFORGE_M1_MISSING_ENV_XYZ".into())
         );
     }
+
+    /// Phase3-M2: S3-compatible path + Authorization via tiny_http mock.
+    /// Fixed ChunkId; template `{base}/{prefix}{path}` + `prefix=data/` →
+    /// GET path contains `/data/chunks/…`; Authorization matches expansion.
+    #[test]
+    fn s3_prefix_path_and_authorization_on_mock_get() {
+        #[derive(Default)]
+        struct Seen {
+            path: Option<String>,
+            method: Option<String>,
+            authorization: Option<String>,
+        }
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
+        let seen2 = Arc::clone(&seen);
+
+        // Fixed id so the expected key path is deterministic.
+        let id = ChunkId::from_bytes([0xab; 32]);
+        let hex = id.to_hex();
+        assert_eq!(&hex[..2], "ab");
+        let plaintext = b"phase3-m2-s3-path-body".to_vec();
+        // Serve bytes whose hash is NOT id — disable verify_hash so we only
+        // assert request path/header (hash verify is covered elsewhere).
+        let body2 = plaintext.clone();
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            if let Ok(request) = server.recv() {
+                let mut g = seen2.lock().unwrap();
+                g.method = Some(format!("{:?}", request.method()));
+                g.path = Some(request.url().to_string());
+                g.authorization = request
+                    .headers()
+                    .iter()
+                    .find(|h| {
+                        h.field
+                            .as_str()
+                            .as_str()
+                            .eq_ignore_ascii_case("Authorization")
+                    })
+                    .map(|h| h.value.as_str().to_string());
+                drop(g);
+                let _ = request.respond(Response::from_data(body2));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let var = "CHUNKFORGE_M2_S3_AUTH_TOKEN";
+        unsafe { std::env::set_var(var, "m2-tok-fixed") };
+
+        let src = HttpChunkSource::builder(&base)
+            .url_template("{base}/{prefix}{path}")
+            .prefix("data/")
+            .header(
+                "Authorization",
+                "Bearer {env:CHUNKFORGE_M2_S3_AUTH_TOKEN}",
+            )
+            .verify_hash(false)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        // url_for already encodes the S3-compatible key under the prefix.
+        let expected_url = format!(
+            "{}/data/chunks/{}/{}.cnk",
+            base.trim_end_matches('/'),
+            &hex[..2],
+            &hex[2..]
+        );
+        assert_eq!(src.url_for(&id), expected_url);
+        assert!(
+            src.url_for(&id).contains("/data/chunks/"),
+            "url must contain /data/chunks/: {}",
+            src.url_for(&id)
+        );
+
+        assert_eq!(src.get(&id).unwrap(), plaintext);
+
+        let g = seen.lock().unwrap();
+        let path = g.path.as_deref().expect("mock should have seen a request");
+        assert!(
+            path.contains("/data/chunks/"),
+            "GET path must contain /data/chunks/, got {path}"
+        );
+        assert!(
+            path.contains(&format!("/data/chunks/{}/{}.cnk", &hex[..2], &hex[2..])),
+            "GET path must be the full CAS key under prefix, got {path}"
+        );
+        assert_eq!(
+            g.authorization.as_deref(),
+            Some("Bearer m2-tok-fixed"),
+            "Authorization must match template expansion"
+        );
+
+        unsafe { std::env::remove_var(var) };
+    }
 }

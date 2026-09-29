@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Phase 3 in progress)
+
+- **M1**: URL/header template engine + `HttpChunkSource` builder (`url_template` / `prefix` / `header`); default `{base}/{path}` ≡ Phase 2
+- **M2**: S3-compatible path conventions in `docs/remote-layout.md` (placeholder table, path-style / virtual-host examples, `prefix` normalization); tiny_http mock asserts GET `/data/chunks/…` + Authorization expansion
+
+### Still deferred
+
+- CLI `--url-template` / `--prefix` / `--header` (M3)
+- `doctor` / local `gc` (M4 / M5)
+- No `aws-sdk-*`, no in-process SigV4, no upload/multipart
+
 ## [0.2.0] — 2026-09-29
 
 Phase 2 closeout: read-only FUSE mount + remote chunk fetch skeleton on the Phase 1 local CAS.
