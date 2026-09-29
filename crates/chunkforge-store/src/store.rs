@@ -89,7 +89,7 @@ impl Store {
     ///
     /// The id must equal `blake3(plain)`; otherwise returns [`Error::IdMismatch`].
     /// If the chunk already exists (`has`), the write is skipped (dedup) and
-    /// [`PutOutcome::AlreadyPresent`] is returned.
+    /// [`PutOutcome::SkippedExists`] is returned.
     pub fn put_with_id(&self, id: &ChunkId, plain: &[u8]) -> Result<PutOutcome, Error> {
         let actual = ChunkId::hash(plain);
         if actual != *id {
@@ -99,7 +99,7 @@ impl Store {
             });
         }
         if self.has(id) {
-            return Ok(PutOutcome::AlreadyPresent);
+            return Ok(PutOutcome::SkippedExists);
         }
 
         let final_path = self.chunk_path(id);
@@ -143,10 +143,10 @@ impl Store {
 
         // Another writer may have won the race; treat existing final as reuse.
         match write_result {
-            Ok(()) => Ok(PutOutcome::Inserted),
+            Ok(()) => Ok(PutOutcome::Written),
             Err(e) if self.has(id) => {
                 let _ = e; // discarded: chunk is present
-                Ok(PutOutcome::AlreadyPresent)
+                Ok(PutOutcome::SkippedExists)
             }
             Err(e) => Err(e),
         }

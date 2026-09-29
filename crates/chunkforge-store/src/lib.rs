@@ -18,12 +18,17 @@
 //! Phase 2 adds [`ChunkSource`]: a read-only trait implemented by [`Store`]
 //! (and by remote / [`CacheSource`] backends) so `cat` / `verify` / FUSE share one
 //! fetch path without breaking the Phase 1 `put`/`get`/`has`/`create`/`open` API.
+//!
+//! Phase 4 adds [`ChunkSink`]: a write-only trait implemented by [`Store`]
+//! (and later by HTTP PUT) so push pipelines share one write face without
+//! forcing `put` onto read-only [`ChunkSource`] backends.
 
 mod cache;
 mod error;
 mod meta;
 mod outcome;
 mod path;
+mod sink;
 mod source;
 mod store;
 
@@ -32,6 +37,7 @@ pub use error::{Error, StoreError};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
 pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
+pub use sink::{ChunkSink, SinkError};
 pub use source::{ChunkSource, SourceError};
 pub use store::Store;
 

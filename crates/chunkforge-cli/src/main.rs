@@ -408,8 +408,8 @@ fn cmd_make(
             .put_with_id(&c.id, slice)
             .with_context(|| format!("put chunk {}", c.id))?;
         match outcome {
-            PutOutcome::Inserted => new_chunks += 1,
-            PutOutcome::AlreadyPresent => reused_chunks += 1,
+            PutOutcome::Written => new_chunks += 1,
+            PutOutcome::SkippedExists => reused_chunks += 1,
         }
         entries.push(IndexEntry {
             end_offset: c.offset + c.length,

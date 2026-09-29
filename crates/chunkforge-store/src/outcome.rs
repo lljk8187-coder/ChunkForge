@@ -1,24 +1,28 @@
-//! Result of putting a chunk into the store.
+//! Result of putting a chunk into a store or [`crate::ChunkSink`].
 
-/// Whether a [`crate::Store::put`] wrote a new chunk file or reused an existing one.
+/// Whether a put wrote a new chunk or reused an existing one (CAS dedup).
+///
+/// Phase 1–3 used the names `Inserted` / `AlreadyPresent`; Phase 4 locks the
+/// public vocabulary to [`Written`](Self::Written) / [`SkippedExists`](Self::SkippedExists)
+/// for both [`crate::Store`] and [`crate::ChunkSink`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutOutcome {
-    /// Chunk was newly written to the store.
-    Inserted,
+    /// Chunk was newly written.
+    Written,
     /// Chunk already existed; write skipped (content-addressed dedup).
-    AlreadyPresent,
+    SkippedExists,
 }
 
 impl PutOutcome {
-    /// `true` if a new `.cnk` file was written.
+    /// `true` if a new chunk was written.
     #[must_use]
     pub fn is_new(self) -> bool {
-        matches!(self, Self::Inserted)
+        matches!(self, Self::Written)
     }
 
-    /// `true` if an existing chunk was reused.
+    /// `true` if an existing chunk was reused / skipped.
     #[must_use]
     pub fn is_reused(self) -> bool {
-        matches!(self, Self::AlreadyPresent)
+        matches!(self, Self::SkippedExists)
     }
 }
