@@ -2301,8 +2301,9 @@ fn cmd_extract(
     }
 
     if skip_unchanged {
+        // G3 / M2: field names skipped= / wrote= / dirs= (nailed).
         eprintln!(
-            "extract: wrote {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
+            "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
             out_dir.display(),
         );
     } else {

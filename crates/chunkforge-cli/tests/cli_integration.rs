@@ -6056,8 +6056,10 @@ fn extract_skip_unchanged_second_pass_skips_all_and_zero_gets() {
 
     let skip_err = String::from_utf8_lossy(&skip_out.stderr);
     assert!(
-        skip_err.contains("skipped=2") && skip_err.contains("wrote=0"),
-        "expected skipped=2 wrote=0; stderr={skip_err}"
+        skip_err.contains("skipped=2")
+            && skip_err.contains("wrote=0")
+            && skip_err.contains("dirs="),
+        "expected skipped=2 wrote=0 dirs=…; stderr={skip_err}"
     );
 
     // Files untouched (mtime preserved — whole file not rewritten).
@@ -6134,8 +6136,8 @@ fn extract_skip_unchanged_unequal_size_not_skipped() {
     ]);
     let err = String::from_utf8_lossy(&out2.stderr);
     assert!(
-        err.contains("skipped=1") && err.contains("wrote=1"),
-        "expected skipped=1 wrote=1; stderr={err}"
+        err.contains("skipped=1") && err.contains("wrote=1") && err.contains("dirs="),
+        "expected skipped=1 wrote=1 dirs=…; stderr={err}"
     );
     assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"short\n");
     assert_eq!(fs::read(out.join("b.txt")).unwrap(), b"keep-me\n");
@@ -6181,7 +6183,7 @@ fn extract_skip_unchanged_match_priority_over_force() {
     ]);
     let err = String::from_utf8_lossy(&out2.stderr);
     assert!(
-        err.contains("skipped=1") && err.contains("wrote=0"),
+        err.contains("skipped=1") && err.contains("wrote=0") && err.contains("dirs="),
         "match must skip even with --force; stderr={err}"
     );
     let after = fs::metadata(out.join("a.txt")).unwrap();
@@ -6222,5 +6224,167 @@ fn extract_without_skip_flag_summary_matches_0_8_0() {
     assert!(
         err.contains("extract: wrote") && err.contains("1 file") && !err.contains("skipped="),
         "no --skip-unchanged must keep 0.8.0 summary; stderr={err}"
+    );
+}
+
+// --- Phase 9 M2: --force overlap + summary fields ---
+
+#[test]
+fn extract_skip_force_change_one_file_skipped_n_minus_1_wrote_1() {
+    // §6.2 C / M2 acceptance: first extract full tree, change 1 source file,
+    // re-archive, then extract --skip-unchanged --force → skipped=N-1 wrote=1.
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-extract-v1\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"payload-b\n").unwrap();
+    fs::write(src.join("c.txt"), b"keep-c\n").unwrap();
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        v1.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let b_mtime_before = fs::metadata(out.join("sub/b.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let c_mtime_before = fs::metadata(out.join("c.txt")).unwrap().modified().unwrap();
+
+    // Change exactly one file; re-archive (seed optional but mirrors demo).
+    fs::write(src.join("a.txt"), b"hello-extract-v2\n").unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let o = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        v2.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    // N=3 files → skipped=2 wrote=1; dirs= present (nailed field names).
+    assert!(
+        err.contains("skipped=2") && err.contains("wrote=1") && err.contains("dirs="),
+        "M2: change 1 of 3 → skipped=2 wrote=1 dirs=…; stderr={err}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"hello-extract-v2\n");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"payload-b\n");
+    assert_eq!(fs::read(out.join("c.txt")).unwrap(), b"keep-c\n");
+    assert_eq!(
+        fs::metadata(out.join("sub/b.txt"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        b_mtime_before,
+        "unchanged b.txt must not be rewritten"
+    );
+    assert_eq!(
+        fs::metadata(out.join("c.txt")).unwrap().modified().unwrap(),
+        c_mtime_before,
+        "unchanged c.txt must not be rewritten"
+    );
+}
+
+#[test]
+fn extract_skip_content_mismatch_requires_force_then_writes() {
+    // Same size, different bytes: without --force fails (≡ 0.8.0); with --force writes.
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"AAAA").unwrap();
+    fs::write(src.join("b.txt"), b"BBBB").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    // Same length, different content on a.txt.
+    fs::write(out.join("a.txt"), b"XXXX").unwrap();
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+    ]);
+    let fail_err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        fail_err.contains("already exists") || fail_err.contains("refusing"),
+        "content mismatch without --force must refuse; stderr={fail_err}"
+    );
+
+    let o = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("skipped=1") && err.contains("wrote=1") && err.contains("dirs="),
+        "content mismatch + force → skipped=1 wrote=1; stderr={err}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"AAAA");
+    assert_eq!(fs::read(out.join("b.txt")).unwrap(), b"BBBB");
+}
+
+#[test]
+fn extract_help_force_mentions_skip_match_priority() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--force") && s.contains("--skip-unchanged"),
+        "extract --help should list --force and --skip-unchanged:\n{s}"
     );
 }
