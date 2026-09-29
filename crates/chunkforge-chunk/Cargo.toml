@@ -1,0 +1,16 @@
+[package]
+name = "chunkforge-chunk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FastCDC v2020 content-defined chunking + BLAKE3 ChunkId for ChunkForge"
+readme = false
+
+[dependencies]
+blake3 = { workspace = true }
+fastcdc = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

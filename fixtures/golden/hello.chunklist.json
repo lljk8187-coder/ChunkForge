@@ -1,0 +1,16 @@
+{
+  "algorithm": "fastcdc-v2020",
+  "params": {
+    "min": 16384,
+    "avg": 65536,
+    "max": 262144
+  },
+  "input": "fixtures/hello.txt",
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 17,
+      "blake3_hex": "1bcfeb28364e8c44f138a3e21dd37953f076190776c0c21f5da43da5a79e5f99"
+    }
+  ]
+}
