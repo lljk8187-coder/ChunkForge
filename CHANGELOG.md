@@ -7,12 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-29
+
+Phase 4 closeout: per-chunk HTTP PUT write path (`ChunkSink` / `HttpChunkSink` /
+`chunkforge push`) plus bounded concurrency `--jobs` on read and push commands,
+without an AWS SDK, in-process SigV4, or S3 multipart upload API.
+
 ### Added
 
-- **`--jobs N`** on `cat` / `verify` / `doctor` / `push` (Phase 4 M5): bounded
-  concurrency via `std::thread::scope` in the CLI orchestration layer. Default
-  **`1`** preserves 0.3.0 serial behaviour; errors still include the chunk id.
-  FUSE mount concurrency unchanged; no tokio; workspace version remains **0.3.0**.
+- **`ChunkSink`** write trait in `chunkforge-store` (`has` + `put` → `PutOutcome::{Written,SkippedExists}`); `Store` implements it; **not** folded into read-only `ChunkSource`
+- **`HttpChunkSink`** in `chunkforge-remote`: single-object PUT isomorphic with `HttpChunkSource` URL/header templates (`{base}` `{path}` `{2hex}` `{62hex}` `{id}`/`{hex}` `{prefix}` `{env:NAME}`); default `{base}/{path}`; plaintext body; optional `verify_hash`; 2xx / 409 success; ureq only
+- **`chunkforge push`**: `--store` + one or more `.cfidx` + `--dest` HTTP(S); merge referenced ids → remote `has` skip / `put`; `--dry-run`; stderr stats `skipped=` / `uploaded=` / `failed=`; non-zero on failures; does **not** upload indexes
+- **`--jobs N`** on `cat` / `verify` / `doctor` / `push`: bounded concurrency via `std::thread::scope` in the CLI orchestration layer. Default **`1`** preserves 0.3.0 serial behaviour; errors still include the chunk id. FUSE mount concurrency unchanged; no tokio
+- Docs: `docs/push.md`; `docs/remote-layout.md` PUT section; `scripts/demo_push.sh` + `scripts/put_stub.py`
+
+### Not delivered (Phase 4)
+
+- **`push --verify`** (spec O3): not implemented — verify after push with a separate `chunkforge verify --source <dest> …`
+
+### Non-goals (Phase 4)
+
+- No complete S3 multipart upload API (Initiate / UploadPart / Complete / Abort)
+- No `aws-sdk-*` / `aws-config` / ListObjects / credential-provider chain
+- No in-process SigV4 (GET or PUT); template headers / external presign / open write endpoints only
+- No directory-tree archive / multi-blob container / casync `.catar`; `.cfidx` v1 stays single-blob
+- No bidirectional sync / watch directories / conflict resolution
+- No write mount / COW / writable FUSE (FUSE stays `RO`)
+- No remote GC / bucket lifecycle; no packfile bundling; no P2P / GPU·LLM / video analysis
+- macOS / Windows not acceptance platforms
+
+### Notes
+
+- Default HTTP layout remains byte-compatible with **0.3.0** / **0.2.0** when no template flags are set — push keys match subsequent `verify --source`
+- Local store may use optional zstd; push decompresses to plaintext before PUT (remote layout = plaintext chunks)
 
 ## [0.3.0] — 2026-09-29
 
@@ -80,6 +107,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[0.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.1.0

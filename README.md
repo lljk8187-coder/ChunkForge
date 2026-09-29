@@ -1,6 +1,6 @@
 # ChunkForge
 
-**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, and **read-only** FUSE mount of a single blob.
+**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, per-chunk HTTP **PUT** (`ChunkSink` / `push`), and **read-only** FUSE mount of a single blob.
 
 ## Status
 
@@ -9,23 +9,25 @@
 | **Phase 1** | **0.1.0** | Local chunk / store / index / CLI (`make` `cat` `verify` `chunk-id` `store has`) / fixtures + dedup demo / CI |
 | **Phase 2** | **0.2.0** | `ChunkSource` + HTTP/`file://` remote + `--source`/`--cache` + read-only `mount` |
 | **Phase 3** | **0.3.0** | URL/header templates + S3 path conventions; `doctor`; local `gc` dry-run / `--apply` |
+| **Phase 4** | **0.4.0** | `ChunkSink` + `HttpChunkSink` per-chunk PUT; CLI `push`; `--jobs` on cat/verify/doctor/push |
 
-## Non-goals (Phase 3)
+## Non-goals (Phase 4)
 
 | Not this | Why |
 |---|---|
-| ❌ **Full AWS/S3 SDK** | No `aws-sdk-s3` / `aws-config` / ListObjects — dependency surface stays **ureq** |
-| ❌ **In-process SigV4** | No GET-only HMAC either; use public/CDN, fixed header templates, or externally presigned query in `--url-template` |
-| ❌ **Upload / multipart** | No PUT/POST, CompleteMultipart, or object writes |
-| ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
-| ❌ **Bidirectional sync** | No watch directories, conflict resolution, or mutual push |
+| ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
+| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential chain — dependency surface stays **ureq** |
+| ❌ **In-process SigV4** | No GET or PUT HMAC; use public/CDN, fixed header templates, or externally presigned query in `--url-template` |
+| ❌ **Directory-tree archive** | `.cfidx` v1 stays single-blob; no multi-blob container / casync `.catar`; mount stays one file |
+| ❌ **Bidirectional sync** | `push` is explicit one-way publish — no watch directories, conflict resolution, or mutual sync |
 | ❌ **Write mount / COW** | FUSE stays `RO`; writes return `EROFS` / `EACCES` |
+| ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
-| ❌ Not a casync **binary drop-in** | Native `.cfidx` (not `.caibx`); single-blob only — no directory-tree archive |
-| ❌ **P2P** / **GPU / LLM** | Pure CPU data plane; no device discovery |
+| ❌ Not a casync **binary drop-in** | Native `.cfidx` (not `.caibx`); single-blob only |
+| ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases also deferred FUSE (Phase 1) and object-store templates / doctor / gc (Phase 2); those are now delivered as above.
+Earlier phases delivered local CAS (Phase 1), remote read + RO mount (Phase 2), and templates / doctor / gc (Phase 3). Phase 4 adds the write face; `push --verify` was **not** shipped — use `verify --source` after push.
 
 ## Quick start (local CAS)
 
@@ -101,6 +103,34 @@ Object-store–friendly **read** paths: same `HttpChunkSource`, optional URL/hea
 ```
 
 Placeholders, path-style / virtual-host examples, and auth patterns: [docs/remote-layout.md](docs/remote-layout.md). Doctor / gc details: [docs/doctor-gc.md](docs/doctor-gc.md).
+
+## Phase 4: push (per-chunk PUT) + `--jobs`
+
+Symmetric write path for the same HTTP key layout as Phase 3 reads: `ChunkSink` /
+`HttpChunkSink` issue **single-object PUT** of plaintext chunks. CLI `push` uploads
+missing ids from a local `--store` + `.cfidx` set to `--dest`. Optional `--jobs N`
+(default **1** ≡ serial) speeds `cat` / `verify` / `doctor` / `push`.
+
+```bash
+# Local PUT stub + push + verify (or: bash scripts/demo_push.sh)
+# Terminal 1:
+#   python3 scripts/put_stub.py --root /tmp/cf-p4/mirror --port 8766
+mkdir -p /tmp/cf-p4 && cd /tmp/cf-p4
+chunkforge make --store ./store -o hello.cfidx /path/to/ChunkForge/fixtures/hello.txt
+chunkforge push --store ./store --dest http://127.0.0.1:8766 hello.cfidx
+chunkforge verify --source http://127.0.0.1:8766 hello.cfidx
+chunkforge cat --source http://127.0.0.1:8766 hello.cfidx -o /tmp/hello.p4.out
+cmp /path/to/ChunkForge/fixtures/hello.txt /tmp/hello.p4.out
+
+# Idempotent re-push → uploaded=0, skipped≥1
+chunkforge push --store ./store --dest http://127.0.0.1:8766 hello.cfidx
+
+# Bounded concurrency (optional)
+# chunkforge verify --source http://127.0.0.1:8766 --jobs 4 hello.cfidx
+# chunkforge push --store ./store --dest http://127.0.0.1:8766 --jobs 4 hello.cfidx
+```
+
+Details: [docs/push.md](docs/push.md). PUT layout + non-goals: [docs/remote-layout.md](docs/remote-layout.md). Smoke: [`scripts/demo_push.sh`](scripts/demo_push.sh).
 
 ## Incremental dedup demo
 
