@@ -954,8 +954,7 @@ fn listing_chunk_ids(path: &Path) -> Result<Vec<ChunkId>> {
         }
         ListingKind::DirArchive => {
             let arch = load_dir_archive(path)?;
-            arch
-                .validate()
+            arch.validate()
                 .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", path.display()))?;
             Ok(arch.all_chunk_ids().collect())
         }
@@ -974,7 +973,6 @@ fn union_listing_chunk_ids(paths: &[PathBuf]) -> Result<(HashSet<ChunkId>, usize
     }
     Ok((referenced, listings_ok))
 }
-
 
 /// Join a validated `/`-separated archive path onto `out_root`.
 fn join_archive_path(out_root: &Path, rel: &str) -> Result<PathBuf> {

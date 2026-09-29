@@ -1,6 +1,6 @@
 # ChunkForge
 
-**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, per-chunk HTTP **PUT** (`ChunkSink` / `push`), and **read-only** FUSE mount of a single blob.
+**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, per-chunk HTTP **PUT** (`ChunkSink` / `push`), **directory-tree archive** (`.cfdir` / `archive` / `extract`), and **read-only** FUSE mount of a single blob **or** a directory tree.
 
 ## Status
 
@@ -10,24 +10,25 @@
 | **Phase 2** | **0.2.0** | `ChunkSource` + HTTP/`file://` remote + `--source`/`--cache` + read-only `mount` |
 | **Phase 3** | **0.3.0** | URL/header templates + S3 path conventions; `doctor`; local `gc` dry-run / `--apply` |
 | **Phase 4** | **0.4.0** | `ChunkSink` + `HttpChunkSink` per-chunk PUT; CLI `push`; `--jobs` on cat/verify/doctor/push |
+| **Phase 5** | **0.5.0** | `.cfdir` v1 directory archive + `DirFs` RO mount; `archive` / `extract` / tree `verify`; `push`/`doctor`/`gc` accept `.cfdir`; `push --verify`; `archive --dry-run` |
 
-## Non-goals (Phase 4)
+## Non-goals (Phase 5)
 
 | Not this | Why |
 |---|---|
-| ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
-| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential chain — dependency surface stays **ureq** |
 | ❌ **In-process SigV4** | No GET or PUT HMAC; use public/CDN, fixed header templates, or externally presigned query in `--url-template` |
-| ❌ **Directory-tree archive** | `.cfidx` v1 stays single-blob; no multi-blob container / casync `.catar`; mount stays one file |
-| ❌ **Bidirectional sync** | `push` is explicit one-way publish — no watch directories, conflict resolution, or mutual sync |
-| ❌ **Write mount / COW** | FUSE stays `RO`; writes return `EROFS` / `EACCES` |
+| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential chain — dependency surface stays **ureq** |
+| ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
+| ❌ **Write mount / COW** | FUSE stays `RO` (single blob **and** directory tree); writes return `EROFS` / `EACCES` |
+| ❌ **Bidirectional sync** | `archive` / `extract` / `push` are explicit one-way — no watch directories, conflict resolution, or mutual sync |
+| ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
+| ❌ **Seed archive** (`archive --seed`) | Incremental skip-rechunk deferred; not in 0.5.0 |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
-| ❌ Not a casync **binary drop-in** | Native `.cfidx` (not `.caibx`); single-blob only |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO mount (Phase 2), and templates / doctor / gc (Phase 3). Phase 4 adds the write face; `push --verify` was **not** shipped — use `verify --source` after push.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), and per-chunk PUT / `push` / `--jobs` (Phase 4). Phase 5 adds multi-file `.cfdir` archive + directory FUSE and lands `push --verify`.
 
 ## Quick start (local CAS)
 
@@ -55,7 +56,7 @@ python3 -m http.server 8765 --directory ./store &
   v1.cfidx -o /tmp/hello.http.out
 ```
 
-Linux + fuse3: mount a `.cfidx` as a **single** read-only file:
+Linux + fuse3: mount a `.cfidx` as a **single** read-only file (directory trees via `.cfdir` — see Phase 5 below):
 
 ```bash
 cargo build -p chunkforge-cli          # fuse feature on by default
@@ -108,8 +109,10 @@ Placeholders, path-style / virtual-host examples, and auth patterns: [docs/remot
 
 Symmetric write path for the same HTTP key layout as Phase 3 reads: `ChunkSink` /
 `HttpChunkSink` issue **single-object PUT** of plaintext chunks. CLI `push` uploads
-missing ids from a local `--store` + `.cfidx` set to `--dest`. Optional `--jobs N`
-(default **1** ≡ serial) speeds `cat` / `verify` / `doctor` / `push`.
+missing ids from a local `--store` + listing set (`.cfidx` and, since **0.5.0**,
+`.cfdir`) to `--dest`. Optional `--jobs N` (default **1** ≡ serial) speeds
+`cat` / `verify` / `doctor` / `push`. Post-push check: **`push --verify`**
+(Phase 5) or a separate `verify --source`.
 
 ```bash
 # Local PUT stub + push + verify (or: bash scripts/demo_push.sh)
@@ -132,6 +135,48 @@ chunkforge push --store ./store --dest http://127.0.0.1:8766 hello.cfidx
 
 Details: [docs/push.md](docs/push.md). PUT layout + non-goals: [docs/remote-layout.md](docs/remote-layout.md). Smoke: [`scripts/demo_push.sh`](scripts/demo_push.sh).
 
+## Phase 5: directory archive (`.cfdir`) + DirFs
+
+Multi-file workflow on a **new** `.cfdir` v1 listing (`.cfidx` v1 stays frozen /
+single-blob). `archive` chunks a directory into the existing CAS; `extract` /
+tree `verify` / read-only `mount` consume it; `push` / `doctor` / `gc` accept
+`.cfdir` the same way as `.cfidx`.
+
+```bash
+cargo build -p chunkforge-cli
+
+mkdir -p /tmp/cf-p5/src/sub
+echo 'hello-tree' > /tmp/cf-p5/src/a.txt
+cp fixtures/hello.txt /tmp/cf-p5/src/sub/b.txt
+cp /tmp/cf-p5/src/a.txt /tmp/cf-p5/src/a-copy.txt   # cross-file dedup
+
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p5/store -o /tmp/cf-p5/release.cfdir /tmp/cf-p5/src
+# ./target/debug/chunkforge archive --dry-run --store /tmp/cf-p5/store \
+#   -o /tmp/cf-p5/unused.cfdir /tmp/cf-p5/src   # stats only
+
+./target/debug/chunkforge verify --store /tmp/cf-p5/store /tmp/cf-p5/release.cfdir
+./target/debug/chunkforge extract --store /tmp/cf-p5/store \
+  /tmp/cf-p5/release.cfdir -o /tmp/cf-p5/out
+diff -qr /tmp/cf-p5/src /tmp/cf-p5/out
+
+# Optional: read-only directory mount (Linux + fuse3)
+mkdir -p /tmp/cf-p5/mnt
+./target/debug/chunkforge mount --store /tmp/cf-p5/store \
+  /tmp/cf-p5/release.cfdir /tmp/cf-p5/mnt
+# cmp /tmp/cf-p5/src/a.txt /tmp/cf-p5/mnt/a.txt
+# fusermount3 -u /tmp/cf-p5/mnt
+
+# Optional: push chunks + post-push verify
+# Terminal 1: python3 scripts/put_stub.py --root /tmp/cf-p5/mirror --port 8766
+# ./target/debug/chunkforge push --store /tmp/cf-p5/store \
+#   --dest http://127.0.0.1:8766 --verify /tmp/cf-p5/release.cfdir
+```
+
+Or one-shot: [`scripts/demo_archive.sh`](scripts/demo_archive.sh). Details:
+[docs/archive.md](docs/archive.md), [docs/dir-format.md](docs/dir-format.md),
+[docs/mount.md](docs/mount.md), [docs/push.md](docs/push.md).
+
 ## Incremental dedup demo
 
 Generate offline ≥64MiB fixtures (gitignored), then remake + mid-file mutate:
@@ -145,9 +190,12 @@ make demo-dedup-small   # 4MiB smoke (faster)
 `chunkforge make` stderr reports `new=` / `reused=` from store put outcomes.
 See [docs/demo-dedup.md](docs/demo-dedup.md) and [`scripts/demo_dedup.sh`](scripts/demo_dedup.sh).
 
-## Index format note
+## Index / archive format note
 
-The `.cfidx` index is **not** casync / desync bit-compatible (different CDC, BLAKE3 vs SHA512/256, custom layout). See [docs/index-format.md](docs/index-format.md).
+The `.cfidx` (single-blob) and `.cfdir` (directory-tree) formats are **not**
+casync / desync bit-compatible (different CDC, BLAKE3 vs SHA512/256, custom
+layout). See [docs/index-format.md](docs/index-format.md) and
+[docs/dir-format.md](docs/dir-format.md).
 
 ## Develop / CI
 

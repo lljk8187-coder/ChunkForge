@@ -7,10 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-29
+
+Phase 5 closeout: directory-tree archive (`.cfdir` v1) with `archive` /
+`extract` / tree `verify`, read-only FUSE directory mount (`DirFs`), and
+`.cfdir`-aware `push` / `doctor` / `gc`, plus `push --verify` and
+`archive --dry-run`. Single-blob `.cfidx` v1 stays frozen; no AWS SDK,
+in-process SigV4, write mount, or seed archive.
+
 ### Added
 
-- **`chunkforge extract`** + **`verify` magic dispatch** (Phase5-M3): `extract --store|--source … archive.cfdir -o out-dir` materializes regular files (create parents; refuse existing targets — no `--force` yet). `verify` auto-detects `.cfidx` (unchanged) vs `.cfdir` (tree: structure + per-file `blob_blake3` + missing chunk fails with id). `--jobs` on extract/verify chunk fetches (default 1).
-- **`chunkforge archive`** (Phase5-M2): recurse a source directory, FastCDC + BLAKE3 per regular file, write chunks into `--store` (dedup), emit `.cfdir` via `DirArchive::encode`. Optional `--chunk-size` (same as `make`). Stderr stats: files / chunks / `new=` / `reused=`. Symlinks and fifo/socket/device are skipped with a warning (P0 policy). `make` single-file `.cfidx` path unchanged.
+- **`.cfdir` v1 + `DirArchive`**: parallel multi-file listing format
+  (`CFDIR\0\0\x01`); encode/decode + path validation in `chunkforge-index`;
+  `.cfidx` v1 bytes unchanged — see `docs/dir-format.md`
+- **`chunkforge archive`**: recurse a source directory, FastCDC + BLAKE3 per
+  regular file, write chunks into `--store` (dedup), emit `.cfdir`; stderr
+  stats `files` / `chunks` / `new=` / `reused=`; symlinks and special files
+  skipped with a warning (P0)
+- **`archive --dry-run`**: stats only — no store writes and no `.cfdir` output
+- **`chunkforge extract`** + **`verify` magic dispatch**: materialize tree
+  (create parents; refuse existing targets); `verify` auto-detects `.cfidx`
+  vs `.cfdir` (structure + per-file `blob_blake3` + missing chunk fails with
+  id); `--jobs` on extract/verify chunk fetches (default 1)
+- **Read-only FUSE directory mount (`DirFs`)**: `mount` magic-dispatches
+  `.cfdir` → directory tree vs `.cfidx` → single blob; still forced `RO`
+- **`push` / `doctor` / `gc` accept `.cfdir`**: reference set is the union of
+  chunk ids (`DirArchive::all_chunk_ids`); listings are never uploaded
+- **`push --verify`**: after a successful push (`failed=0`), treat `--dest`
+  (same HTTP templates) as `ChunkSource` and verify each listing; skipped on
+  `--dry-run` or when push already failed (clears Phase 4 O3)
+- Docs: `docs/dir-format.md`, `docs/archive.md`; mount / push / doctor-gc
+  updates; `scripts/demo_archive.sh`
+
+### Not delivered / deferred (Phase 5)
+
+- **`archive --seed prior.cfdir`** (spec O3): incremental seed / skip re-chunk
+  when `blob_blake3` unchanged — deferred (Phase 5.5 / later)
+- In-process **SigV4** / complete **`aws-sdk-*`** / S3 multipart upload API
+- Write mount / COW / writable FUSE; bidirectional sync / watch directories
+- casync `.catar` / `.caibx` bit-compat; video analysis / GPU·LLM / P2P
+
+### Non-goals (Phase 5)
+
+- No rewrite or deprecation of `.cfidx` v1 (single-blob index stays frozen)
+- No casync `.catar` bit-compat (semantic alignment only; format is native)
+- No write mount / COW; directory mount stays `RO`
+- No bidirectional sync / conflict resolution
+- No process-in SigV4 / `aws-sdk-*` / multipart; HTTP surface remains **ureq**
+- No seed archive in this release; no remote GC / packfiles
+
+### Notes
+
+- Default HTTP chunk layout remains byte-compatible with **0.4.0** / **0.3.0**
+  when no template flags are set — `.cfdir` push keys match subsequent
+  `verify --source` / `push --verify`
+- `make` / single-file `mount` / `.cfidx` `push` behaviour matches **0.4.0**
+  when no new flags are used
 
 ## [0.4.0] — 2026-09-29
 
@@ -28,7 +80,8 @@ without an AWS SDK, in-process SigV4, or S3 multipart upload API.
 
 ### Not delivered (Phase 4)
 
-- **`push --verify`** (spec O3): not implemented — verify after push with a separate `chunkforge verify --source <dest> …`
+- **`push --verify`** (spec O3): not implemented in 0.4.0 — verify after push
+  with a separate `chunkforge verify --source <dest> …`. **Delivered in 0.5.0.**
 
 ### Non-goals (Phase 4)
 
@@ -112,6 +165,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[0.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.2.0

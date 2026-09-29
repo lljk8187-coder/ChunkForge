@@ -2570,7 +2570,6 @@ fn verify_cfidx_still_works_alongside_cfdir_dispatch() {
     ]);
 }
 
-
 // --- Phase 5 M5: push / doctor / gc accept .cfdir ---
 
 #[test]
@@ -2598,7 +2597,11 @@ fn push_cfdir_to_mock_then_verify_source_succeeds() {
     let src = dir.path().join("src");
     fs::create_dir_all(src.join("sub")).unwrap();
     fs::write(src.join("a.txt"), b"hello-tree\n").unwrap();
-    fs::copy(fixtures_dir().join("hello.txt"), src.join("sub").join("b.txt")).unwrap();
+    fs::copy(
+        fixtures_dir().join("hello.txt"),
+        src.join("sub").join("b.txt"),
+    )
+    .unwrap();
     fs::copy(src.join("a.txt"), src.join("a-copy.txt")).unwrap();
     let cfdir = dir.path().join("release.cfdir");
 
@@ -2849,7 +2852,11 @@ fn push_verify_cfdir_against_mock_succeeds() {
     let src = dir.path().join("src");
     fs::create_dir_all(src.join("sub")).unwrap();
     fs::write(src.join("a.txt"), b"push-verify-tree\n").unwrap();
-    fs::copy(fixtures_dir().join("hello.txt"), src.join("sub").join("b.txt")).unwrap();
+    fs::copy(
+        fixtures_dir().join("hello.txt"),
+        src.join("sub").join("b.txt"),
+    )
+    .unwrap();
     let cfdir = dir.path().join("release.cfdir");
 
     run_ok(&[
@@ -3001,7 +3008,10 @@ fn push_verify_skipped_on_dry_run() {
         "dry-run must skip verify; stderr={err}"
     );
     assert_eq!(put_count.load(Ordering::SeqCst), 0, "dry-run must not PUT");
-    assert!(!err.contains("push: verify ok"), "must not claim verify ok; stderr={err}");
+    assert!(
+        !err.contains("push: verify ok"),
+        "must not claim verify ok; stderr={err}"
+    );
 }
 
 #[test]
@@ -3034,10 +3044,7 @@ fn archive_dry_run_prints_stats_without_writing() {
         err.contains("no store") || err.contains("no store/.cfdir"),
         "stderr={err}"
     );
-    assert!(
-        !out_cfdir.exists(),
-        "dry-run must not write .cfdir"
-    );
+    assert!(!out_cfdir.exists(), "dry-run must not write .cfdir");
     assert!(
         !store.join("meta.toml").exists(),
         "dry-run must not create store when missing"
@@ -3048,5 +3055,8 @@ fn archive_dry_run_prints_stats_without_writing() {
 fn archive_help_lists_dry_run() {
     let help = run_ok(&["archive", "--help"]);
     let s = String::from_utf8_lossy(&help.stdout);
-    assert!(s.contains("--dry-run"), "archive --help should list --dry-run:\n{s}");
+    assert!(
+        s.contains("--dry-run"),
+        "archive --help should list --dry-run:\n{s}"
+    );
 }
