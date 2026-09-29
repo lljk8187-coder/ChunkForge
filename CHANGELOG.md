@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   BLAKE3 already match listing `blob_blake3` (no chunk fetch/write; mode untouched).
   Default **off** ≡ 0.8.0. Match takes priority over `--force`. Helper
   `judge_extract_unchanged` / `UnchangedVerdict` in `chunkforge-index`.
+- **`extract --dry-run`** (Phase 9 M3 / G2–G3): plan only — creates/modifies **no**
+  target paths under `-o` (output root included); never fetches chunks. Without
+  `--skip-unchanged`, does not open `--store`/`--source` (`would_write=` = all
+  listing files; existing conflicts without `--force` → `would_fail=`). With
+  `--skip-unchanged`, only reads local dests for size+BLAKE3 judgment (no chunk
+  get). Stderr:
+  `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
+  Exit **0** when the listing is valid (even if `would_fail>0`); invalid listing
+  → non-zero. Mismatch + `--force` → `would_write`.
 
 ## [0.8.0] — 2026-09-29
 

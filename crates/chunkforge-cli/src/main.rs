@@ -102,8 +102,11 @@ enum Commands {
     /// existing regular files; type mismatches still error). With
     /// `--skip-unchanged`, files whose size and content BLAKE3 already match
     /// the listing are left untouched (no chunk fetch / write), even if
-    /// `--force` is also set. Empty `Dir` entries create directories; file
-    /// modes are restored on Unix when recorded.
+    /// `--force` is also set. With `--dry-run`, no target paths are created
+    /// or modified (output root included); stderr reports would_skip /
+    /// would_write / would_dirs / would_fail and exit is 0 unless the listing
+    /// is invalid. Empty `Dir` entries create directories; file modes are
+    /// restored on Unix when recorded.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Extract {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -139,6 +142,16 @@ enum Commands {
         /// files still require `--force` to overwrite.
         #[arg(long = "skip-unchanged")]
         skip_unchanged: bool,
+        /// Plan only: create/modify **no** paths under `-o` (including the
+        /// output root). Never fetches chunks. Without `--skip-unchanged`,
+        /// does not open `--store`/`--source` and counts every listing file as
+        /// `would_write` (existing conflicts without `--force` → `would_fail`).
+        /// With `--skip-unchanged`, only reads local dests for size+BLAKE3
+        /// judgment. Stderr:
+        /// `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
+        /// Exit **0** when the listing is valid (even if `would_fail>0`).
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -491,15 +504,29 @@ fn run() -> Result<()> {
             output,
             force,
             skip_unchanged,
+            dry_run,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(
-                store.as_deref(),
-                source.as_deref(),
-                cache.as_deref(),
-                &http_tmpl,
-            )?;
-            cmd_extract(src.as_ref(), &archive, &output, jobs, force, skip_unchanged)
+            // Dry-run never opens store/source (no chunk get; G2 / §3.2).
+            if dry_run {
+                cmd_extract(None, &archive, &output, jobs, force, skip_unchanged, true)
+            } else {
+                let src = open_chunk_source(
+                    store.as_deref(),
+                    source.as_deref(),
+                    cache.as_deref(),
+                    &http_tmpl,
+                )?;
+                cmd_extract(
+                    Some(src.as_ref()),
+                    &archive,
+                    &output,
+                    jobs,
+                    force,
+                    skip_unchanged,
+                    false,
+                )
+            }
         }
         Commands::Cat {
             store,
@@ -2122,12 +2149,13 @@ fn cmd_verify_dir(source: &dyn ChunkSource, archive_path: &Path, jobs: usize) ->
 }
 
 fn cmd_extract(
-    source: &dyn ChunkSource,
+    source: Option<&dyn ChunkSource>,
     archive_path: &Path,
     out_dir: &Path,
     jobs: usize,
     force: bool,
     skip_unchanged: bool,
+    dry_run: bool,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -2141,6 +2169,12 @@ fn cmd_extract(
     archive
         .validate()
         .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
+
+    if dry_run {
+        return cmd_extract_dry_run(&archive, out_dir, force, skip_unchanged);
+    }
+
+    let source = source.expect("non-dry-run extract always opens a chunk source");
 
     if out_dir.exists() {
         if out_dir.is_file() {
@@ -2319,6 +2353,96 @@ fn cmd_extract(
     }
     Ok(())
 }
+
+/// Phase 9 M3 / G2: dry-run extract — no writes, no chunk gets.
+///
+/// Without `--skip-unchanged`: do not open source/store; classify by local
+/// presence only (`would_write` vs `would_fail`). With skip: only read local
+/// dests for size+BLAKE3 judgment. Exit **0** when listing is valid (even if
+/// `would_fail > 0`).
+fn cmd_extract_dry_run(
+    archive: &DirArchive,
+    out_dir: &Path,
+    force: bool,
+    skip_unchanged: bool,
+) -> Result<()> {
+    // Refuse only when the named output root already exists as a file — same
+    // hard gate as real extract; we still create/modify nothing.
+    if out_dir.exists() && out_dir.is_file() {
+        bail!(
+            "extract output {} exists and is a file (refusing to overwrite)",
+            out_dir.display()
+        );
+    }
+
+    let mut would_skip = 0usize;
+    let mut would_write = 0usize;
+    let mut would_dirs = 0usize;
+    let mut would_fail = 0usize;
+
+    for entry in &archive.entries {
+        let dest = join_archive_path(out_dir, &entry.path)?;
+        match &entry.kind {
+            DirEntryKind::Dir { .. } => {
+                if dest.exists() && !dest.is_dir() {
+                    would_fail += 1;
+                } else {
+                    would_dirs += 1;
+                }
+            }
+            DirEntryKind::File {
+                size, blob_blake3, ..
+            } => {
+                if skip_unchanged {
+                    let verdict = judge_extract_unchanged(&dest, *size, blob_blake3)
+                        .with_context(|| format!("stat/hash {}", dest.display()))?;
+                    match verdict {
+                        UnchangedVerdict::Unchanged => {
+                            would_skip += 1;
+                        }
+                        UnchangedVerdict::Missing => {
+                            would_write += 1;
+                        }
+                        UnchangedVerdict::TypeMismatch => {
+                            if dest.is_dir() {
+                                // Type conflict: --force does not change type.
+                                would_fail += 1;
+                            } else if force {
+                                would_write += 1;
+                            } else {
+                                would_fail += 1;
+                            }
+                        }
+                        UnchangedVerdict::SizeMismatch | UnchangedVerdict::ContentMismatch => {
+                            if force {
+                                would_write += 1;
+                            } else {
+                                would_fail += 1;
+                            }
+                        }
+                    }
+                } else if dest.exists() {
+                    if dest.is_dir() {
+                        would_fail += 1;
+                    } else if force {
+                        would_write += 1;
+                    } else {
+                        would_fail += 1;
+                    }
+                } else {
+                    would_write += 1;
+                }
+            }
+        }
+    }
+
+    // G3 / M3: nailed field names (would_fail included — dry-run conflict path).
+    eprintln!(
+        "extract: dry-run: would_skip={would_skip} would_write={would_write} would_dirs={would_dirs} would_fail={would_fail}"
+    );
+    Ok(())
+}
+
 fn cmd_doctor(
     source: &dyn ChunkSource,
     origin_spec: &str,

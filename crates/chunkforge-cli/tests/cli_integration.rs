@@ -6388,3 +6388,349 @@ fn extract_help_force_mentions_skip_match_priority() {
         "extract --help should list --force and --skip-unchanged:\n{s}"
     );
 }
+
+// --- Phase 9 M3: extract --dry-run ---
+
+#[test]
+fn extract_help_lists_dry_run() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--dry-run"),
+        "extract --help should list --dry-run:\n{s}"
+    );
+}
+
+#[test]
+fn extract_dry_run_no_skip_no_writes_and_no_store_access() {
+    // Without --skip-unchanged: no source/store open; would_write=all files;
+    // create/modify nothing under -o (including output root).
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-dry\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"payload-b\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("v1.cfdir");
+    let out = dir.path().join("out-missing");
+    // Bogus store path that must NOT be opened/created by dry-run.
+    let missing_store = dir.path().join("store-does-not-exist");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    assert!(!out.exists(), "out must start missing");
+    assert!(!missing_store.exists());
+
+    let o = run_ok(&[
+        "extract",
+        "--store",
+        missing_store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("extract: dry-run:")
+            && err.contains("would_skip=0")
+            && err.contains("would_write=2")
+            && err.contains("would_dirs=")
+            && err.contains("would_fail=0"),
+        "expected dry-run would_skip=0 would_write=2 would_dirs=… would_fail=0; stderr={err}"
+    );
+    assert!(!out.exists(), "dry-run must not create output root");
+    assert!(
+        !missing_store.exists(),
+        "dry-run without --skip-unchanged must not open/create --store"
+    );
+}
+
+#[test]
+fn extract_dry_run_with_skip_reads_local_only_zero_gets() {
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-extract-v1\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"payload-b\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("v1.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let a_before = fs::metadata(out.join("a.txt")).unwrap();
+    let b_before = fs::metadata(out.join("sub/b.txt")).unwrap();
+    let a_bytes = fs::read(out.join("a.txt")).unwrap();
+    let b_bytes = fs::read(out.join("sub/b.txt")).unwrap();
+
+    let get_count = Arc::new(Mutex::new(0usize));
+    let get_count2 = Arc::clone(&get_count);
+    let store_root = store.clone();
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+            if request.method() == &Method::Get {
+                *get_count2.lock().unwrap() += 1;
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let _ = request.respond(Response::from_data(data));
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else if request.method() == &Method::Head {
+                if file_path.is_file() {
+                    let data = fs::read(&file_path).unwrap_or_default();
+                    let response = Response::empty(200).with_header(
+                        Header::from_bytes(&b"Content-Length"[..], data.len().to_string()).unwrap(),
+                    );
+                    let _ = request.respond(response);
+                } else {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+            } else {
+                let _ = request.respond(Response::empty(StatusCode(405)));
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    let o = run_ok(&[
+        "extract",
+        "--source",
+        &base,
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--dry-run",
+    ]);
+    let gets = *get_count.lock().unwrap();
+    assert_eq!(
+        gets, 0,
+        "dry-run + skip must not GET any chunks; gets={gets}"
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("extract: dry-run:")
+            && err.contains("would_skip=2")
+            && err.contains("would_write=0")
+            && err.contains("would_dirs=")
+            && err.contains("would_fail=0"),
+        "expected would_skip=2 would_write=0; stderr={err}"
+    );
+
+    // Tree untouched.
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), a_bytes);
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b_bytes);
+    assert_eq!(
+        a_before.modified().unwrap(),
+        fs::metadata(out.join("a.txt")).unwrap().modified().unwrap()
+    );
+    assert_eq!(
+        b_before.modified().unwrap(),
+        fs::metadata(out.join("sub/b.txt"))
+            .unwrap()
+            .modified()
+            .unwrap()
+    );
+}
+
+#[test]
+fn extract_dry_run_mismatch_would_fail_without_force_would_write_with_force() {
+    // Existing mismatch: no force → would_fail (exit 0); with force → would_write.
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"AAAA").unwrap();
+    fs::write(src.join("b.txt"), b"BBBB").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    // Same length, different content on a.txt; b.txt still matches.
+    fs::write(out.join("a.txt"), b"XXXX").unwrap();
+    let dirty = fs::read(out.join("a.txt")).unwrap();
+
+    let no_force = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--dry-run",
+    ]);
+    let err = String::from_utf8_lossy(&no_force.stderr);
+    assert!(
+        err.contains("would_skip=1")
+            && err.contains("would_write=0")
+            && err.contains("would_fail=1")
+            && err.contains("would_dirs="),
+        "mismatch without --force → would_fail=1 would_skip=1; stderr={err}"
+    );
+    assert_eq!(
+        fs::read(out.join("a.txt")).unwrap(),
+        dirty,
+        "dry-run must not rewrite mismatched file"
+    );
+
+    let with_force = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--force",
+        "--dry-run",
+    ]);
+    let err2 = String::from_utf8_lossy(&with_force.stderr);
+    assert!(
+        err2.contains("would_skip=1")
+            && err2.contains("would_write=1")
+            && err2.contains("would_fail=0")
+            && err2.contains("would_dirs="),
+        "mismatch + --force → would_write=1 would_skip=1; stderr={err2}"
+    );
+    assert_eq!(
+        fs::read(out.join("a.txt")).unwrap(),
+        dirty,
+        "dry-run + force must still not write"
+    );
+}
+
+#[test]
+fn extract_dry_run_without_skip_existing_conflict_would_fail() {
+    // No skip: existing dest without --force → would_fail (presence only; no hash).
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"content-a\n").unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+
+    let before = fs::read(out.join("a.txt")).unwrap();
+    let o = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("would_skip=0")
+            && err.contains("would_write=0")
+            && err.contains("would_fail=1")
+            && err.contains("would_dirs="),
+        "no-skip dry-run + existing → would_fail=1; stderr={err}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), before);
+
+    let o2 = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--force",
+        "--dry-run",
+    ]);
+    let err2 = String::from_utf8_lossy(&o2.stderr);
+    assert!(
+        err2.contains("would_write=1") && err2.contains("would_fail=0"),
+        "no-skip dry-run + force → would_write=1; stderr={err2}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), before);
+}
+
+#[test]
+fn extract_dry_run_invalid_listing_nonzero() {
+    let dir = tempdir().unwrap();
+    let bad = dir.path().join("not-a-cfdir.bin");
+    fs::write(&bad, b"not-a-listing").unwrap();
+    let out = dir.path().join("out");
+    let missing_store = dir.path().join("no-store");
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        missing_store.to_str().unwrap(),
+        bad.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert!(!fail.status.success());
+    assert!(!out.exists(), "failed dry-run must not create output");
+}
