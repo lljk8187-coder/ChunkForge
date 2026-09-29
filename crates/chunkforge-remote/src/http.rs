@@ -1,6 +1,7 @@
 //! HTTP static chunk-directory [`ChunkSource`].
 
 use crate::endpoint::HttpEndpoint;
+use crate::retry::{Attempt, RetryPolicy, run_with_retry, ureq_error_is_transient};
 use crate::template::TemplateError;
 use chunkforge_store::{ChunkId, ChunkSource, SourceError};
 use std::time::Duration;
@@ -30,6 +31,7 @@ pub const DEFAULT_URL_TEMPLATE: &str = "{base}/{path}";
 pub struct HttpChunkSource {
     endpoint: HttpEndpoint,
     verify_hash: bool,
+    retry_policy: RetryPolicy,
 }
 
 impl HttpChunkSource {
@@ -50,6 +52,7 @@ impl HttpChunkSource {
             url_template: DEFAULT_URL_TEMPLATE.to_string(),
             header_templates: Vec::new(),
             prefix: String::new(),
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -76,6 +79,11 @@ impl HttpChunkSource {
     /// Header name → value-template pairs applied on every request.
     pub fn header_templates(&self) -> &[(String, String)] {
         &self.endpoint.header_templates
+    }
+
+    /// Retry policy for transient HTTP failures (default: 0 extra attempts).
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
     }
 
     /// Absolute URL for `id` under this source's template.
@@ -125,6 +133,7 @@ pub struct HttpChunkSourceBuilder {
     url_template: String,
     header_templates: Vec<(String, String)>,
     prefix: String,
+    retry_policy: RetryPolicy,
 }
 
 impl HttpChunkSourceBuilder {
@@ -171,6 +180,12 @@ impl HttpChunkSourceBuilder {
         self
     }
 
+    /// Set the retry policy for transient HTTP failures (default: 0 extra attempts).
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
     /// Build the source.
     ///
     /// Validates `url_template` and every header value template by expanding
@@ -187,6 +202,7 @@ impl HttpChunkSourceBuilder {
         Ok(HttpChunkSource {
             endpoint,
             verify_hash: self.verify_hash,
+            retry_policy: self.retry_policy,
         })
     }
 }
@@ -198,31 +214,7 @@ impl ChunkSource for HttpChunkSource {
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
 
-        let mut req = self.agent().head(&url);
-        for (name, value) in &headers {
-            req = req.header(name.as_str(), value.as_str());
-        }
-
-        match req.call() {
-            Ok(_resp) => Ok(true),
-            Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Ok(false),
-            // Some static servers reject HEAD; fall back to a GET and discard the body.
-            Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
-                let mut req = self.agent().get(&url);
-                for (name, value) in &headers {
-                    req = req.header(name.as_str(), value.as_str());
-                }
-                match req.call() {
-                    Ok(mut resp) => {
-                        let _ = resp.body_mut().read_to_vec();
-                        Ok(true)
-                    }
-                    Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Ok(false),
-                    Err(e) => Err(Self::map_ureq_err(id, e)),
-                }
-            }
-            Err(e) => Err(Self::map_ureq_err(id, e)),
-        }
+        run_with_retry(&self.retry_policy, || self.has_once(id, &url, &headers))
     }
 
     fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
@@ -231,27 +223,10 @@ impl ChunkSource for HttpChunkSource {
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
 
-        let mut req = self.agent().get(&url);
-        for (name, value) in &headers {
-            req = req.header(name.as_str(), value.as_str());
-        }
+        let body = run_with_retry(&self.retry_policy, || self.get_once(id, &url, &headers))?;
 
-        let mut resp = req.call().map_err(|e| Self::map_ureq_err(id, e))?;
-
-        let status = resp.status();
-        if !(200..300).contains(&status.as_u16()) {
-            // Defensive: with default ureq config non-2xx is already an error.
-            return Err(SourceError::Backend(format!(
-                "HTTP {} fetching chunk {id}",
-                status.as_u16()
-            )));
-        }
-
-        let body = resp
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| SourceError::Backend(format!("HTTP body read for {id}: {e}")))?;
-
+        // Hash / empty-body checks happen after a successful transport read and
+        // are never retried (Corrupt / content errors).
         if body.is_empty() {
             return Err(SourceError::Backend(format!(
                 "empty HTTP body for chunk {id}"
@@ -266,6 +241,100 @@ impl ChunkSource for HttpChunkSource {
         }
 
         Ok(body)
+    }
+}
+
+impl HttpChunkSource {
+    fn classify_ureq(id: &ChunkId, err: ureq::Error) -> Attempt<bool, SourceError> {
+        let transient = ureq_error_is_transient(&err);
+        let mapped = Self::map_ureq_err(id, err);
+        if transient {
+            Attempt::Transient(mapped)
+        } else {
+            Attempt::Fatal(mapped)
+        }
+    }
+
+    fn has_once(
+        &self,
+        id: &ChunkId,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Attempt<bool, SourceError> {
+        let mut req = self.agent().head(url);
+        for (name, value) in headers {
+            req = req.header(name.as_str(), value.as_str());
+        }
+
+        match req.call() {
+            Ok(_resp) => Attempt::Ok(true),
+            Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Attempt::Ok(false),
+            // Some static servers reject HEAD; fall back to a GET and discard the body.
+            Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
+                let mut req = self.agent().get(url);
+                for (name, value) in headers {
+                    req = req.header(name.as_str(), value.as_str());
+                }
+                match req.call() {
+                    Ok(mut resp) => {
+                        let _ = resp.body_mut().read_to_vec();
+                        Attempt::Ok(true)
+                    }
+                    Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => {
+                        Attempt::Ok(false)
+                    }
+                    Err(e) => Self::classify_ureq(id, e),
+                }
+            }
+            Err(e) => Self::classify_ureq(id, e),
+        }
+    }
+
+    fn get_once(
+        &self,
+        id: &ChunkId,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Attempt<Vec<u8>, SourceError> {
+        let mut req = self.agent().get(url);
+        for (name, value) in headers {
+            req = req.header(name.as_str(), value.as_str());
+        }
+
+        let mut resp = match req.call() {
+            Ok(r) => r,
+            Err(e) => {
+                let transient = ureq_error_is_transient(&e);
+                let mapped = Self::map_ureq_err(id, e);
+                return if transient {
+                    Attempt::Transient(mapped)
+                } else {
+                    Attempt::Fatal(mapped)
+                };
+            }
+        };
+
+        let status = resp.status();
+        if !(200..300).contains(&status.as_u16()) {
+            // Defensive: with default ureq config non-2xx is already an error.
+            let code = status.as_u16();
+            let mapped = SourceError::Backend(format!("HTTP {code} fetching chunk {id}"));
+            return if crate::retry::http_status_is_transient(code) {
+                Attempt::Transient(mapped)
+            } else {
+                Attempt::Fatal(mapped)
+            };
+        }
+
+        match resp.body_mut().read_to_vec() {
+            Ok(body) => Attempt::Ok(body),
+            Err(e) => {
+                // Mid-body I/O (reset / timeout) is transient.
+                Attempt::Transient(SourceError::Backend(format!(
+                    "HTTP body read for {id}: {e}"
+                )))
+            }
+        }
     }
 }
 
@@ -637,5 +706,154 @@ mod tests {
         );
 
         unsafe { std::env::remove_var(var) };
+    }
+
+    /// Phase8-M1: 2×503 then 200 → success; GET attempts == 3 (max_retries=2).
+    #[test]
+    fn get_retries_transient_503_then_succeeds() {
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+        let body = b"phase8-m1-retry-get-body".to_vec();
+        let id = ChunkId::hash(&body);
+        let body2 = body.clone();
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                let n = {
+                    let mut g = attempts2.lock().unwrap();
+                    *g += 1;
+                    *g
+                };
+                if n <= 2 {
+                    let _ = request.respond(Response::empty(StatusCode(503)));
+                } else {
+                    let _ = request.respond(Response::from_data(body2.clone()));
+                }
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let src = HttpChunkSource::builder(&base)
+            .retry_policy(policy)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        assert_eq!(src.get(&id).unwrap(), body);
+        assert_eq!(*attempts.lock().unwrap(), 3);
+    }
+
+    /// Phase8-M1: 404 → exactly 1 attempt (no retries).
+    #[test]
+    fn get_404_is_not_retried() {
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                *attempts2.lock().unwrap() += 1;
+                let _ = request.respond(Response::empty(StatusCode(404)));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let policy = RetryPolicy {
+            max_retries: 5,
+            base_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let src = HttpChunkSource::builder(&base)
+            .retry_policy(policy)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        let id = ChunkId::hash(b"missing-chunk");
+        assert!(matches!(
+            src.get(&id),
+            Err(SourceError::NotFound(c)) if c == id
+        ));
+        assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// Phase8-M1: max_retries=0 + 503 → fail after exactly 1 attempt.
+    #[test]
+    fn get_503_with_zero_retries_fails_once() {
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                *attempts2.lock().unwrap() += 1;
+                let _ = request.respond(Response::empty(StatusCode(503)));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        // Default policy is max_retries=0.
+        let src = HttpChunkSource::builder(&base)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+        assert_eq!(src.retry_policy().max_retries, 0);
+
+        let id = ChunkId::hash(b"x");
+        let err = src.get(&id).unwrap_err();
+        assert!(
+            matches!(err, SourceError::Backend(ref s) if s.contains("503")),
+            "{err:?}"
+        );
+        assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// 401 must not be retried even with a generous budget.
+    #[test]
+    fn get_401_is_not_retried() {
+        let attempts: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let attempts2 = Arc::clone(&attempts);
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                *attempts2.lock().unwrap() += 1;
+                let _ = request.respond(Response::empty(StatusCode(401)));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let policy = RetryPolicy {
+            max_retries: 4,
+            base_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let src = HttpChunkSource::builder(&base)
+            .retry_policy(policy)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+
+        let id = ChunkId::hash(b"auth");
+        let err = src.get(&id).unwrap_err();
+        assert!(
+            matches!(err, SourceError::Backend(ref s) if s.contains("401")),
+            "{err:?}"
+        );
+        assert_eq!(*attempts.lock().unwrap(), 1);
     }
 }
