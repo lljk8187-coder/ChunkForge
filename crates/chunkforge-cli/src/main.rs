@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull (+ chunk-id debug).
 
 mod parallel;
 
@@ -23,7 +23,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull)",
     long_about = None
 )]
 struct Cli {
@@ -250,6 +250,33 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
+    /// Fill a local CAS `--store` with missing chunks from `--source`
+    ///
+    /// Merges chunk ids referenced by one or more `.cfidx` / `.cfdir` listings.
+    /// For each id: if already present in `--store`, skip; otherwise `source.get`
+    /// then `store.put` (plaintext into the local CAS). Does **not** extract a
+    /// file tree, delete extras (`gc`), or download the listing itself.
+    /// `--source` accepts a local path, `file://`, or `http(s)://` (same templates
+    /// as `verify` / `cat`). Symmetric to `push` (store→dest) but source→store.
+    Pull {
+        /// Local CAS store to fill (created if missing; not written in `--dry-run`)
+        #[arg(long)]
+        store: PathBuf,
+        /// Chunk source: local path, `file://`, or `http(s)://`
+        #[arg(long, value_name = "PATH|URL")]
+        source: String,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
+        /// Max concurrent has/get/put workers (default 1 = serial)
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
+        /// Probe and count only; do not write the local store
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are fetched
+        #[arg(required = true, num_args = 1..)]
+        indexes: Vec<PathBuf>,
+    },
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -269,7 +296,7 @@ enum StoreCommands {
     },
 }
 
-/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor` / `push`.
+/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor` / `push` / `pull`.
 ///
 /// Only meaningful with an `http(s)://` `--source`. Omitting all three flags
 /// preserves 0.2.0 / Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
@@ -426,6 +453,17 @@ fn run() -> Result<()> {
         } => {
             let jobs = parse_jobs(jobs)?;
             cmd_push(&store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs)
+        }
+        Commands::Pull {
+            store,
+            source,
+            http_tmpl,
+            jobs,
+            dry_run,
+            indexes,
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs)
         }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
@@ -1892,6 +1930,120 @@ fn cmd_push(
             "push: verify ok ({} listing{})",
             listings_ok,
             if listings_ok == 1 { "" } else { "s" },
+        );
+    }
+
+    Ok(())
+}
+
+fn cmd_pull(
+    store_path: &Path,
+    source_spec: &str,
+    http_tmpl: &HttpTemplateArgs,
+    dry_run: bool,
+    index_paths: &[PathBuf],
+    jobs: usize,
+) -> Result<()> {
+    let source = open_primary_source(source_spec, http_tmpl)
+        .with_context(|| format!("open chunk source {source_spec:?}"))?;
+
+    let (referenced, listings_ok) = union_listing_chunk_ids(index_paths)?;
+
+    let mut ids: Vec<ChunkId> = referenced.into_iter().collect();
+    ids.sort();
+
+    // Dry-run must not create / write the store. Open only if meta already exists.
+    let store = if dry_run {
+        let meta = store_path.join("meta.toml");
+        if meta.is_file() {
+            Some(
+                Store::open(store_path)
+                    .with_context(|| format!("open store at {}", store_path.display()))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        Some(open_or_create_store(store_path)?)
+    };
+
+    #[derive(Clone, Copy)]
+    enum PullOne {
+        Skipped,
+        Fetched,
+        Failed,
+    }
+
+    let store_display = store_path.display().to_string();
+    let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| {
+        let already = match store.as_ref() {
+            Some(s) => s.has(id),
+            None => false,
+        };
+        if already {
+            return (PullOne::Skipped, None);
+        }
+
+        if dry_run {
+            return (PullOne::Fetched, None);
+        }
+
+        let store = store
+            .as_ref()
+            .expect("non-dry-run pull always opens or creates the store");
+
+        let plain = match source.get(id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let msg = format!("source get failed for {id} (store {store_display}): {e}");
+                eprintln!("pull: fail {id}: {msg}");
+                return (PullOne::Failed, Some(msg));
+            }
+        };
+
+        match ChunkSink::put(store, id, &plain) {
+            Ok(PutOutcome::Written) => (PullOne::Fetched, None),
+            Ok(PutOutcome::SkippedExists) => (PullOne::Skipped, None),
+            Err(e) => {
+                let msg = format!("store put failed for {id}: {e}");
+                eprintln!("pull: fail {id}: {msg}");
+                (PullOne::Failed, Some(msg))
+            }
+        }
+    });
+
+    let mut skipped = 0usize;
+    let mut fetched = 0usize;
+    let mut failed = 0usize;
+    let mut first_error: Option<String> = None;
+    for (outcome, err) in outcomes {
+        match outcome {
+            PullOne::Skipped => skipped += 1,
+            PullOne::Fetched => fetched += 1,
+            PullOne::Failed => {
+                failed += 1;
+                if first_error.is_none() {
+                    first_error = err;
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "pull: skipped={skipped} fetched={fetched} failed={failed} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
+        ids.len(),
+        if ids.len() == 1 { "" } else { "s" },
+        listings_ok,
+        if listings_ok == 1 { "" } else { "s" },
+    );
+
+    if failed > 0 {
+        bail!(
+            "pull: {failed} failure{}{}",
+            if failed == 1 { "" } else { "s" },
+            first_error
+                .map(|m| format!(" (first: {m})"))
+                .unwrap_or_default()
         );
     }
 

@@ -1860,7 +1860,7 @@ fn push_missing_local_chunk_fails() {
 
 #[test]
 fn jobs_help_listed_on_cat_verify_doctor_push() {
-    for cmd in ["cat", "verify", "doctor", "push", "extract"] {
+    for cmd in ["cat", "verify", "doctor", "push", "extract", "pull"] {
         let out = run_ok(&[cmd, "--help"]);
         let s = String::from_utf8_lossy(&out.stdout);
         assert!(
@@ -3632,5 +3632,401 @@ fn phase6_m4_no_seed_legacy_path_regression() {
         put_count.load(Ordering::SeqCst) >= 1,
         "expected at least one PUT across push --verify; got {}",
         put_count.load(Ordering::SeqCst)
+    );
+}
+
+// --- Phase 6 M5: chunkforge pull ---
+
+#[test]
+fn pull_help_lists_store_source_dry_run_templates() {
+    let help = run_ok(&["--help"]);
+    let top = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        top.contains("pull"),
+        "top-level help should list pull:\n{top}"
+    );
+
+    let p = run_ok(&["pull", "--help"]);
+    let s = String::from_utf8_lossy(&p.stdout);
+    assert!(s.contains("--store"), "{s}");
+    assert!(s.contains("--source"), "{s}");
+    assert!(s.contains("--dry-run"), "{s}");
+    assert!(s.contains("--jobs"), "{s}");
+    assert!(s.contains("--url-template"), "{s}");
+    assert!(s.contains("--prefix"), "{s}");
+    assert!(s.contains("--header"), "{s}");
+    assert!(
+        s.to_ascii_lowercase().contains("cfidx"),
+        "help should mention .cfidx:\n{s}"
+    );
+    assert!(
+        s.to_ascii_lowercase().contains("cfdir"),
+        "help should mention .cfdir:\n{s}"
+    );
+}
+
+#[test]
+fn pull_from_mock_after_push_then_verify_store_green() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    let newstore = dir.path().join("newstore");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "push should upload before pull"
+    );
+
+    // Empty destination CAS + listing only.
+    fs::create_dir_all(&newstore).unwrap();
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("fetched="), "stderr={err}");
+    assert!(
+        err.contains("failed=0"),
+        "pull should report failed=0; stderr={err}"
+    );
+    assert!(
+        !err.contains("fetched=0"),
+        "empty store should fetch; stderr={err}"
+    );
+    assert!(
+        count_cnk(&newstore.join("chunks")) >= 1,
+        "newstore should contain pulled .cnk files"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_dry_run_does_not_write_store() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    let newstore = dir.path().join("newstore");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+    run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+
+    // Intentionally do not create newstore — dry-run must not create meta/chunks.
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        &base,
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("dry_run=true") || err.contains("fetched="),
+        "stderr={err}"
+    );
+    assert!(
+        !err.contains("fetched=0"),
+        "dry-run against empty store should count fetches; stderr={err}"
+    );
+    assert!(
+        !newstore.join("meta.toml").is_file(),
+        "dry-run must not create store meta.toml"
+    );
+    assert_eq!(
+        count_cnk(&newstore.join("chunks")),
+        0,
+        "dry-run must not write .cnk files"
+    );
+}
+
+#[test]
+fn pull_skips_already_present_chunks() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    let newstore = dir.path().join("newstore");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+    run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let first_cnk = count_cnk(&newstore.join("chunks"));
+    assert!(first_cnk >= 1);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("fetched=0"),
+        "second pull should fetch nothing; stderr={err}"
+    );
+    assert!(
+        err.contains("skipped=") && !err.contains("skipped=0"),
+        "second pull should skip present chunks; stderr={err}"
+    );
+    assert_eq!(
+        count_cnk(&newstore.join("chunks")),
+        first_cnk,
+        "idempotent pull must not add chunks"
+    );
+}
+
+#[test]
+fn pull_from_local_source_path() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        !err.contains("fetched=0"),
+        "should fetch from local source; stderr={err}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_cfdir_from_mock_then_verify() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    let newstore = dir.path().join("newstore");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::create_dir_all(&mirror).unwrap();
+    fs::write(src.join("a.txt"), b"pull-cfdir-a\n").unwrap();
+    fs::write(src.join("sub/b.txt"), b"pull-cfdir-b\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+    run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        cfdir.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        &base,
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_missing_source_chunk_fails() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let empty_src = dir.path().join("empty_src");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    // Empty-but-valid store as source → get fails for referenced ids.
+    run_ok(&[
+        "make",
+        "--store",
+        empty_src.to_str().unwrap(),
+        "-o",
+        dir.path().join("other.cfidx").to_str().unwrap(),
+        // tiny distinct content so store exists with different chunks
+        input.to_str().unwrap(),
+    ]);
+    delete_cnk_files(&empty_src.join("chunks"));
+
+    let out = run_fail(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        empty_src.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("fail") || err.contains("missing") || err.contains("not found"),
+        "stderr={err}"
+    );
+}
+
+#[test]
+fn pull_rejects_http_templates_on_local_source() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--url-template",
+        "{base}/{path}",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("url-template")
+            || err.contains("prefix")
+            || err.contains("header")
+            || err.contains("http"),
+        "stderr={err}"
     );
 }

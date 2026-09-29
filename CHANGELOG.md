@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`chunkforge pull`** (Phase 6 P1): fill a local CAS `--store` with missing
+  chunks referenced by `.cfidx` / `.cfdir` listings from `--source`
+  (path / `file://` / `http(s)://`); `--jobs` / `--dry-run`; stderr
+  `skipped=` / `fetched=` / `failed=`; does not extract trees or upload/download
+  listings — see `docs/pull.md`
+
 ## [0.5.0] — 2026-09-29
 
 Phase 5 closeout: directory-tree archive (`.cfdir` v1) with `archive` /
