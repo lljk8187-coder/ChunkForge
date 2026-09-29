@@ -1,6 +1,7 @@
 //! Read-only single-blob FUSE [`Filesystem`]: root dir ino=1, file ino=2.
 
-use crate::read::read_range;
+use crate::prefetch::PrefetchCache;
+use crate::read::read_range_cached;
 use chunkforge_index::Index;
 use chunkforge_store::ChunkSource;
 use fuser::{
@@ -9,6 +10,7 @@ use fuser::{
 };
 use libc::{EACCES, EINVAL, EISDIR, ENOENT, ENOTDIR, EROFS};
 use std::ffi::OsStr;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Root directory inode (FUSE convention).
@@ -35,6 +37,8 @@ pub struct BlobFs<S: ChunkSource> {
     atime: SystemTime,
     mtime: SystemTime,
     ctime: SystemTime,
+    /// Process-local sequential prefetch (not Store `--cache`). Default: on.
+    prefetch: Mutex<PrefetchCache>,
 }
 
 impl<S: ChunkSource> BlobFs<S> {
@@ -54,6 +58,8 @@ impl<S: ChunkSource> BlobFs<S> {
             atime: now,
             mtime: now,
             ctime: now,
+            // M1 default: sequential prefetch on (CLI `--no-prefetch` is M2).
+            prefetch: Mutex::new(PrefetchCache::enabled()),
         }
     }
 
@@ -61,6 +67,18 @@ impl<S: ChunkSource> BlobFs<S> {
     pub fn with_owner(mut self, uid: u32, gid: u32) -> Self {
         self.uid = uid;
         self.gid = gid;
+        self
+    }
+
+    /// Enable or disable sequential prefetch (library switch; CLI flag is M2).
+    ///
+    /// Default is **on**. Disabling cold-starts the window (≡ 0.9.0 on-demand get).
+    pub fn with_prefetch(mut self, enabled: bool) -> Self {
+        *self.prefetch.get_mut().unwrap_or_else(|e| e.into_inner()) = if enabled {
+            PrefetchCache::enabled()
+        } else {
+            PrefetchCache::disabled()
+        };
         self
     }
 
@@ -81,13 +99,22 @@ impl<S: ChunkSource> BlobFs<S> {
 
     /// Read a byte range from the logical blob (no FUSE session required).
     ///
-    /// Used by unit tests and by [`Filesystem::read`].
+    /// Used by unit tests and by [`Filesystem::read`]. Uses process-local
+    /// sequential prefetch when enabled (default on).
     pub fn read_at(
         &self,
         offset: u64,
         size: u32,
     ) -> Result<Vec<u8>, chunkforge_store::SourceError> {
-        read_range(&self.index, &self.source, offset, size)
+        let mut cache = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+        read_range_cached(
+            &self.index,
+            &self.source,
+            offset,
+            size,
+            &mut cache,
+            FILE_INO,
+        )
     }
 
     fn root_attr(&self) -> FileAttr {

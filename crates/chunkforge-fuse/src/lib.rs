@@ -4,7 +4,8 @@
 //! - [`DirFs`]: directory-tree mount from a `.cfdir` [`DirArchive`] (Phase 5 M4)
 //!
 //! Kernel mounts are forced [`MountOption::RO`]; write-side FUSE ops return
-//! `EROFS` / `EACCES`.
+//! `EROFS` / `EACCES`. Sequential forward reads prefetch the next chunk into a
+//! process-local [`PrefetchCache`] (default on; distinct from Store `--cache`).
 //!
 //! # Layout (BlobFs)
 //!
@@ -21,12 +22,14 @@
 mod dir_fs;
 mod fs;
 mod mount;
+mod prefetch;
 mod read;
 
 pub use dir_fs::{DirFs, DirFsError};
 pub use fs::{BlobFs, FILE_INO, ROOT_INO};
 pub use mount::{mount_options, mount_ro};
-pub use read::{read_entries, read_range};
+pub use prefetch::{DEFAULT_MAX_PREFETCH_BYTES, DEFAULT_MAX_PREFETCH_CHUNKS, PrefetchCache};
+pub use read::{read_entries, read_entries_cached, read_range, read_range_cached};
 
 pub use chunkforge_index::{DirArchive, Index};
 pub use chunkforge_store::{ChunkSource, SourceError};
@@ -449,6 +452,238 @@ mod tests {
         let kids = fs.readdir_path("x/y").unwrap();
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0].0, "z.txt");
+    }
+
+    // --- Phase 10 M1: sequential PrefetchCache ---
+
+    /// Counting [`ChunkSource`] that records every `get` id (order preserved).
+    #[derive(Clone, Default)]
+    struct CountingSource {
+        inner: MemSource,
+        gets: Arc<std::sync::Mutex<Vec<ChunkId>>>,
+    }
+
+    impl CountingSource {
+        fn new(inner: MemSource) -> Self {
+            Self {
+                inner,
+                gets: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn clear_gets(&self) {
+            self.gets.lock().unwrap().clear();
+        }
+
+        fn get_count(&self, id: &ChunkId) -> usize {
+            self.gets
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+
+    impl ChunkSource for CountingSource {
+        fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
+            self.inner.has(id)
+        }
+
+        fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
+            self.gets.lock().unwrap().push(*id);
+            self.inner.get(id)
+        }
+    }
+
+    #[test]
+    fn sequential_read_prefetch_skips_reget_of_next_chunk() {
+        // Three 100-byte chunks → sequential reads must not re-get a prefetched id.
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200, 300];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        assert_eq!(index.entries.len(), 3);
+        let id0 = index.entries[0].chunk_id;
+        let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "seq");
+
+        // Read 1: partial first chunk → get(id0) + prefetch(id1).
+        let r1 = fs.read_at(0, 50).unwrap();
+        assert_eq!(r1, &data[0..50]);
+        assert_eq!(counting.get_count(&id0), 1);
+        assert_eq!(
+            counting.get_count(&id1),
+            1,
+            "id1 must be prefetched after read 1"
+        );
+        assert_eq!(counting.get_count(&id2), 0);
+
+        counting.clear_gets();
+
+        // Read 2: continue sequentially across chunk boundary into id1.
+        // Needs remainder of id0 (re-get OK) + start of id1 (must hit prefetch).
+        let r2 = fs.read_at(50, 100).unwrap();
+        assert_eq!(r2, &data[50..150]);
+        assert_eq!(
+            counting.get_count(&id0),
+            1,
+            "still need on-demand get for current chunk"
+        );
+        assert_eq!(
+            counting.get_count(&id1),
+            0,
+            "prefetched id1 must not be re-gotten on sequential read 2"
+        );
+        assert_eq!(
+            counting.get_count(&id2),
+            1,
+            "id2 prefetched after consuming into id1"
+        );
+        assert_eq!(&r2[..], &data[50..150]);
+    }
+
+    #[test]
+    fn prefetch_disabled_regets_every_chunk() {
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        let id1 = index.entries[1].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "nopre").with_prefetch(false);
+
+        let _ = fs.read_at(0, 50).unwrap();
+        counting.clear_gets();
+        let _ = fs.read_at(50, 100).unwrap();
+        assert_eq!(
+            counting.get_count(&id1),
+            1,
+            "with prefetch off, id1 must be gotten on demand"
+        );
+    }
+
+    #[test]
+    fn seek_backward_cold_starts_prefetch_window() {
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200, 300];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "seek");
+
+        // Establish window + prefetch id1.
+        let _ = fs.read_at(0, 50).unwrap();
+        assert_eq!(counting.get_count(&id1), 1);
+        counting.clear_gets();
+
+        // Backward seek → invalidate; must not reuse stale prefetch for a later jump.
+        let _ = fs.read_at(0, 10).unwrap(); // cold from start again
+        counting.clear_gets();
+        // Jump into chunk 2 without sequential advance through chunk 1.
+        let got = fs.read_at(200, 50).unwrap();
+        assert_eq!(got, &data[200..250]);
+        assert_eq!(counting.get_count(&id2), 1);
+        // id1 must not have been served from a stale prefetch for this discontinuous read.
+        // (We did not need id1 at all for offset 200.)
+        assert_eq!(counting.get_count(&id1), 0);
+    }
+
+    #[test]
+    fn prefetch_failure_does_not_fail_satisfied_read() {
+        /// Source that fails get for a designated "poison" id after serving others.
+        struct PoisonAfter {
+            inner: MemSource,
+            poison: ChunkId,
+            gets: Arc<std::sync::Mutex<Vec<ChunkId>>>,
+        }
+
+        impl ChunkSource for PoisonAfter {
+            fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
+                self.inner.has(id)
+            }
+
+            fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
+                self.gets.lock().unwrap().push(*id);
+                if *id == self.poison {
+                    return Err(SourceError::Backend("poisoned prefetch".into()));
+                }
+                self.inner.get(id)
+            }
+        }
+
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        let id1 = index.entries[1].chunk_id;
+        let poison = PoisonAfter {
+            inner: src,
+            poison: id1,
+            gets: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let fs = BlobFs::new(index, poison, "poison");
+
+        // Read only chunk 0; prefetch of id1 fails silently — current read must succeed.
+        let r = fs.read_at(0, 50).unwrap();
+        assert_eq!(r, &data[0..50]);
+    }
+
+    #[test]
+    fn dir_fs_cross_file_cold_starts_prefetch() {
+        let a: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let b: Vec<u8> = (10..210).map(|i| (i % 256) as u8).collect();
+        let mut src = MemSource::default();
+        let a_chunks = chunks_from_cuts(&a, &[100, 200], &mut src);
+        let b_chunks = chunks_from_cuts(&b, &[100, 200], &mut src);
+        let a_id1 = a_chunks[1].chunk_id;
+
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "a.bin".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: a.len() as u64,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(&a),
+                        chunks: a_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "b.bin".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: b.len() as u64,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(&b),
+                        chunks: b_chunks,
+                    },
+                },
+            ],
+        )
+        .unwrap();
+
+        let counting = CountingSource::new(src);
+        let fs = DirFs::new(arch, counting.clone());
+
+        // Sequential read on a.bin prefetches a_id1.
+        let _ = fs.read_at_path("a.bin", 0, 50).unwrap();
+        assert_eq!(counting.get_count(&a_id1), 1);
+        counting.clear_gets();
+
+        // Cross-file → cold-start; reading b.bin must not consume a.bin's prefetch.
+        let got = fs.read_at_path("b.bin", 0, 50).unwrap();
+        assert_eq!(got, &b[0..50]);
+        assert_eq!(
+            counting.get_count(&a_id1),
+            0,
+            "cross-file must not reuse other file's prefetched chunk"
+        );
     }
 
     /// Real DirFs FUSE mount — needs fuse3 + /dev/fuse; skipped by default.

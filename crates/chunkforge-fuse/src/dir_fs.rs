@@ -1,6 +1,7 @@
 //! Read-only directory-tree FUSE [`Filesystem`] backed by a `.cfdir` [`DirArchive`].
 
-use crate::read::read_entries;
+use crate::prefetch::PrefetchCache;
+use crate::read::read_entries_cached;
 use chunkforge_index::{DirArchive, DirEntryKind, IndexEntry};
 use chunkforge_store::{ChunkSource, SourceError};
 use fuser::{
@@ -10,6 +11,7 @@ use fuser::{
 use libc::{EACCES, EINVAL, EISDIR, ENOENT, ENOTDIR, EROFS};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::fs::ROOT_INO;
@@ -69,6 +71,9 @@ pub struct DirFs<S: ChunkSource> {
     /// Aggregate byte size of all file entries (for statfs).
     total_bytes: u64,
     file_count: u64,
+    /// Process-local sequential prefetch (not Store `--cache`). Default: on.
+    /// Cross-file reads (different ino) cold-start the window.
+    prefetch: Mutex<PrefetchCache>,
 }
 
 impl<S: ChunkSource> DirFs<S> {
@@ -89,6 +94,8 @@ impl<S: ChunkSource> DirFs<S> {
             ctime: now,
             total_bytes: 0,
             file_count: 0,
+            // M1 default: sequential prefetch on (CLI `--no-prefetch` is M2).
+            prefetch: Mutex::new(PrefetchCache::enabled()),
         };
         fs.nodes.insert(
             ROOT_INO,
@@ -123,6 +130,18 @@ impl<S: ChunkSource> DirFs<S> {
     pub fn with_owner(mut self, uid: u32, gid: u32) -> Self {
         self.uid = uid;
         self.gid = gid;
+        self
+    }
+
+    /// Enable or disable sequential prefetch (library switch; CLI flag is M2).
+    ///
+    /// Default is **on**. Disabling cold-starts the window (≡ 0.9.0 on-demand get).
+    pub fn with_prefetch(mut self, enabled: bool) -> Self {
+        *self.prefetch.get_mut().unwrap_or_else(|e| e.into_inner()) = if enabled {
+            PrefetchCache::enabled()
+        } else {
+            PrefetchCache::disabled()
+        };
         self
     }
 
@@ -201,13 +220,18 @@ impl<S: ChunkSource> DirFs<S> {
                 size: file_size,
                 chunks,
                 ..
-            } => Ok(read_entries(
-                chunks,
-                *file_size,
-                &self.source,
-                offset,
-                size,
-            )?),
+            } => {
+                let mut cache = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(read_entries_cached(
+                    chunks,
+                    *file_size,
+                    &self.source,
+                    offset,
+                    size,
+                    &mut cache,
+                    ino,
+                )?)
+            }
         }
     }
 
