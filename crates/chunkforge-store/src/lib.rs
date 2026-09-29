@@ -14,17 +14,23 @@
 //! allow per-chunk mixed compression.
 //!
 //! Optional `zstd` cargo feature enables zstd on-disk encoding.
+//!
+//! Phase 2 adds [`ChunkSource`]: a read-only trait implemented by [`Store`]
+//! (and later by remote / cache backends) so `cat` / `verify` / FUSE share one
+//! fetch path without breaking the Phase 1 `put`/`get`/`has`/`create`/`open` API.
 
 mod error;
 mod meta;
 mod outcome;
 mod path;
+mod source;
 mod store;
 
 pub use error::{Error, StoreError};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
 pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
+pub use source::{ChunkSource, SourceError};
 pub use store::Store;
 
 // Re-export ChunkId so callers can depend only on chunkforge-store when convenient.
