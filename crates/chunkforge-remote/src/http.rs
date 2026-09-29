@@ -1,6 +1,7 @@
 //! HTTP static chunk-directory [`ChunkSource`].
 
-use crate::template::{TemplateCtx, TemplateError, expand_template, normalize_prefix};
+use crate::endpoint::HttpEndpoint;
+use crate::template::TemplateError;
 use chunkforge_store::{ChunkId, ChunkSource, SourceError};
 use std::time::Duration;
 use ureq::Agent;
@@ -22,14 +23,13 @@ pub const DEFAULT_URL_TEMPLATE: &str = "{base}/{path}";
 /// The response body is treated as **plaintext** chunk bytes (same as an
 /// uncompressed `.cnk`). BLAKE3 is verified against [`ChunkId`] when
 /// [`verify_hash`](Self::verify_hash) is true (default).
+///
+/// Shares base / URL-template / prefix / header config with [`crate::HttpChunkSink`]
+/// via an internal [`HttpEndpoint`] so PUT keys match GET keys.
 #[derive(Debug, Clone)]
 pub struct HttpChunkSource {
-    base: String,
+    endpoint: HttpEndpoint,
     verify_hash: bool,
-    agent: Agent,
-    url_template: String,
-    header_templates: Vec<(String, String)>,
-    prefix: String,
 }
 
 impl HttpChunkSource {
@@ -55,7 +55,7 @@ impl HttpChunkSource {
 
     /// HTTP(S) base URL (trailing `/` stripped).
     pub fn base(&self) -> &str {
-        &self.base
+        &self.endpoint.base
     }
 
     /// Whether `get` verifies `blake3(body) == id` (default true).
@@ -65,17 +65,17 @@ impl HttpChunkSource {
 
     /// URL template string (default [`DEFAULT_URL_TEMPLATE`]).
     pub fn url_template(&self) -> &str {
-        &self.url_template
+        &self.endpoint.url_template
     }
 
     /// Normalized key prefix used for `{prefix}` (empty or `foo/` form).
     pub fn prefix(&self) -> &str {
-        &self.prefix
+        &self.endpoint.prefix
     }
 
     /// Header name → value-template pairs applied on every request.
     pub fn header_templates(&self) -> &[(String, String)] {
-        &self.header_templates
+        &self.endpoint.header_templates
     }
 
     /// Absolute URL for `id` under this source's template.
@@ -84,31 +84,19 @@ impl HttpChunkSource {
     /// were already validated). Panics only if the process environment lost a
     /// variable required by `{env:…}` between build and this call.
     pub fn url_for(&self, id: &ChunkId) -> String {
-        self.expand_url(id)
-            .expect("url_template validated at build; env vars must remain set")
-    }
-
-    fn template_ctx<'a>(&'a self, id: &'a ChunkId) -> TemplateCtx<'a> {
-        TemplateCtx {
-            base: &self.base,
-            id,
-            prefix: &self.prefix,
-        }
+        self.endpoint.url_for(id)
     }
 
     fn expand_url(&self, id: &ChunkId) -> Result<String, TemplateError> {
-        expand_template(&self.url_template, &self.template_ctx(id))
+        self.endpoint.expand_url(id)
     }
 
     fn expand_headers(&self, id: &ChunkId) -> Result<Vec<(String, String)>, TemplateError> {
-        let ctx = self.template_ctx(id);
-        self.header_templates
-            .iter()
-            .map(|(name, tmpl)| {
-                let value = expand_template(tmpl, &ctx)?;
-                Ok((name.clone(), value))
-            })
-            .collect()
+        self.endpoint.expand_headers(id)
+    }
+
+    fn agent(&self) -> &Agent {
+        &self.endpoint.agent
     }
 
     fn template_err(id: &ChunkId, err: TemplateError) -> SourceError {
@@ -189,31 +177,16 @@ impl HttpChunkSourceBuilder {
     /// once against an all-zero [`ChunkId`]. Unknown placeholders / missing
     /// `{env:…}` variables fail fast here.
     pub fn build(self) -> Result<HttpChunkSource, TemplateError> {
-        let base = self.base.trim_end_matches('/').to_string();
-        let prefix = normalize_prefix(&self.prefix);
-        let fake_id = ChunkId::from_bytes([0u8; 32]);
-        let ctx = TemplateCtx {
-            base: &base,
-            id: &fake_id,
-            prefix: &prefix,
-        };
-        expand_template(&self.url_template, &ctx)?;
-        for (_name, value_tmpl) in &self.header_templates {
-            expand_template(value_tmpl, &ctx)?;
-        }
-
-        let mut config = Agent::config_builder();
-        if let Some(t) = self.timeout {
-            config = config.timeout_global(Some(t));
-        }
-        let agent: Agent = config.build().into();
+        let endpoint = HttpEndpoint::build(
+            self.base,
+            self.timeout,
+            self.url_template,
+            self.header_templates,
+            self.prefix,
+        )?;
         Ok(HttpChunkSource {
-            base,
+            endpoint,
             verify_hash: self.verify_hash,
-            agent,
-            url_template: self.url_template,
-            header_templates: self.header_templates,
-            prefix,
         })
     }
 }
@@ -225,7 +198,7 @@ impl ChunkSource for HttpChunkSource {
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
 
-        let mut req = self.agent.head(&url);
+        let mut req = self.agent().head(&url);
         for (name, value) in &headers {
             req = req.header(name.as_str(), value.as_str());
         }
@@ -235,7 +208,7 @@ impl ChunkSource for HttpChunkSource {
             Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Ok(false),
             // Some static servers reject HEAD; fall back to a GET and discard the body.
             Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
-                let mut req = self.agent.get(&url);
+                let mut req = self.agent().get(&url);
                 for (name, value) in &headers {
                     req = req.header(name.as_str(), value.as_str());
                 }
@@ -258,7 +231,7 @@ impl ChunkSource for HttpChunkSource {
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
 
-        let mut req = self.agent.get(&url);
+        let mut req = self.agent().get(&url);
         for (name, value) in &headers {
             req = req.header(name.as_str(), value.as_str());
         }
