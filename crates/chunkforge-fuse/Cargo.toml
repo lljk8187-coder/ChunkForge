@@ -1,0 +1,25 @@
+[package]
+name = "chunkforge-fuse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Read-only single-blob FUSE filesystem for ChunkForge indexes"
+readme = false
+
+[features]
+default = []
+# Reserved for future optional extras; real /dev/fuse mount always needs fuse3 at runtime.
+# Library unit tests do not require /dev/fuse.
+
+[dependencies]
+chunkforge-index = { workspace = true }
+chunkforge-store = { workspace = true }
+# Pure-Rust FUSE (no pkg-config / libfuse link). Runtime still needs fuse3 + /dev/fuse to mount.
+fuser = { version = "0.15", default-features = false }
+libc = "0.2"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+chunkforge-chunk = { workspace = true }
+tempfile = { workspace = true }
