@@ -12,8 +12,9 @@
 | **Phase 4** | **0.4.0** | `ChunkSink` + `HttpChunkSink` per-chunk PUT; CLI `push`; `--jobs` on cat/verify/doctor/push |
 | **Phase 5** | **0.5.0** | `.cfdir` v1 directory archive + `DirFs` RO mount; `archive` / `extract` / tree `verify`; `push`/`doctor`/`gc` accept `.cfdir`; `push --verify`; `archive --dry-run` |
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
+| **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 
-## Non-goals (current / Phase 6)
+## Non-goals (current / Phase 7)
 
 | Not this | Why |
 |---|---|
@@ -26,11 +27,12 @@
 | ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
 | ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
+| ❌ **Remote scrub** | `store scrub` only rehashes a **local** `--store`; no remote bitrot scan |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), and multi-file `.cfdir` + DirFs (Phase 5). Phase 6 (**0.6.0**) adds incremental `archive --seed` and `pull`.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), and incremental `archive --seed` + `pull` (Phase 6). Phase 7 (**0.7.0**) adds listing **`diff`**, local CAS **`store scrub`**, **`--seed-trust-mtime`**, and **`extract --force`**.
 
 ## Quick start (local CAS)
 
@@ -213,6 +215,51 @@ echo 'hello-seed-v2' > /tmp/cf-p6/src/a.txt
 # stderr: seed_reused_files=2, rechunked_files=1
 
 ./target/debug/chunkforge verify --store /tmp/cf-p6/store /tmp/cf-p6/v2.cfdir
+```
+
+
+## Phase 7: diff + store scrub (**0.7.0**)
+
+Listing compare and local CAS integrity on top of Phase 6. Without new flags,
+`archive` / `extract` / verify / doctor / gc / push / pull match **0.6.0**.
+
+- **`chunkforge diff`**: listing↔listing path-level added / removed / changed /
+  meta_changed + chunk-set stats; `--max-paths N`; exit like `diff(1)` — see
+  [docs/diff.md](docs/diff.md)
+- **`diff --tree <src-dir> <listing.cfdir>`**: tree↔listing (read-only; no
+  store / `.cfdir` writes)
+- **`chunkforge store scrub`**: re-BLAKE3 every loose `.cnk` in a local
+  `--store`; report `ok=` / `corrupt=` / `unreadable=` — see
+  [docs/doctor-gc.md](docs/doctor-gc.md)
+- **`archive --seed-trust-mtime`**: opt-in size+mtime reuse (default off;
+  content BLAKE3 otherwise) — see [docs/archive.md](docs/archive.md)
+- **`extract --force`**: overwrite existing regular files at the destination
+- Quickstart smoke: [`scripts/demo_diff_scrub.sh`](scripts/demo_diff_scrub.sh)
+  (~10 min local: two archives → `diff` / `--tree` → healthy scrub → corrupt
+  one `.cnk` → scrub non-zero)
+
+```bash
+# Diff + scrub (or: bash scripts/demo_diff_scrub.sh)
+mkdir -p /tmp/cf-p7/src/sub
+echo 'hello-diff-v1' > /tmp/cf-p7/src/a.txt
+cp fixtures/hello.txt /tmp/cf-p7/src/sub/b.txt
+
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p7/store -o /tmp/cf-p7/v1.cfdir /tmp/cf-p7/src
+
+echo 'hello-diff-v2' > /tmp/cf-p7/src/a.txt
+./target/debug/chunkforge archive \
+  --store /tmp/cf-p7/store -o /tmp/cf-p7/v2.cfdir \
+  --seed /tmp/cf-p7/v1.cfdir /tmp/cf-p7/src
+
+./target/debug/chunkforge diff /tmp/cf-p7/v1.cfdir /tmp/cf-p7/v2.cfdir
+# changed≥1 → exit 1
+
+./target/debug/chunkforge diff --tree /tmp/cf-p7/src /tmp/cf-p7/v2.cfdir
+# identical → exit 0
+
+./target/debug/chunkforge store scrub --store /tmp/cf-p7/store
+# scrub: ok=N corrupt=0 unreadable=0
 ```
 
 ## Incremental dedup demo

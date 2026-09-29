@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-29
+
+Phase 7 closeout: listing diff (`chunkforge diff`), local CAS bitrot scrub
+(`store scrub`), `archive --seed-trust-mtime`, and `extract --force`, plus
+`scripts/demo_diff_scrub.sh`. `.cfidx` / `.cfdir` v1 bytes and `ChunkSource` /
+`ChunkSink` signatures stay frozen; no AWS SDK, in-process SigV4, write mount,
+packfile, bidirectional sync, video analysis, or remote scrub.
+
+### Added
+
+- **`chunkforge diff`** (Phase 7 P0): listing↔listing compare of two `.cfdir`
+  archives — path-level **added** / **removed** / **changed** (content) /
+  **meta_changed** (same blake3, mode/mtime differ); chunk-set stats
+  `chunks_shared` / `chunks_only_left` / `chunks_only_right`; stable stdout
+  summary line; exit **0** when identical, **1** when any path or chunk-set
+  difference; `--max-paths N` caps path lists — see `docs/diff.md`
+- **`diff --tree <src-dir> <listing.cfdir>`**: tree↔listing compare (ephemeral
+  in-memory `DirArchive` from regular files); read-only — does **not** write
+  store or `.cfdir`
+- **`chunkforge store scrub`** (Phase 7 P0): traverse local loose `.cnk`,
+  re-BLAKE3 via `get_verify`; report `ok=` / `corrupt=` / `unreadable=`;
+  default read-only (does not delete); non-zero when corrupt/unreadable > 0;
+  optional `--jobs` — see `docs/doctor-gc.md` scrub section
+- **`archive --seed-trust-mtime`** (Phase 7 P1): with `--seed`, size+mtime
+  match → reuse without content BLAKE3 (default **off** ≡ 0.6.0 content path);
+  help + `docs/archive.md` warn about forged/incorrect mtimes
+- **`extract --force`**: overwrite existing regular files at destination
+  (type mismatches still error); without `--force` behaviour matches **0.6.0**
+- **`scripts/demo_diff_scrub.sh`** + docs: local ~10 min smoke (two archives →
+  `diff` / `diff --tree` → healthy scrub → flip one `.cnk` byte → scrub
+  corrupt); `docs/diff.md`; doctor-gc scrub responsibility table
+
+### Not delivered / deferred (Phase 7)
+
+- In-process **SigV4** / complete **`aws-sdk-*`** / S3 multipart upload API
+- Packfile / multi-chunk single object (loose `.cnk` layout unchanged)
+- Write mount / COW / writable FUSE
+- Bidirectional sync / watch directories / conflict resolution
+- Video analysis / GPU·LLM / P2P
+- **Remote scrub** / remote GC / lifecycle (scrub and `gc` stay **local**
+  `--store` only)
+- `push` still does **not** upload listings
+
+### Non-goals (Phase 7)
+
+- No rewrite of `.cfidx` / `.cfdir` v1 byte layouts
+- No change to `ChunkSource` / `ChunkSink` method signatures
+- No process-in SigV4 / `aws-sdk-*` / multipart; HTTP surface remains **ureq**
+- No packfile; no write mount; no bidirectional sync; no video analysis;
+  no remote scrub
+
+### Notes
+
+- Without new flags, `archive` / `extract` / verify / doctor / gc / push /
+  pull behaviour matches **0.6.0**
+- Default HTTP chunk layout remains byte-compatible with **0.6.0** / **0.5.0**
+- Responsibilities: `verify` = listing + refs; `doctor` = presence; `gc` =
+  unreferenced reclaim; `store scrub` = CAS bitrot; `diff` = listing/tree
+  compare (report only)
+
 ## [0.6.0] — 2026-09-29
 
 Phase 6 closeout: incremental directory archive (`archive --seed`), CAS fill
