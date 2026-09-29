@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / cat / verify / mount / doctor (+ chunk-id debug).
+//! ChunkForge CLI: make / cat / verify / mount / doctor / gc (+ chunk-id debug).
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
@@ -6,6 +6,7 @@ use chunkforge_index::{FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, entry
 use chunkforge_remote::{FileUrlSource, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSource, Compression, PutOutcome, Store};
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor / gc)",
     long_about = None
 )]
 struct Cli {
@@ -126,6 +127,18 @@ enum Commands {
         #[arg(long = "no-probe")]
         no_probe: bool,
         /// One or more `.cfidx` files to check
+        #[arg(required = true, num_args = 1..)]
+        indexes: Vec<PathBuf>,
+    },
+    /// List (or delete) unreferenced loose chunks in a local store
+    Gc {
+        /// Local CAS store directory
+        #[arg(long)]
+        store: PathBuf,
+        /// Actually delete unreferenced `.cnk` files (default is dry-run)
+        #[arg(long)]
+        apply: bool,
+        /// One or more `.cfidx` files whose chunk ids are retained
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
@@ -250,6 +263,11 @@ fn run() -> Result<()> {
             };
             cmd_doctor(src.as_ref(), &origin_spec, &indexes, deep, no_probe)
         }
+        Commands::Gc {
+            store,
+            apply,
+            indexes,
+        } => cmd_gc(&store, &indexes, apply),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -645,6 +663,77 @@ fn cmd_doctor(
             checked
         );
     }
+}
+
+fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+
+    let mut referenced: HashSet<ChunkId> = HashSet::new();
+    let mut indexes_ok = 0usize;
+    for index_path in index_paths {
+        let index = load_index(index_path)?;
+        index
+            .validate()
+            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
+        indexes_ok += 1;
+        for entry in &index.entries {
+            referenced.insert(entry.chunk_id);
+        }
+    }
+
+    let listed = store
+        .list_chunk_ids()
+        .with_context(|| format!("list chunks under {}", store_path.display()))?;
+
+    let mut unreferenced: Vec<ChunkId> = listed
+        .into_iter()
+        .filter(|id| !referenced.contains(id))
+        .collect();
+    unreferenced.sort();
+
+    if unreferenced.is_empty() {
+        eprintln!(
+            "gc: nothing to reclaim ({} index{}, {} referenced chunk id{}, dry_run={})",
+            indexes_ok,
+            if indexes_ok == 1 { "" } else { "es" },
+            referenced.len(),
+            if referenced.len() == 1 { "" } else { "s" },
+            !apply
+        );
+        return Ok(());
+    }
+
+    for id in &unreferenced {
+        let path = store.chunk_path(id);
+        println!("{}", path.display());
+    }
+
+    if apply {
+        for id in &unreferenced {
+            store
+                .remove(id)
+                .with_context(|| format!("delete unreferenced chunk {id}"))?;
+        }
+        eprintln!(
+            "gc: deleted {} unreferenced chunk{} ({} index{}, {} referenced retained)",
+            unreferenced.len(),
+            if unreferenced.len() == 1 { "" } else { "s" },
+            indexes_ok,
+            if indexes_ok == 1 { "" } else { "es" },
+            referenced.len()
+        );
+    } else {
+        eprintln!(
+            "gc: dry-run: {} unreferenced chunk{} (pass --apply to delete; {} index{}, {} referenced)",
+            unreferenced.len(),
+            if unreferenced.len() == 1 { "" } else { "s" },
+            indexes_ok,
+            if indexes_ok == 1 { "" } else { "es" },
+            referenced.len()
+        );
+    }
+    Ok(())
 }
 
 fn maybe_print_local_store_meta(origin_spec: &str) {

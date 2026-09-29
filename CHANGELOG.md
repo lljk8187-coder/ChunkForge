@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **M2**: S3-compatible path conventions in `docs/remote-layout.md` (placeholder table, path-style / virtual-host examples, `prefix` normalization); tiny_http mock asserts GET `/data/chunks/…` + Authorization expansion
 - **M3**: CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` (HTTP sources only; non-HTTP + templates → readable error)
 - **M4**: CLI `doctor` — check `.cfidx` readability + chunk presence via `ChunkSource::has` (optional `--deep` uses `get`); missing ids printed to stdout and non-zero exit; optional HTTP base probe; local `meta.toml` summary
+- **M5**: CLI `gc` — local dry-run of unreferenced loose `.cnk` (merge chunk ids from given indexes; `Store::list_chunk_ids`); `--apply` deletes serially; no remote GC
 
 ### Still deferred
 
-- Local `gc` dry-run / `--apply` (M5)
 - 0.3.0 version bump / Phase 3 closeout docs (M6)
 - No `aws-sdk-*`, no in-process SigV4, no upload/multipart
 

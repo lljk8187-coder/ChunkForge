@@ -1312,3 +1312,217 @@ fn doctor_deep_flag_uses_get() {
     let gets = *get_count.lock().unwrap();
     assert!(gets >= 1, "doctor --deep must use get; got gets={gets}");
 }
+
+// --- Phase 3 M5: gc (local dry-run / --apply) ---
+
+#[test]
+fn gc_help_lists_flags() {
+    let help = run_ok(&["--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("gc"),
+        "top-level help should list gc:\n{help_s}"
+    );
+
+    let g = run_ok(&["gc", "--help"]);
+    let s = String::from_utf8_lossy(&g.stdout);
+    assert!(s.contains("--store"), "{s}");
+    assert!(s.contains("--apply"), "{s}");
+}
+
+#[test]
+fn gc_dry_run_lists_loose_chunk_outside_two_indexes() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx_a = dir.path().join("a.cfidx");
+    let idx_b = dir.path().join("b.cfidx");
+    let input_a = fixtures_dir().join("hello.txt");
+    let input_b = fixtures_dir().join("binary-256.bin");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_a.to_str().unwrap(),
+        input_a.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_b.to_str().unwrap(),
+        input_b.to_str().unwrap(),
+    ]);
+
+    // Inject a loose orphan chunk not referenced by either index.
+    let orphan_plain = b"orphan-loose-chunk-for-gc-m5";
+    let orphan_id = chunkforge_store::ChunkId::hash(orphan_plain);
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(orphan_plain).unwrap();
+        assert!(s.has(&orphan_id));
+    }
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        idx_a.to_str().unwrap(),
+        idx_b.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let orphan_path = store
+        .join("chunks")
+        .join(&orphan_id.to_hex()[0..2])
+        .join(format!("{}.cnk", &orphan_id.to_hex()[2..]));
+    assert!(
+        stdout.lines().any(|l| {
+            let t = l.trim();
+            t == orphan_path.to_str().unwrap()
+                || t.ends_with(orphan_path.file_name().unwrap().to_str().unwrap())
+                    && t.contains(&orphan_id.to_hex()[0..2])
+        }),
+        "dry-run stdout must list orphan path {}; got:\n{stdout}",
+        orphan_path.display()
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("dry-run") || err.contains("unreferenced"),
+        "stderr={err}"
+    );
+
+    // Dry-run must not delete.
+    assert!(orphan_path.is_file(), "dry-run must leave orphan on disk");
+    let has = run_ok(&[
+        "store",
+        "has",
+        "--store",
+        store.to_str().unwrap(),
+        &orphan_id.to_hex(),
+    ]);
+    assert!(
+        String::from_utf8_lossy(&has.stdout).contains("present"),
+        "orphan must still be present after dry-run"
+    );
+}
+
+#[test]
+fn gc_apply_deletes_orphan_keeps_referenced() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx_a = dir.path().join("a.cfidx");
+    let idx_b = dir.path().join("b.cfidx");
+    let input_a = fixtures_dir().join("hello.txt");
+    let input_b = fixtures_dir().join("binary-256.bin");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_a.to_str().unwrap(),
+        input_a.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_b.to_str().unwrap(),
+        input_b.to_str().unwrap(),
+    ]);
+
+    // Collect a referenced id from index A before injecting orphan.
+    let (ref_path, ref_id) = first_cnk_id(&store.join("chunks"));
+
+    let orphan_plain = b"orphan-to-delete-via-apply";
+    let orphan_id = chunkforge_store::ChunkId::hash(orphan_plain);
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(orphan_plain).unwrap();
+        assert!(s.has(&orphan_id));
+    }
+
+    run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--apply",
+        idx_a.to_str().unwrap(),
+        idx_b.to_str().unwrap(),
+    ]);
+
+    // Orphan gone.
+    let missing = run_fail(&[
+        "store",
+        "has",
+        "--store",
+        store.to_str().unwrap(),
+        &orphan_id.to_hex(),
+    ]);
+    let miss_err = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        miss_err.contains("missing") || miss_err.contains(&orphan_id.to_hex()),
+        "stderr={miss_err}"
+    );
+
+    // Referenced chunk from before orphan injection still present.
+    assert!(
+        ref_path.is_file(),
+        "referenced chunk {} must remain",
+        ref_path.display()
+    );
+    run_ok(&["store", "has", "--store", store.to_str().unwrap(), &ref_id]);
+
+    // Indexes still verify cleanly.
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx_a.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx_b.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn gc_dry_run_clean_store_prints_nothing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert!(
+        out.stdout.is_empty(),
+        "clean store dry-run should print no paths; got {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("nothing to reclaim") || err.contains("gc:"),
+        "stderr={err}"
+    );
+}

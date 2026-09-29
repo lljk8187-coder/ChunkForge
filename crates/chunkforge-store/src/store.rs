@@ -181,6 +181,82 @@ impl Store {
         }
         Ok(plain)
     }
+
+    /// List chunk ids present as well-formed loose `.cnk` files under `chunks/`.
+    ///
+    /// Only files matching the CAS layout (`chunks/<2hex>/<62hex>.cnk` with
+    /// lowercase hex) are returned. Temporary / stray files are skipped.
+    /// Order is unspecified.
+    pub fn list_chunk_ids(&self) -> Result<Vec<ChunkId>, Error> {
+        let chunks_root = self.root.join("chunks");
+        if !chunks_root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![chunks_root];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if let Some(id) = chunk_id_from_cnk_path(&self.root, &path) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete the loose `.cnk` file for `id` if present.
+    ///
+    /// Returns [`Error::NotFound`] when the file does not exist. Intended for
+    /// local `gc --apply` (serial deletes). Does not touch remote stores.
+    pub fn remove(&self, id: &ChunkId) -> Result<(), Error> {
+        let path = self.chunk_path(id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::NotFound(*id)),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+}
+
+/// Parse a chunk id from an on-disk `.cnk` path if it matches the CAS layout.
+///
+/// Expects `chunks/<2hex>/<62hex>.cnk` relative to `store_root`. Returns `None`
+/// for non-conforming names (temps, wrong extension, bad hex, nested junk).
+fn chunk_id_from_cnk_path(store_root: &Path, path: &Path) -> Option<ChunkId> {
+    let rel = path.strip_prefix(store_root).ok()?;
+    let mut comps = rel.components();
+    use std::path::Component;
+    let (chunks, shard, file) = match (comps.next(), comps.next(), comps.next(), comps.next()) {
+        (
+            Some(Component::Normal(c)),
+            Some(Component::Normal(s)),
+            Some(Component::Normal(f)),
+            None,
+        ) if c == "chunks" => (c, s, f),
+        _ => return None,
+    };
+    let _ = chunks;
+    let shard = shard.to_str()?;
+    let file = file.to_str()?;
+    if shard.len() != 2 || !is_lowercase_hex(shard) {
+        return None;
+    }
+    let stem = file.strip_suffix(".cnk")?;
+    if stem.len() != 62 || !is_lowercase_hex(stem) {
+        return None;
+    }
+    let hex = format!("{shard}{stem}");
+    ChunkId::from_hex(&hex).ok()
+}
+
+fn is_lowercase_hex(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn encode_payload(plain: &[u8], compression: Compression) -> Result<Vec<u8>, Error> {
@@ -320,6 +396,45 @@ mod tests {
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
         );
         assert_eq!(store.get(&id).unwrap(), b"");
+    }
+
+    #[test]
+    fn list_chunk_ids_finds_put_chunks_skips_junk() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::None).unwrap();
+        let (id_a, _) = store.put(b"list-a").unwrap();
+        let (id_b, _) = store.put(b"list-b").unwrap();
+
+        // Junk that must not appear: tmp sibling, wrong-length name, nested dir file.
+        let a_path = store.chunk_path(&id_a);
+        let parent = a_path.parent().unwrap();
+        fs::write(parent.join("not-a-chunk.tmp"), b"x").unwrap();
+        fs::write(parent.join("abcd.cnk"), b"x").unwrap(); // stem != 62 hex
+        fs::create_dir_all(parent.join("nested")).unwrap();
+        fs::write(
+            parent
+                .join("nested")
+                .join(format!("{}.cnk", "f".repeat(62))),
+            b"x",
+        )
+        .unwrap();
+
+        let mut ids = store.list_chunk_ids().unwrap();
+        ids.sort();
+        let mut expect = vec![id_a, id_b];
+        expect.sort();
+        assert_eq!(ids, expect);
+    }
+
+    #[test]
+    fn remove_deletes_chunk_file() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::None).unwrap();
+        let (id, _) = store.put(b"remove-me").unwrap();
+        assert!(store.has(&id));
+        store.remove(&id).unwrap();
+        assert!(!store.has(&id));
+        assert!(matches!(store.remove(&id), Err(Error::NotFound(_))));
     }
 
     fn walkdir_cnk(root: PathBuf) -> Vec<PathBuf> {

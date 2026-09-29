@@ -1,6 +1,6 @@
 # Doctor / GC
 
-Phase 3 optional CLI utilities for store hygiene. **`doctor` is implemented (M4)**; **`gc` is deferred to M5**.
+Phase 3 optional CLI utilities for store hygiene. **`doctor` (M4)** and **`gc` (M5)** are implemented.
 
 ## `chunkforge doctor`
 
@@ -41,6 +41,29 @@ chunkforge doctor --source http://127.0.0.1:8765 --no-probe hello.cfidx
 | Local `meta.toml` | If origin is a local/`file://` store, print magic/version/compression to stderr |
 | Exit code | All present → **0**; any missing → **non-zero** and missing ids on **stdout** (one per line) |
 
-## `chunkforge gc` (M5 — not yet)
+## `chunkforge gc`
 
-Local-only dry-run of unreferenced loose `.cnk` files; `--apply` to delete. Not implemented in this milestone.
+Local-only garbage collection of loose `.cnk` files that are **not** referenced by any of the given `.cfidx` files.
+
+**Default is dry-run** (print paths + count; delete nothing). Pass `--apply` to actually delete. No remote GC / object-storage lifecycle.
+
+```bash
+# Dry-run: list unreferenced loose chunks
+chunkforge gc --store ./store hello.cfidx other.cfidx
+# → <store>/chunks/<2hex>/<62hex>.cnk   (one path per line on stdout)
+# → gc: dry-run: N unreferenced chunk(s) …
+
+# Actually delete unreferenced chunks
+chunkforge gc --store ./store hello.cfidx other.cfidx --apply
+# → same paths on stdout, then files removed
+# → gc: deleted N unreferenced chunk(s) …
+```
+
+| Rule | Behaviour |
+|---|---|
+| Reference set | Union of chunk ids from all given `.cfidx` files |
+| Scan | Walk local `store/chunks/**/*.cnk` via `Store::list_chunk_ids()` (layout-conforming only) |
+| Dry-run (default) | Print absolute paths of unreferenced `.cnk` files to **stdout**; summary on stderr; **no deletes** |
+| `--apply` | Serial `remove` of those files; referenced chunks retained |
+| Remote | **Not supported** — `--store` is local only |
+| Exit code | 0 on success (including “nothing to reclaim”); non-zero on I/O / bad index |
