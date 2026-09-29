@@ -7,7 +7,7 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing |
+| `chunkforge archive --store <cas> -o out.cfdir [--dry-run] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--dry-run`: stats only, no store/.cfdir write) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir>` | Materialize the tree (parents created; existing paths → non-zero) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
@@ -47,8 +47,7 @@ python3 scripts/put_stub.py --root /tmp/cf-arch/mirror --port 8766
 ./target/debug/chunkforge push \
   --store /tmp/cf-arch/store \
   --dest http://127.0.0.1:8766 \
-  /tmp/cf-arch/release.cfdir
-./target/debug/chunkforge verify --source http://127.0.0.1:8766 \
+  --verify \
   /tmp/cf-arch/release.cfdir
 ```
 
@@ -62,7 +61,21 @@ Covers archive → verify → extract → diff, optional FUSE mount (skipped if 
 unavailable), push via `put_stub.py` + `verify --source`, and a `.cfidx`
 make/verify regression path.
 
+## `--dry-run`
+
+`archive --dry-run` walks the tree, runs FastCDC, and prints
+`files` / `chunks` / `would_write` / `would_reuse` without putting chunks into
+`--store` or writing the `.cfdir`. If `--store` already exists, `would_reuse`
+counts ids already present (plus in-run cross-file dedup); a missing store is
+not created.
+
+```bash
+chunkforge archive --store ./store -o release.cfdir --dry-run ./src
+# stderr: archive: dry-run: N files, M chunks (would_write=…, would_reuse=…); no store/.cfdir written …
+```
+
 ## Archive policy (P0)
+
 
 - **Regular files** only are recorded (optional empty `Dir` entries omitted).
 - **Symlinks**: skipped with a stderr warning (not followed, not recorded).

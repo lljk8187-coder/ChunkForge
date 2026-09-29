@@ -17,6 +17,7 @@ chunkforge push \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
   [--jobs N] \
   [--dry-run] \
+  [--verify] \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -25,8 +26,9 @@ chunkforge push \
 | `--store` | Local CAS providing plaintext chunk bytes (`Store::get`) |
 | `--dest` | HTTP(S) base URL (required shape for the remote write face) |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
-| `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16) |
+| `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16); also used for post-push `--verify` fetches |
 | `--dry-run` | Probe + count only; **no** PUT |
+| `--verify` | After a successful push (`failed=0`), treat `--dest` (+ same templates) as a `ChunkSource` and run verify for **each** listing (`.cfidx` / `.cfdir`). Any verify failure → overall non-zero. Skipped on `--dry-run` (nothing uploaded) and when push already failed. |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (`DirArchive::all_chunk_ids` for `.cfdir`) |
 
 Default URL template is `{base}/{path}` ≡ `{base}/chunks/<2hex>/<62hex>.cnk`,
@@ -40,6 +42,10 @@ identical to Phase 2/3 GET layout.
 3. Print a summary on stderr:
    `push: skipped=… uploaded=… failed=… (N unique chunk ids, M listings, dry_run=…)`.
 4. Exit **non-zero** if `failed > 0`.
+5. If `--verify` and push succeeded and not `--dry-run`: build `HttpChunkSource` from
+   `--dest` (same templates) and run the same verify path as `verify --source` for
+   each listing arg. Verify failure → non-zero (useful error includes listing path /
+   chunk id). On success the user need not run a separate `verify --source`.
 
 ### Concurrency (`--jobs`)
 
@@ -97,6 +103,9 @@ chunkforge push \
 | PUT other 4xx / 5xx / network error | **failed**; continue; exit non-zero |
 | Non-`http(s)://` `--dest` | Immediate readable error (templates rejected too) |
 | `--dry-run` | Counts would-be uploads in `uploaded=`; **zero** PUT requests |
+| `--verify` + `--dry-run` | Verify is **skipped** (stderr note); dry-run never pretends the remote is verified |
+| `--verify` after push failures | Skipped; push already exits non-zero |
+| `--verify` remote missing/corrupt chunk | Non-zero; error names the listing / chunk |
 
 Push does not panic on remote rejection. Partial progress may leave some chunks
 on the remote; re-run is safe (see idempotency).
@@ -154,8 +163,10 @@ python3 ./scripts/put_stub.py --root /tmp/cf-p4/mirror --port 8766
   --store /tmp/cf-p4/store \
   --dest http://127.0.0.1:8766 \
   --url-template '{base}/{path}' \
+  --verify \
   /tmp/cf-p4/hello.cfidx
-./target/debug/chunkforge verify --source http://127.0.0.1:8766 /tmp/cf-p4/hello.cfidx
+# Equivalent separate step (not needed when --verify succeeds):
+# ./target/debug/chunkforge verify --source http://127.0.0.1:8766 /tmp/cf-p4/hello.cfidx
 ```
 
 
@@ -165,8 +176,7 @@ Same flags; pass a directory archive instead of (or mixed with) `.cfidx`:
 
 ```bash
 chunkforge archive --store ./store -o release.cfdir ./src
-chunkforge push --store ./store --dest http://127.0.0.1:8766 release.cfdir
-chunkforge verify --source http://127.0.0.1:8766 release.cfdir
+chunkforge push --store ./store --dest http://127.0.0.1:8766 --verify release.cfdir
 ```
 
 Full local walkthrough: [`scripts/demo_archive.sh`](../scripts/demo_archive.sh)

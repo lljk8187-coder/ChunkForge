@@ -1607,6 +1607,7 @@ fn push_help_lists_store_dest_dry_run_templates() {
     assert!(s.contains("--store"), "{s}");
     assert!(s.contains("--dest"), "{s}");
     assert!(s.contains("--dry-run"), "{s}");
+    assert!(s.contains("--verify"), "{s}");
     assert!(s.contains("--url-template"), "{s}");
     assert!(s.contains("--prefix"), "{s}");
     assert!(s.contains("--header"), "{s}");
@@ -2804,4 +2805,248 @@ fn push_mixed_cfidx_and_cfdir_union() {
 
     run_ok(&["verify", "--source", &base, cfdir.to_str().unwrap()]);
     run_ok(&["verify", "--source", &base, idx.to_str().unwrap()]);
+}
+
+// --- Phase 5 M6: push --verify + archive --dry-run ---
+
+/// PUT returns 200 but does not persist; HEAD/GET always 404 — push "succeeds", verify fails.
+fn spawn_put_blackhole_server(put_count: Arc<AtomicUsize>) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            match method {
+                Method::Head | Method::Get => {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    put_count.fetch_add(1, Ordering::SeqCst);
+                    let _ = request.respond(
+                        Response::empty(StatusCode(200))
+                            .with_header(Header::from_bytes(&b"Content-Length"[..], "0").unwrap()),
+                    );
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
+#[test]
+fn push_verify_cfdir_against_mock_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"push-verify-tree\n").unwrap();
+    fs::copy(fixtures_dir().join("hello.txt"), src.join("sub").join("b.txt")).unwrap();
+    let cfdir = dir.path().join("release.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--verify",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        err.contains("push: verify ok") || err.contains("verify: ok"),
+        "expected post-push verify success; stderr={err}"
+    );
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "expected PUT(s); got {}",
+        put_count.load(Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn push_verify_cfidx_against_mock_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        err.contains("push: verify ok") || err.contains("verify: ok"),
+        "expected post-push verify success; stderr={err}"
+    );
+}
+
+#[test]
+fn push_verify_fails_when_remote_missing_chunk() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_blackhole_server(Arc::clone(&put_count));
+
+    let out = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "push should have issued PUT before verify"
+    );
+    assert!(
+        err.contains("verify")
+            && (err.contains("missing") || err.contains("fail") || err.contains("chunk")),
+        "expected verify failure about missing chunk; stderr={err}"
+    );
+}
+
+#[test]
+fn push_verify_skipped_on_dry_run() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--verify skipped") || err.contains("verify skipped"),
+        "dry-run must skip verify; stderr={err}"
+    );
+    assert_eq!(put_count.load(Ordering::SeqCst), 0, "dry-run must not PUT");
+    assert!(!err.contains("push: verify ok"), "must not claim verify ok; stderr={err}");
+}
+
+#[test]
+fn archive_dry_run_prints_stats_without_writing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"dry-run-a\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"dry-run-b\n").unwrap();
+    // Identical twin → in-run would_reuse after first would_write of same content.
+    fs::write(src.join("a-copy.txt"), b"dry-run-a\n").unwrap();
+    let out_cfdir = dir.path().join("out.cfdir");
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out_cfdir.to_str().unwrap(),
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("dry-run") && err.contains("would_write="),
+        "stderr={err}"
+    );
+    assert!(
+        err.contains("no store") || err.contains("no store/.cfdir"),
+        "stderr={err}"
+    );
+    assert!(
+        !out_cfdir.exists(),
+        "dry-run must not write .cfdir"
+    );
+    assert!(
+        !store.join("meta.toml").exists(),
+        "dry-run must not create store when missing"
+    );
+}
+
+#[test]
+fn archive_help_lists_dry_run() {
+    let help = run_ok(&["archive", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(s.contains("--dry-run"), "archive --help should list --dry-run:\n{s}");
 }

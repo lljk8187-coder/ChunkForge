@@ -56,10 +56,10 @@ enum Commands {
     /// (extract can recreate parents from file paths). `make` single-file
     /// semantics are unchanged.
     Archive {
-        /// Local CAS store directory (created if missing)
+        /// Local CAS store directory (created if missing; not written in `--dry-run`)
         #[arg(long)]
         store: PathBuf,
-        /// Output `.cfdir` path
+        /// Output `.cfdir` path (not written in `--dry-run`)
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
         /// Source directory to recurse
@@ -67,6 +67,9 @@ enum Commands {
         /// Override FastCDC sizes as min:avg:max (bytes; all even, min≤avg≤max)
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
+        /// Compute stats only; do not write store chunks or the `.cfdir`
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -217,6 +220,9 @@ enum Commands {
     /// listing files themselves (chunks only).
     /// Template flags (`--url-template` / `--prefix` / `--header`) match read-side
     /// layout so a successful push is readable with `verify --source`.
+    /// With `--verify`, after a successful upload the same `--dest` is treated as a
+    /// `ChunkSource` and each listing is verified (skip verify on `--dry-run` or
+    /// when push already failed).
     Push {
         /// Local CAS store providing plaintext chunks
         #[arg(long)]
@@ -226,12 +232,15 @@ enum Commands {
         dest: String,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
-        /// Max concurrent has/PUT workers (default 1 = serial)
+        /// Max concurrent has/PUT workers (default 1 = serial); also used for post-push `--verify` fetches
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
         /// Probe and count only; do not issue PUT
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// After a successful push, verify each listing against `--dest` (same templates)
+        #[arg(long = "verify")]
+        verify: bool,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -296,7 +305,8 @@ fn run() -> Result<()> {
             output,
             src_dir,
             chunk_size,
-        } => cmd_archive(&store, &output, &src_dir, chunk_size.as_deref()),
+            dry_run,
+        } => cmd_archive(&store, &output, &src_dir, chunk_size.as_deref(), dry_run),
         Commands::Extract {
             store,
             source,
@@ -398,10 +408,11 @@ fn run() -> Result<()> {
             http_tmpl,
             jobs,
             dry_run,
+            verify,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_push(&store, &dest, &http_tmpl, dry_run, &indexes, jobs)
+            cmd_push(&store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs)
         }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
@@ -605,6 +616,7 @@ fn cmd_archive(
     output: &Path,
     src_dir: &Path,
     chunk_size: Option<&str>,
+    dry_run: bool,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -615,11 +627,26 @@ fn cmd_archive(
         );
     }
 
-    let store = open_or_create_store(store_path)?;
+    // Dry-run: open existing store for has() accounting only; do not create / put / write .cfdir.
+    let store = if dry_run {
+        let meta = store_path.join("meta.toml");
+        if meta.is_file() {
+            Some(
+                Store::open(store_path)
+                    .with_context(|| format!("open store at {}", store_path.display()))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        Some(open_or_create_store(store_path)?)
+    };
 
     let mut flags = 0u16;
-    if !matches!(store.compression(), Compression::None) {
-        flags |= FLAG_CHUNKS_COMPRESSED_IN_STORE;
+    if let Some(ref store) = store {
+        if !matches!(store.compression(), Compression::None) {
+            flags |= FLAG_CHUNKS_COMPRESSED_IN_STORE;
+        }
     }
 
     // Collect regular files first (sorted) so .cfdir output is deterministic.
@@ -647,6 +674,8 @@ fn cmd_archive(
     let mut total_chunks = 0usize;
     let mut new_chunks = 0usize;
     let mut reused_chunks = 0usize;
+    // Dry-run: track ids we would write this run so cross-file dedup is counted.
+    let mut dry_seen: HashSet<ChunkId> = HashSet::new();
 
     for full in &file_paths {
         let rel = relative_archive_path(src_dir, full)?;
@@ -687,12 +716,23 @@ fn cmd_archive(
                     full.display()
                 )
             })?;
-            let outcome = store
-                .put_with_id(&c.id, slice)
-                .with_context(|| format!("put chunk {} (file {rel})", c.id))?;
-            match outcome {
-                PutOutcome::Written => new_chunks += 1,
-                PutOutcome::SkippedExists => reused_chunks += 1,
+            if dry_run {
+                let exists_in_store = store.as_ref().is_some_and(|s| s.has(&c.id));
+                if exists_in_store || dry_seen.contains(&c.id) {
+                    reused_chunks += 1;
+                } else {
+                    dry_seen.insert(c.id);
+                    new_chunks += 1;
+                }
+            } else {
+                let store = store.as_ref().expect("store open when not dry-run");
+                let outcome = store
+                    .put_with_id(&c.id, slice)
+                    .with_context(|| format!("put chunk {} (file {rel})", c.id))?;
+                match outcome {
+                    PutOutcome::Written => new_chunks += 1,
+                    PutOutcome::SkippedExists => reused_chunks += 1,
+                }
             }
             total_chunks += 1;
             index_entries.push(IndexEntry {
@@ -713,6 +753,22 @@ fn cmd_archive(
         });
     }
 
+    let file_count = entries.len();
+
+    if dry_run {
+        eprintln!(
+            "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={});              no store/.cfdir written (would write {})",
+            file_count,
+            if file_count == 1 { "" } else { "s" },
+            total_chunks,
+            if total_chunks == 1 { "" } else { "s" },
+            new_chunks,
+            reused_chunks,
+            output.display()
+        );
+        return Ok(());
+    }
+
     let archive =
         DirArchive::new(flags, entries).map_err(|e| anyhow::anyhow!("build .cfdir: {e}"))?;
 
@@ -730,7 +786,6 @@ fn cmd_archive(
     file.sync_all()
         .with_context(|| format!("fsync archive {}", output.display()))?;
 
-    let file_count = archive.entries.len();
     eprintln!(
         "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}) → store {}",
         output.display(),
@@ -1572,6 +1627,7 @@ fn cmd_push(
     dest: &str,
     http_tmpl: &HttpTemplateArgs,
     dry_run: bool,
+    verify: bool,
     index_paths: &[PathBuf],
     jobs: usize,
 ) -> Result<()> {
@@ -1654,6 +1710,7 @@ fn cmd_push(
     );
 
     if failed > 0 {
+        // Push already failed: do not claim verify success; skip post-verify.
         bail!(
             "push: {failed} failure{}{}",
             if failed == 1 { "" } else { "s" },
@@ -1662,6 +1719,36 @@ fn cmd_push(
                 .unwrap_or_default()
         );
     }
+
+    if verify {
+        if dry_run {
+            eprintln!(
+                "push: --verify skipped (dry-run; nothing was uploaded — remote not verified)"
+            );
+            return Ok(());
+        }
+        eprintln!(
+            "push: verifying {} listing{} against --dest …",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
+        );
+        let source = open_primary_source(dest, http_tmpl)
+            .context("build HTTP chunk source from --dest for push --verify")?;
+        for path in index_paths {
+            cmd_verify(source.as_ref(), path, jobs).with_context(|| {
+                format!(
+                    "push --verify failed for {} (remote missing/corrupt chunk or hash mismatch)",
+                    path.display()
+                )
+            })?;
+        }
+        eprintln!(
+            "push: verify ok ({} listing{})",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
+        );
+    }
+
     Ok(())
 }
 
