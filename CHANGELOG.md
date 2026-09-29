@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--http-retries N`** (Phase 8 M2): extra HTTP attempts for transient failures
+  (default **0** ≡ 0.7.0 single attempt) on `push` / `pull` / `verify` / `doctor` /
+  `cat` / `extract` (and `mount` via shared HTTP args). Optional
+  `--http-retry-backoff-ms` (default 100). Local `--store` / `file://` ignore the
+  flags. `push` / `pull` summaries include `retries=`; `doctor` ok line too.
+
 ## [0.7.0] — 2026-09-29
 
 Phase 7 closeout: listing diff (`chunkforge diff`), local CAS bitrot scrub

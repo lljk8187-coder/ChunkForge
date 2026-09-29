@@ -17,6 +17,7 @@ chunkforge pull \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
   [--jobs N] \
+  [--http-retries N] \
   [--dry-run] \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
@@ -26,6 +27,7 @@ chunkforge pull \
 | `--store` | Local CAS to **write** (created if missing; not written in `--dry-run`) |
 | `--source` | Chunk source: local store path, `file://`, or `http(s)://` |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (HTTP sources only; see [remote-layout.md](remote-layout.md)) |
+| `--http-retries N` | Extra HTTP attempts for transient failures (default **0**; HTTP sources only; ignored for local/`file://`) |
 | `--jobs N` | Bounded concurrency for has/get/put (default **1** = serial) |
 | `--dry-run` | Probe + count only; **no** store writes (does not create `meta.toml`) |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** |
@@ -36,7 +38,7 @@ chunkforge pull \
 2. For each id (sorted): local `store.has` → **skip**; otherwise `source.get` →
    `store.put` (plaintext into the local CAS; hash checked on put).
 3. Print a summary on stderr:
-   `pull: skipped=… fetched=… failed=… (N unique chunk ids, M listings, dry_run=…)`.
+   `pull: skipped=… fetched=… failed=… retries=… (N unique chunk ids, M listings, dry_run=…)`.
 4. Exit **non-zero** if `failed > 0`.
 
 ### What pull does **not** do

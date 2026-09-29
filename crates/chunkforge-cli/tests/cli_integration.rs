@@ -1613,6 +1613,10 @@ fn push_help_lists_store_dest_dry_run_templates() {
     assert!(s.contains("--prefix"), "{s}");
     assert!(s.contains("--header"), "{s}");
     assert!(
+        s.contains("--http-retries"),
+        "push --help should list --http-retries:\n{s}"
+    );
+    assert!(
         s.to_ascii_lowercase().contains("cfidx"),
         "help should mention .cfidx:\n{s}"
     );
@@ -2226,6 +2230,214 @@ fn push_jobs_one_matches_serial_stats_shape() {
     assert!(err.contains("skipped="), "stderr={err}");
     assert!(err.contains("failed=0"), "stderr={err}");
     assert!(put_count.load(Ordering::SeqCst) >= 1);
+}
+
+// --- Phase 8 M2: CLI `--http-retries` ---
+
+/// PUT/HEAD stub: first `fail_puts` successful-path PUTs return 503; afterwards
+/// behave like [`spawn_put_get_store_server`]. HEAD always reflects on-disk state
+/// (missing → 404). Counts every PUT attempt (including 503s).
+fn spawn_flaky_put_store_server(
+    store_root: PathBuf,
+    fail_puts: usize,
+    put_attempts: Arc<AtomicUsize>,
+) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let fail_left = Arc::new(AtomicUsize::new(fail_puts));
+    let handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            match method {
+                Method::Head => {
+                    if file_path.is_file() {
+                        let len = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                        let response = Response::empty(200).with_header(
+                            Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap(),
+                        );
+                        let _ = request.respond(response);
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Get => {
+                    if file_path.is_file() {
+                        let data = fs::read(&file_path).unwrap_or_default();
+                        let _ = request.respond(Response::from_data(data));
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Put | Method::Post => {
+                    put_attempts.fetch_add(1, Ordering::SeqCst);
+                    // Consume body even on 503 so the client does not hang.
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    let remaining = fail_left.load(Ordering::SeqCst);
+                    if remaining > 0 {
+                        fail_left.fetch_sub(1, Ordering::SeqCst);
+                        let _ = request.respond(Response::empty(StatusCode(503)));
+                        continue;
+                    }
+                    if let Some(parent) = file_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&file_path, &body);
+                    let _ = request.respond(
+                        Response::empty(StatusCode(200))
+                            .with_header(Header::from_bytes(&b"Content-Length"[..], "0").unwrap()),
+                    );
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
+#[test]
+fn http_retries_help_listed_on_http_commands() {
+    for cmd in ["cat", "verify", "doctor", "push", "extract", "pull"] {
+        let out = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("--http-retries"),
+            "{cmd} --help should list --http-retries:\n{s}"
+        );
+        assert!(
+            s.contains("--http-retry-backoff-ms"),
+            "{cmd} --help should list --http-retry-backoff-ms:\n{s}"
+        );
+    }
+}
+
+/// Phase8-M2: stub returns 503 then succeeds — `--http-retries 0` fails;
+/// `--http-retries 3` succeeds and summary includes `retries=3`.
+#[test]
+fn push_http_retries_zero_fails_three_succeeds_on_transient_503() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // --- retries=0: first PUT is 503 → push fails after one attempt ---
+    let attempts0 = Arc::new(AtomicUsize::new(0));
+    let (base0, _h0) = spawn_flaky_put_store_server(mirror.clone(), 1, Arc::clone(&attempts0));
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base0,
+        "--http-retries",
+        "0",
+        "--http-retry-backoff-ms",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let fail_err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        fail_err.contains("failed=") && !fail_err.contains("failed=0"),
+        "retries=0 should fail on 503; stderr={fail_err}"
+    );
+    assert!(
+        fail_err.contains("retries=0"),
+        "summary should include retries=0; stderr={fail_err}"
+    );
+    assert_eq!(
+        attempts0.load(Ordering::SeqCst),
+        1,
+        "max_retries=0 → exactly one PUT attempt"
+    );
+
+    // --- retries=3: two 503s then 200 → success ---
+    let mirror2 = dir.path().join("mirror2");
+    fs::create_dir_all(&mirror2).unwrap();
+    let attempts3 = Arc::new(AtomicUsize::new(0));
+    let (base3, _h3) = spawn_flaky_put_store_server(mirror2, 2, Arc::clone(&attempts3));
+    let ok = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base3,
+        "--http-retries",
+        "3",
+        "--http-retry-backoff-ms",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let ok_err = String::from_utf8_lossy(&ok.stderr);
+    assert!(
+        ok_err.contains("failed=0"),
+        "retries=3 should succeed after transient 503s; stderr={ok_err}"
+    );
+    assert!(
+        ok_err.contains("retries=3"),
+        "summary should include retries=3; stderr={ok_err}"
+    );
+    assert!(
+        attempts3.load(Ordering::SeqCst) >= 3,
+        "expected ≥3 PUT attempts (2×503 + 1×200), got {}",
+        attempts3.load(Ordering::SeqCst)
+    );
+
+    // Post-push verify against the flaky-then-stable mirror (now has objects).
+    run_ok(&[
+        "verify",
+        "--source",
+        &base3,
+        "--http-retries",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+}
+
+/// Local `--store` path ignores `--http-retries` (no-op; behaviour unchanged).
+#[test]
+fn verify_local_store_ignores_http_retries_flag() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--http-retries",
+        "3",
+        "--http-retry-backoff-ms",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
 }
 
 #[test]

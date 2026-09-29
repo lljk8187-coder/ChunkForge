@@ -16,6 +16,8 @@ chunkforge push \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
   [--jobs N] \
+  [--http-retries N] \
+  [--http-retry-backoff-ms MS] \
   [--dry-run] \
   [--verify] \
   listing1.cfidx|.cfdir [listing2 ...]
@@ -27,6 +29,8 @@ chunkforge push \
 | `--dest` | HTTP(S) base URL (required shape for the remote write face) |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
 | `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16); also used for post-push `--verify` fetches |
+| `--http-retries N` | Extra attempts after the first try for transient HTTP failures (default **0** ≡ 0.7.0). Wired into `RetryPolicy` on the HTTP sink/source. |
+| `--http-retry-backoff-ms MS` | Base backoff for retries (default **100**; exponential + jitter, capped at 2s) |
 | `--dry-run` | Probe + count only; **no** PUT |
 | `--verify` | After a successful push (`failed=0`), treat `--dest` (+ same templates) as a `ChunkSource` and run verify for **each** listing (`.cfidx` / `.cfdir`). Any verify failure → overall non-zero. Skipped on `--dry-run` (nothing uploaded) and when push already failed. |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (`DirArchive::all_chunk_ids` for `.cfdir`) |
@@ -40,7 +44,7 @@ identical to Phase 2/3 GET layout.
 2. For each id (sorted): read plaintext from the local store; remote `has`
    (HEAD, GET fallback) → skip; otherwise `PUT` the body.
 3. Print a summary on stderr:
-   `push: skipped=… uploaded=… failed=… (N unique chunk ids, M listings, dry_run=…)`.
+   `push: skipped=… uploaded=… failed=… retries=… (N unique chunk ids, M listings, dry_run=…)`.
 4. Exit **non-zero** if `failed > 0`.
 5. If `--verify` and push succeeded and not `--dry-run`: build `HttpChunkSource` from
    `--dest` (same templates) and run the same verify path as `verify --source` for

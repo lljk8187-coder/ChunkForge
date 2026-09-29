@@ -10,7 +10,7 @@ use chunkforge_index::{
     decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader, seed_file_map,
     validate_archive_path,
 };
-use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
+use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy};
 use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
 };
@@ -247,6 +247,8 @@ enum Commands {
     /// listing files themselves (chunks only).
     /// Template flags (`--url-template` / `--prefix` / `--header`) match read-side
     /// layout so a successful push is readable with `verify --source`.
+    /// `--http-retries N` (default 0 ≡ 0.7.0) retries transient HTTP failures
+    /// (extra attempts after the first try); see also `--http-retry-backoff-ms`.
     /// With `--verify`, after a successful upload the same `--dest` is treated as a
     /// `ChunkSource` and each listing is verified (skip verify on `--dry-run` or
     /// when push already failed).
@@ -279,7 +281,8 @@ enum Commands {
     /// then `store.put` (plaintext into the local CAS). Does **not** extract a
     /// file tree, delete extras (`gc`), or download the listing itself.
     /// `--source` accepts a local path, `file://`, or `http(s)://` (same templates
-    /// as `verify` / `cat`). Symmetric to `push` (store→dest) but source→store.
+    /// as `verify` / `cat`). `--http-retries N` (default 0) applies to HTTP sources
+    /// only. Symmetric to `push` (store→dest) but source→store.
     Pull {
         /// Local CAS store to fill (created if missing; not written in `--dry-run`)
         #[arg(long)]
@@ -355,11 +358,16 @@ enum StoreCommands {
     },
 }
 
-/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor` / `push` / `pull`.
+/// Optional HTTP URL / header templates and retry knobs for `cat` / `verify` /
+/// `mount` / `doctor` / `push` / `pull` / `extract`.
 ///
-/// Only meaningful with an `http(s)://` `--source`. Omitting all three flags
-/// preserves 0.2.0 / Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
-#[derive(Debug, Clone, Default, clap::Args)]
+/// Template flags (`--url-template` / `--prefix` / `--header`) are only meaningful
+/// with an `http(s)://` `--source` / `--dest`. Omitting them preserves the Phase 2
+/// default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
+///
+/// `--http-retries` / `--http-retry-backoff-ms` apply only to HTTP(S) origins;
+/// local `--store` / `file://` paths ignore them (no-op).
+#[derive(Debug, Clone, clap::Args)]
 struct HttpTemplateArgs {
     /// URL template expanded per chunk id (HTTP sources only; default `{base}/{path}`)
     #[arg(long = "url-template", value_name = "TMPL")]
@@ -370,6 +378,32 @@ struct HttpTemplateArgs {
     /// Extra request header as `Name: value-template` (repeatable; HTTP only)
     #[arg(long = "header", value_name = "NAME: VALUE", action = clap::ArgAction::Append)]
     headers: Vec<String>,
+    /// Extra HTTP attempts after the first try for transient failures (408/429/5xx,
+    /// timeouts). Default **0** ≡ 0.7.0 single attempt. HTTP(S) only; ignored for
+    /// local `--store` / `file://`.
+    #[arg(long = "http-retries", default_value_t = 0, value_name = "N")]
+    http_retries: u32,
+    /// Base backoff in milliseconds for HTTP retries (exponential + jitter; capped
+    /// at 2s). Default **100**. HTTP(S) only; ignored for local origins. Set `0`
+    /// for tests / demos that want retries without sleep.
+    #[arg(
+        long = "http-retry-backoff-ms",
+        default_value_t = 100,
+        value_name = "MS"
+    )]
+    http_retry_backoff_ms: u64,
+}
+
+impl Default for HttpTemplateArgs {
+    fn default() -> Self {
+        Self {
+            url_template: None,
+            prefix: None,
+            headers: Vec::new(),
+            http_retries: 0,
+            http_retry_backoff_ms: 100,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -501,7 +535,15 @@ fn run() -> Result<()> {
                 (None, Some(s)) => s.to_string(),
                 _ => unreachable!("clap origin group requires exactly one of --store/--source"),
             };
-            cmd_doctor(src.as_ref(), &origin_spec, &indexes, deep, no_probe, jobs)
+            cmd_doctor(
+                src.as_ref(),
+                &origin_spec,
+                &indexes,
+                deep,
+                no_probe,
+                jobs,
+                http_tmpl.http_retries,
+            )
         }
         Commands::Gc {
             store,
@@ -619,6 +661,19 @@ fn http_template_flags_set(http_tmpl: &HttpTemplateArgs) -> bool {
     http_tmpl.url_template.is_some() || http_tmpl.prefix.is_some() || !http_tmpl.headers.is_empty()
 }
 
+/// Build a [`RetryPolicy`] from CLI HTTP retry flags.
+///
+/// `N` on `--http-retries` is **extra** attempts (0 → one try ≡ 0.7.0).
+/// Base backoff comes from `--http-retry-backoff-ms` (default 100ms); max backoff
+/// stays at the library default (2s).
+fn retry_policy_from_http_args(http_tmpl: &HttpTemplateArgs) -> RetryPolicy {
+    RetryPolicy {
+        max_retries: http_tmpl.http_retries,
+        base_backoff: Duration::from_millis(http_tmpl.http_retry_backoff_ms),
+        max_backoff: Duration::from_secs(2),
+    }
+}
+
 /// Parse `--header 'Name: value-template'` into (name, value_template).
 fn parse_header_flag(raw: &str) -> Result<(String, String)> {
     let Some((name, value)) = raw.split_once(':') else {
@@ -643,7 +698,9 @@ fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<d
     }
 
     if is_http {
-        let mut builder = HttpChunkSource::builder(trimmed).timeout(Some(Duration::from_secs(30)));
+        let mut builder = HttpChunkSource::builder(trimmed)
+            .timeout(Some(Duration::from_secs(30)))
+            .retry_policy(retry_policy_from_http_args(http_tmpl));
         if let Some(ref tmpl) = http_tmpl.url_template {
             builder = builder.url_template(tmpl.clone());
         }
@@ -2069,6 +2126,7 @@ fn cmd_doctor(
     deep: bool,
     no_probe: bool,
     jobs: usize,
+    http_retries: u32,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
     maybe_print_local_store_meta(origin_spec);
@@ -2166,7 +2224,7 @@ fn cmd_doctor(
 
     if missing.is_empty() {
         eprintln!(
-            "doctor: ok ({} listing{}, {} chunk id{} checked, deep={})",
+            "doctor: ok ({} listing{}, {} chunk id{} checked, deep={}, retries={http_retries})",
             listings_ok,
             if listings_ok == 1 { "" } else { "s" },
             checked,
@@ -2266,7 +2324,9 @@ fn open_http_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Http
         );
     }
 
-    let mut builder = HttpChunkSink::builder(trimmed).timeout(Some(Duration::from_secs(30)));
+    let mut builder = HttpChunkSink::builder(trimmed)
+        .timeout(Some(Duration::from_secs(30)))
+        .retry_policy(retry_policy_from_http_args(http_tmpl));
     if let Some(ref tmpl) = http_tmpl.url_template {
         builder = builder.url_template(tmpl.clone());
     }
@@ -2358,8 +2418,9 @@ fn cmd_push(
         }
     }
 
+    let retries = http_tmpl.http_retries;
     eprintln!(
-        "push: skipped={skipped} uploaded={uploaded} failed={failed} \
+        "push: skipped={skipped} uploaded={uploaded} failed={failed} retries={retries} \
          ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
         ids.len(),
         if ids.len() == 1 { "" } else { "s" },
@@ -2503,8 +2564,9 @@ fn cmd_pull(
         }
     }
 
+    let retries = http_tmpl.http_retries;
     eprintln!(
-        "pull: skipped={skipped} fetched={fetched} failed={failed} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
+        "pull: skipped={skipped} fetched={fetched} failed={failed} retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
         ids.len(),
         if ids.len() == 1 { "" } else { "s" },
         listings_ok,

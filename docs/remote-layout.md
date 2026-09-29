@@ -48,9 +48,10 @@ https://mybucket.s3.amazonaws.com  # virtual-host style base (Phase 3)
 Trailing slashes on the HTTP base are optional; join / template logic strips a
 trailing `/` from `{base}` before expansion.
 
-> **CLI note:** `cat` / `verify` / `mount` / `doctor` accept `--url-template` /
-> `--prefix` / `--header` for `http(s)://` sources (Phase 3 M3+). Non-HTTP
-> sources reject those flags with a readable error.
+> **CLI note:** `cat` / `verify` / `mount` / `doctor` / `push` / `pull` / `extract`
+> accept `--url-template` / `--prefix` / `--header` for `http(s)://` sources
+> (Phase 3+), plus `--http-retries` / `--http-retry-backoff-ms` (Phase 8; default
+> retries **0**). Non-HTTP sources reject template flags; retry flags are ignored.
 
 ## HTTP chunk URL (default ≡ Phase 2)
 
@@ -292,13 +293,14 @@ let bytes = src.get(&chunk_id)?;
 
 ## Related CLI
 
-- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4)
+- CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4); `pull` / `extract` share the same template flags
+- `--http-retries N` / `--http-retry-backoff-ms` (Phase 8): bounded retries for transient HTTP failures (default **0** ≡ single attempt); local `--store` / `file://` ignore them
 - `chunkforge push` — per-chunk PUT with optional `--jobs` concurrency; see [push.md](push.md)
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
 
 ## Still out of scope
 
-- Mixed compression over HTTP, range requests, smart retries beyond a simple timeout
+- Mixed compression over HTTP; byte-range / partial-chunk retries (Phase 8 retries **whole chunks** only)
 - In-process SigV4, `aws-sdk-*`, S3 multipart upload API, remote GC (see non-goals above)
 - Uploading `.cfidx` into the chunk object layout (indexes stay out-of-band)
