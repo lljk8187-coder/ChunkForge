@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "ChunkForge CLI: make / cat / verify / mount / doctor / gc / push local CAS indexes"
+description = "ChunkForge CLI: make / archive / cat / verify / mount / doctor / gc / push local CAS indexes"
 readme = false
 
 [[bin]]

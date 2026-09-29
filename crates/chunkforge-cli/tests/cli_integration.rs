@@ -92,6 +92,7 @@ fn help_and_version() {
     let help = run_ok(&["--help"]);
     let help_s = String::from_utf8_lossy(&help.stdout);
     assert!(help_s.contains("make"), "{help_s}");
+    assert!(help_s.contains("archive"), "{help_s}");
     assert!(help_s.contains("cat"), "{help_s}");
     assert!(help_s.contains("verify"), "{help_s}");
 
@@ -2218,4 +2219,157 @@ fn push_jobs_one_matches_serial_stats_shape() {
     assert!(err.contains("skipped="), "stderr={err}");
     assert!(err.contains("failed=0"), "stderr={err}");
     assert!(put_count.load(Ordering::SeqCst) >= 1);
+}
+
+#[test]
+fn archive_help_documents_symlink_policy() {
+    let help = run_ok(&["archive", "--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("symlink") || help_s.contains("Symlink"),
+        "archive --help should mention symlink policy; got:\n{help_s}"
+    );
+    assert!(help_s.contains("--store"), "{help_s}");
+    assert!(
+        help_s.contains("--chunk-size") || help_s.contains("chunk-size"),
+        "{help_s}"
+    );
+}
+
+#[test]
+fn archive_small_tree_writes_chunks_and_second_run_reuses() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    let sub = src.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(src.join("a.txt"), b"hello-tree\n").unwrap();
+    fs::write(sub.join("b.txt"), b"hello-tree\n").unwrap(); // cross-file dedup
+    fs::write(sub.join("c.bin"), b"unique-payload-xyz").unwrap();
+
+    // Symlink + fifo should be skipped (warn), not fail the archive.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink("a.txt", src.join("link-to-a")).unwrap();
+        // Best-effort fifo; ignore if mkfifo unavailable.
+        let fifo = src.join("my.fifo");
+        let _ = Command::new("mkfifo").arg(&fifo).status();
+    }
+
+    let store = dir.path().join("store");
+    let out1 = dir.path().join("rel1.cfdir");
+    let out2 = dir.path().join("rel2.cfdir");
+
+    let first = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err1 = String::from_utf8_lossy(&first.stderr);
+    assert!(err1.contains("archive: wrote"), "stderr={err1}");
+    assert!(err1.contains("new="), "stderr={err1}");
+    assert!(err1.contains("reused="), "stderr={err1}");
+    assert!(out1.is_file(), "missing {}", out1.display());
+
+    // Decode .cfdir: expect 3 regular files (symlink/fifo skipped).
+    let bytes = fs::read(&out1).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode .cfdir");
+    assert_eq!(
+        arch.entries.len(),
+        3,
+        "entries={:?}",
+        arch.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(paths.contains(&"a.txt"), "{paths:?}");
+    assert!(paths.contains(&"sub/b.txt"), "{paths:?}");
+    assert!(paths.contains(&"sub/c.bin"), "{paths:?}");
+
+    // Store must contain chunks.
+    let store_h = chunkforge_store::Store::open(&store).expect("open store");
+    let listed = store_h.list_chunk_ids().expect("list chunks");
+    assert!(
+        !listed.is_empty(),
+        "store should have chunks after archive; stderr={err1}"
+    );
+    let chunk_count_before = listed.len();
+
+    // Second archive of same tree → new≈0 (content unchanged).
+    let second = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out2.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        err2.contains("new=0"),
+        "second archive should reuse all chunks; stderr={err2}"
+    );
+    let listed2 = store_h.list_chunk_ids().expect("list chunks again");
+    assert_eq!(
+        listed2.len(),
+        chunk_count_before,
+        "store chunk count must not grow on identical re-archive"
+    );
+
+    #[cfg(unix)]
+    {
+        assert!(
+            err1.contains("symlink") || err1.contains("skip"),
+            "expected symlink skip warning; stderr={err1}"
+        );
+    }
+}
+
+#[test]
+fn archive_empty_dir_writes_empty_cfdir() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("empty-src");
+    fs::create_dir_all(&src).unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("empty.cfdir");
+    let result = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(err.contains("0 file"), "stderr={err}");
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    assert!(arch.entries.is_empty());
+}
+
+#[test]
+fn make_single_file_unchanged_alongside_archive() {
+    // Regression: make still produces .cfidx for a single file.
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&idx).unwrap();
+    assert_eq!(&bytes[0..5], b"CFIDX");
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
 }

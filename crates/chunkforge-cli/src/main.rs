@@ -1,17 +1,20 @@
-//! ChunkForge CLI: make / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
 
 mod parallel;
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
-use chunkforge_index::{FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, entry_length};
+use chunkforge_index::{
+    DirArchive, DirEntry, DirEntryKind, FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry,
+    entry_length, validate_archive_path,
+};
 use chunkforge_remote::{FileUrlSource, HttpChunkSink, HttpChunkSource};
 use chunkforge_store::{CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -19,7 +22,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor / gc / push)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / cat / verify / mount / doctor / gc / push)",
     long_about = None
 )]
 struct Cli {
@@ -39,6 +42,28 @@ enum Commands {
         output: PathBuf,
         /// Input file to chunk
         input: PathBuf,
+        /// Override FastCDC sizes as min:avg:max (bytes; all even, min≤avg≤max)
+        #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
+        chunk_size: Option<String>,
+    },
+    /// Archive a directory tree into a local store + `.cfdir` listing
+    ///
+    /// Recurses regular files only (FastCDC + BLAKE3 per file). Chunks are
+    /// written into `--store` with content-addressed dedup; the output `.cfdir`
+    /// records relative paths and per-file chunk tables. Symlinks, fifos,
+    /// sockets, and device nodes are **skipped with a stderr warning** (P0
+    /// policy: do not follow / do not record). Empty directories are omitted
+    /// (extract can recreate parents from file paths). `make` single-file
+    /// semantics are unchanged.
+    Archive {
+        /// Local CAS store directory (created if missing)
+        #[arg(long)]
+        store: PathBuf,
+        /// Output `.cfdir` path
+        #[arg(short = 'o', long = "output")]
+        output: PathBuf,
+        /// Source directory to recurse
+        src_dir: PathBuf,
         /// Override FastCDC sizes as min:avg:max (bytes; all even, min≤avg≤max)
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
@@ -233,6 +258,12 @@ fn run() -> Result<()> {
             input,
             chunk_size,
         } => cmd_make(&store, &output, &input, chunk_size.as_deref()),
+        Commands::Archive {
+            store,
+            output,
+            src_dir,
+            chunk_size,
+        } => cmd_archive(&store, &output, &src_dir, chunk_size.as_deref()),
         Commands::Cat {
             store,
             source,
@@ -516,6 +547,257 @@ fn cmd_make(
         store_path.display()
     );
     Ok(())
+}
+
+fn cmd_archive(
+    store_path: &Path,
+    output: &Path,
+    src_dir: &Path,
+    chunk_size: Option<&str>,
+) -> Result<()> {
+    let params = parse_chunk_size(chunk_size)?;
+
+    if !src_dir.is_dir() {
+        bail!(
+            "archive source {} is not a directory (or is unreadable)",
+            src_dir.display()
+        );
+    }
+
+    let store = open_or_create_store(store_path)?;
+
+    let mut flags = 0u16;
+    if !matches!(store.compression(), Compression::None) {
+        flags |= FLAG_CHUNKS_COMPRESSED_IN_STORE;
+    }
+
+    // Collect regular files first (sorted) so .cfdir output is deterministic.
+    let mut file_paths: Vec<PathBuf> = Vec::new();
+    let mut skipped_symlinks = 0usize;
+    let mut skipped_special = 0usize;
+    collect_archive_files(
+        src_dir,
+        src_dir,
+        &mut file_paths,
+        &mut skipped_symlinks,
+        &mut skipped_special,
+    )?;
+    file_paths.sort();
+
+    if skipped_symlinks > 0 || skipped_special > 0 {
+        eprintln!(
+            "archive: symlink policy = skip+warn (not recorded / not followed); \
+             skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
+            if skipped_symlinks == 1 { "" } else { "s" },
+        );
+    }
+
+    let mut entries: Vec<DirEntry> = Vec::with_capacity(file_paths.len());
+    let mut total_chunks = 0usize;
+    let mut new_chunks = 0usize;
+    let mut reused_chunks = 0usize;
+
+    for full in &file_paths {
+        let rel = relative_archive_path(src_dir, full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+
+        let meta =
+            fs::symlink_metadata(full).with_context(|| format!("stat {}", full.display()))?;
+        if meta.file_type().is_symlink() {
+            // Race: became a symlink after collect — skip (summary already printed).
+            eprintln!(
+                "archive: skip symlink {} (policy: skip+warn; not recorded)",
+                full.display()
+            );
+            continue;
+        }
+        if !meta.is_file() {
+            eprintln!(
+                "archive: skip special file {} (fifo/socket/device)",
+                full.display()
+            );
+            continue;
+        }
+
+        let data = fs::read(full).with_context(|| format!("read {}", full.display()))?;
+        let mode = file_mode_u32(&meta);
+        let mtime_secs = file_mtime_secs(&meta);
+        let blob_blake3 = ChunkId::hash(&data);
+        let chunks = chunk_bytes(&data, &params);
+
+        let mut index_entries = Vec::with_capacity(chunks.len());
+        for c in &chunks {
+            let start = c.offset as usize;
+            let end = (c.offset + c.length) as usize;
+            let slice = data.get(start..end).with_context(|| {
+                format!(
+                    "chunk range {start}..{end} out of bounds in {}",
+                    full.display()
+                )
+            })?;
+            let outcome = store
+                .put_with_id(&c.id, slice)
+                .with_context(|| format!("put chunk {} (file {rel})", c.id))?;
+            match outcome {
+                PutOutcome::Written => new_chunks += 1,
+                PutOutcome::SkippedExists => reused_chunks += 1,
+            }
+            total_chunks += 1;
+            index_entries.push(IndexEntry {
+                end_offset: c.offset + c.length,
+                chunk_id: c.id,
+            });
+        }
+
+        entries.push(DirEntry {
+            path: rel,
+            kind: DirEntryKind::File {
+                mode,
+                size: data.len() as u64,
+                mtime_secs,
+                blob_blake3,
+                chunks: index_entries,
+            },
+        });
+    }
+
+    let archive =
+        DirArchive::new(flags, entries).map_err(|e| anyhow::anyhow!("build .cfdir: {e}"))?;
+
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    let mut file =
+        File::create(output).with_context(|| format!("create archive {}", output.display()))?;
+    archive
+        .write_to(&mut file)
+        .map_err(|e| anyhow::anyhow!("write .cfdir: {e}"))?;
+    file.sync_all()
+        .with_context(|| format!("fsync archive {}", output.display()))?;
+
+    let file_count = archive.entries.len();
+    eprintln!(
+        "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}) → store {}",
+        output.display(),
+        file_count,
+        if file_count == 1 { "" } else { "s" },
+        total_chunks,
+        if total_chunks == 1 { "" } else { "s" },
+        new_chunks,
+        reused_chunks,
+        store_path.display()
+    );
+    Ok(())
+}
+
+/// Recursively collect regular-file paths under `dir` (relative walk from `root`).
+///
+/// Symlinks (including symlink-to-dir) and special files are skipped with a
+/// per-path stderr warning. Does **not** follow directory symlinks (avoids loops).
+fn collect_archive_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skipped_symlinks: &mut usize,
+    skipped_special: &mut usize,
+) -> Result<()> {
+    let entries = fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read_dir entry under {}", dir.display()))?;
+        let path = entry.path();
+        let ft = entry
+            .file_type()
+            .with_context(|| format!("file_type {}", path.display()))?;
+
+        if ft.is_symlink() {
+            *skipped_symlinks += 1;
+            eprintln!(
+                "archive: skip symlink {} (policy: skip+warn; not recorded / not followed)",
+                display_under_root(root, &path)
+            );
+            continue;
+        }
+        if ft.is_dir() {
+            collect_archive_files(root, &path, out, skipped_symlinks, skipped_special)?;
+            continue;
+        }
+        if ft.is_file() {
+            out.push(path);
+            continue;
+        }
+        // fifo / socket / device / other
+        *skipped_special += 1;
+        eprintln!(
+            "archive: skip special file {} (fifo/socket/device)",
+            display_under_root(root, &path)
+        );
+    }
+    Ok(())
+}
+
+fn display_under_root(root: &Path, path: &Path) -> String {
+    relative_archive_path(root, path).unwrap_or_else(|_| path.display().to_string())
+}
+
+/// Build a `/`-separated relative archive path from `root` to `full`.
+fn relative_archive_path(root: &Path, full: &Path) -> Result<String> {
+    let rel = full.strip_prefix(root).with_context(|| {
+        format!(
+            "path {} is not under archive root {}",
+            full.display(),
+            root.display()
+        )
+    })?;
+    let mut parts: Vec<String> = Vec::new();
+    for c in rel.components() {
+        match c {
+            Component::Normal(s) => {
+                let s = s.to_string_lossy();
+                if s.contains('/') || s.contains('\\') {
+                    bail!("path component contains separator: {s:?}");
+                }
+                parts.push(s.into_owned());
+            }
+            Component::CurDir => {}
+            other => bail!(
+                "unsupported path component {:?} under {}",
+                other,
+                full.display()
+            ),
+        }
+    }
+    if parts.is_empty() {
+        bail!("refusing to archive the root directory itself as a file entry");
+    }
+    Ok(parts.join("/"))
+}
+
+fn file_mode_u32(meta: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode()
+    }
+    #[cfg(not(unix))]
+    {
+        if meta.permissions().readonly() {
+            0o444
+        } else {
+            0o644
+        }
+    }
+}
+
+fn file_mtime_secs(meta: &fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn load_index(path: &Path) -> Result<Index> {

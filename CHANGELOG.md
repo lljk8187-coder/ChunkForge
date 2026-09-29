@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`chunkforge archive`** (Phase5-M2): recurse a source directory, FastCDC + BLAKE3 per regular file, write chunks into `--store` (dedup), emit `.cfdir` via `DirArchive::encode`. Optional `--chunk-size` (same as `make`). Stderr stats: files / chunks / `new=` / `reused=`. Symlinks and fifo/socket/device are skipped with a warning (P0 policy). `make` single-file `.cfidx` path unchanged.
+
 ## [0.4.0] — 2026-09-29
 
 Phase 4 closeout: per-chunk HTTP PUT write path (`ChunkSink` / `HttpChunkSink` /

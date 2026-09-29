@@ -64,3 +64,9 @@ Chunk table rules match `.cfidx`: last `end_offset == size`; empty iff `size == 
 Trailer checksum covers `header || body` (same spirit as `.cfidx`).
 
 Implemented by `chunkforge-index` (`DirArchive::encode` / `DirArchive::decode`).
+
+## Archive CLI notes (Phase5-M2)
+
+- P0 `chunkforge archive` records **regular files** only (optional empty `Dir` entries omitted).
+- **Symlinks**: skipped with a stderr warning (not followed, not recorded). Recording symlink targets is deferred (no `Symlink` kind in `.cfdir` v1 yet).
+- **fifo / socket / device**: skipped with a stderr warning.
