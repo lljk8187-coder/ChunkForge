@@ -3,18 +3,21 @@
 //! - [`.cfidx` v1](Index) — single-blob chunk map (Phase 1; **byte-frozen**)
 //! - [`.cfdir` v1](DirArchive) — multi-file directory listing (Phase 5)
 //! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse decision (Phase 6)
+//! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
-//! `docs/dir-format.md`. Seed helpers do **not** change those layouts.
+//! `docs/dir-format.md`. Seed / diff helpers do **not** change those layouts.
 //!
 //! This crate does **not** implement CLI archive/extract, FUSE, or store I/O.
 
+mod diff;
 mod dir;
 mod error;
 mod index;
 mod path;
 mod seed;
 
+pub use diff::{DiffReport, diff_dir_archives};
 pub use dir::{
     DIR_FORMAT_VERSION_V1, DIR_HEADER_SIZE, DIR_MAGIC_PREFIX, DIR_MAGIC_V1, DIR_MAJOR_V1,
     DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE,
