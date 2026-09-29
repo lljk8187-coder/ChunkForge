@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-29
+
+Phase 9 closeout: incremental extract (`--skip-unchanged` / `--dry-run`), loose
+HTTP perf baseline (`docs/perf.md` + `scripts/bench_loose_http.sh`), and SigV4
+shared-credentials fallback, plus `scripts/demo_extract_skip.sh`. `.cfidx` /
+`.cfdir` v1 bytes and `ChunkSource` / `ChunkSink` signatures stay frozen;
+default extract (no new flags) matches **0.8.0**. **O2 FUSE sequential prefetch
+was not delivered.** No full AWS SDK, multipart, packfile, write mount,
+bidirectional sync, extract prune, video analysis, remote scrub, byte-range
+resume, or push listing upload.
+
 ### Added
 
 - **`extract --skip-unchanged`** (Phase 9 M1): opt-in skip when dest size + content
@@ -22,7 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
   Exit **0** when the listing is valid (even if `would_fail>0`); invalid listing
   → non-zero. Mismatch + `--force` → `would_write`.
-- **Docs + demo** (Phase 9 M4 / G5): `docs/extract.md` (`--skip-unchanged` / `--force` / `--dry-run` overlap; explicitly **no prune**); `scripts/demo_extract_skip.sh`; README Phase 9 draft section
+- **Docs + demo** (Phase 9 M4 / G5): `docs/extract.md` (`--skip-unchanged` /
+  `--force` / `--dry-run` overlap; explicitly **no prune**);
+  `scripts/demo_extract_skip.sh`; README Phase 9 section
 - **Loose HTTP perf baseline** (Phase 9 M6 / P1 **O1**): `docs/perf.md` (how to
   measure local loose push/pull; **pack promotion checklist**; pack **not**
   implemented this phase) + `scripts/bench_loose_http.sh` (local `put_stub`
@@ -34,10 +47,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AWS_PROFILE` or `default`. Still **no** IMDS / SSO / `aws-sdk-*`. See
   `docs/sigv4.md`
 
-### Not delivered (Phase 9 P1)
+### Not delivered / deferred (Phase 9)
 
 - **O2 FUSE sequential prefetch** — not delivered this milestone (RO mount
   unchanged; no readahead / prefetch cache)
+- Full **`aws-sdk-*`** / credential provider chain / IMDS / SSO / ListObjects
+- Complete S3 **multipart** upload API (single-object PUT only)
+- **Packfile** / multi-chunk single object (loose `.cnk` layout unchanged;
+  O1 baseline documents promotion criteria only)
+- Write mount / COW / writable FUSE
+- Bidirectional sync / watch directories / conflict resolution
+- **Extract prune** / `--delete` of extra files under `-o` (`extract` ≠ sync)
+- Video analysis / GPU·LLM / P2P
+- **Remote scrub** / remote GC / lifecycle (use `verify --source` for listing
+  ref integrity; `store scrub` / `gc` stay **local** `--store` only)
+- Byte-range / partial-chunk resume (retries **whole chunks** only)
+- `push` still does **not** upload listings
+
+### Non-goals (Phase 9)
+
+- No rewrite of `.cfidx` / `.cfdir` v1 byte layouts
+- No change to `ChunkSource` / `ChunkSink` method signatures
+- No full AWS SDK / multipart / packfile; HTTP surface remains **ureq** (+
+  optional minimal SigV4 with env / shared-file creds)
+- No write mount; no bidirectional sync; no extract prune; no video analysis;
+  no remote scrub; no byte-range resume; no push listing upload
+- No FUSE sequential prefetch in this release (O2 deferred)
+
+### Notes
+
+- Without new extract flags, extract / HTTP / push / pull / verify / doctor /
+  diff behaviour matches **0.8.0** (default no skip, no dry-run, retries=0,
+  SigV4 off, diff text)
+- Default HTTP chunk layout remains byte-compatible with **0.8.0** / **0.7.0**
+- Responsibilities: `verify --source` = remote listing-ref integrity (not
+  remote scrub); `doctor` = presence; `gc` / `store scrub` = local only;
+  `diff` = listing/tree compare (report only); `extract --skip-unchanged` =
+  incremental materialize (not sync / prune)
 
 ## [0.8.0] — 2026-09-29
 

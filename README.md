@@ -14,27 +14,28 @@
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
-| **Phase 9** | *Unreleased* | `extract --skip-unchanged` / `--dry-run`; `docs/extract.md` + `docs/perf.md`; `scripts/demo_extract_skip.sh` + `bench_loose_http.sh`; SigV4 shared-creds fallback (0.9.0 closeout = M7) |
+| **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 
-## Non-goals (current / Phase 8)
+## Non-goals (current / Phase 9)
 
 | Not this | Why |
 |---|---|
-| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential provider chain — HTTP stays **ureq**; optional minimal SigV4 via `--aws-sigv4` (env creds only; see `docs/sigv4.md`) |
+| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential provider chain — HTTP stays **ureq**; optional minimal SigV4 via `--aws-sigv4` (env + shared credentials file; see `docs/sigv4.md`) |
 | ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
 | ❌ **Write mount / COW** | FUSE stays `RO` (single blob **and** directory tree); writes return `EROFS` / `EACCES` |
 | ❌ **Bidirectional sync** | `archive` / `extract` / `push` / `pull` are explicit one-way — no watch directories, conflict resolution, or mutual sync |
+| ❌ **Extract prune / `--delete`** | `extract` never removes extra files under `-o`; incremental skip ≠ sync |
 | ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay local (git / release artifact / optional manual URL) |
 | ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
-| ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged |
+| ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged; Phase 9 only documents a local perf baseline (`docs/perf.md`) |
 | ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
 | ❌ **Remote scrub** | `store scrub` only rehashes a **local** `--store`; no remote bitrot scan |
-| ❌ **Byte-range / partial-chunk resume** | Phase 8 retries **whole chunks** only (chunks ≤256KiB) |
+| ❌ **Byte-range / partial-chunk resume** | Retries **whole chunks** only (chunks ≤256KiB) |
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), and listing **`diff`** / **`store scrub`** (Phase 7). Phase 8 (**0.8.0**) adds HTTP **`--http-retries`**, error-class summaries, **`diff --format json`**, and optional minimal **`--aws-sigv4`**.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), and HTTP **`--http-retries`** / error-class summaries / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8). Phase 9 (**0.9.0**) adds **`extract --skip-unchanged`** / **`--dry-run`**, a loose HTTP perf baseline, and SigV4 shared-credentials fallback.
 
 ## Quick start (local CAS)
 
@@ -313,10 +314,11 @@ Details: [docs/http-retry.md](docs/http-retry.md),
 [docs/sigv4.md](docs/sigv4.md), [docs/diff.md](docs/diff.md).
 
 
-## Phase 9: extract skip + dry-run (*draft* → **0.9.0**)
+## Phase 9: extract skip + dry-run + perf baseline (**0.9.0**)
 
-Incremental materialize on top of Phase 8. Default extract (no new flags) stays
-**0.8.0**-compatible. Full non-goals / version bump land in M7.
+Incremental materialize and a reproducible loose-HTTP perf baseline on top of
+Phase 8. Default extract (no new flags), retries=0, and SigV4 off stay
+**0.8.0**-compatible.
 
 - **`extract --skip-unchanged`**: opt-in; skip when dest size + content BLAKE3
   match listing `blob_blake3` (no chunk fetch/write; match beats `--force`)
@@ -324,26 +326,34 @@ Incremental materialize on top of Phase 8. Default extract (no new flags) stays
   `would_write` / `would_dirs` / `would_fail`
 - Docs: [docs/extract.md](docs/extract.md) (flag overlap; **no prune** of extra
   files under `-o`)
-- Smoke: [`scripts/demo_extract_skip.sh`](scripts/demo_extract_skip.sh)
+- Quickstart smoke: [`scripts/demo_extract_skip.sh`](scripts/demo_extract_skip.sh)
 - **P1 O1** loose HTTP perf baseline: [docs/perf.md](docs/perf.md) +
   [`scripts/bench_loose_http.sh`](scripts/bench_loose_http.sh) (**pack not**
   implemented; defaults stay jobs=1 / retries=0)
 - **P1 O3** `--aws-sigv4` falls back to `~/.aws/credentials` when env keys are
   missing (still no IMDS/SSO/`aws-sdk-*`) — [docs/sigv4.md](docs/sigv4.md)
-- **P1 O2** FUSE sequential prefetch: **not** delivered this milestone
+- **P1 O2** FUSE sequential prefetch: **not** delivered this release
 
-**Still not this Phase (draft):** packfile / full AWS SDK / write mount /
-bidirectional sync / **extract prune (`--delete`)** / remote scrub / byte-range
-resume / push listing upload. `extract` ≠ sync.
+**Still not this Phase:** full AWS SDK / multipart / packfile / write mount /
+bidirectional sync / **extract prune (`--delete`)** / video analysis / remote
+scrub / byte-range resume / push listing upload. `extract` ≠ sync.
 
 ```bash
+# Incremental extract smoke (or: bash scripts/demo_extract_skip.sh)
+cargo build -p chunkforge-cli
 bash scripts/demo_extract_skip.sh
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → dry-run glance
 
+# Optional loose HTTP wall-clock baseline:
 bash scripts/bench_loose_http.sh
 # optional: bash scripts/bench_loose_http.sh --also-jobs-4
+
+./target/debug/chunkforge --version   # → chunkforge 0.9.0
 ```
+
+Details: [docs/extract.md](docs/extract.md), [docs/perf.md](docs/perf.md),
+[docs/sigv4.md](docs/sigv4.md).
 
 ## Incremental dedup demo
 
