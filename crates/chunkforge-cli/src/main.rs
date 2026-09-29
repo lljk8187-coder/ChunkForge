@@ -17,7 +17,7 @@ use chunkforge_remote::{
 use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -313,16 +313,20 @@ enum Commands {
     /// it to the listing (right). Read-only: does **not** write store or `.cfdir`.
     ///
     /// Reports path-level **added** / **removed** / **changed** (content) /
-    /// **meta_changed** (same blake3, mode/mtime differ), then a stable summary
-    /// line on **stdout**:
+    /// **meta_changed** (same blake3, mode/mtime differ). Default **`--format
+    /// text`** (≡ 0.7.0): path lists (non-empty categories) plus a stable
+    /// summary line on **stdout**:
     /// `diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunks_only_left=… chunks_only_right=…`
-    /// Path lists are also on stdout (non-empty categories only). Exit **0** when
-    /// there are no path or chunk-set differences; exit **1** when any
-    /// added/removed/changed/meta_changed or chunks_only_left/right is non-zero.
-    /// Usage / decode errors use the usual non-zero clap/anyhow path.
-    /// See `docs/diff.md`.
+    /// **`--format json`**: one JSON object with the same path arrays and chunk
+    /// stats fields (full arrays; `--max-paths` applies to text listings only).
+    /// Exit codes are format-independent: **0** when identical, **1** when any
+    /// path or chunk-set difference; usage / decode errors use the usual
+    /// non-zero clap/anyhow path. See `docs/diff.md`.
     Diff {
-        /// Max paths to print per category (default: unlimited)
+        /// Output format: `text` (default ≡ 0.7.0 path lists + `diff:` summary) or `json`
+        #[arg(long = "format", value_enum, default_value_t = DiffFormat::Text)]
+        format: DiffFormat,
+        /// Max paths to print per category in text format (default: unlimited; ignored by json)
         #[arg(long = "max-paths", value_name = "N")]
         max_paths: Option<usize>,
         /// Source directory to compare as left (ephemeral DirArchive; no store/.cfdir writes)
@@ -359,6 +363,16 @@ enum StoreCommands {
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
     },
+}
+
+/// `diff --format` output mode (Phase 8 M4). Default `text` ≡ 0.7.0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum DiffFormat {
+    /// Path lists + `diff:` summary line (0.7.0 behaviour)
+    #[default]
+    Text,
+    /// Single JSON object with path arrays + chunk stats
+    Json,
 }
 
 /// Optional HTTP URL / header templates and retry knobs for `cat` / `verify` /
@@ -577,11 +591,12 @@ fn run() -> Result<()> {
             cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs)
         }
         Commands::Diff {
+            format,
             max_paths,
             tree,
             left,
             right,
-        } => cmd_diff_dispatch(tree.as_deref(), &left, right.as_deref(), max_paths),
+        } => cmd_diff_dispatch(tree.as_deref(), &left, right.as_deref(), max_paths, format),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -1373,6 +1388,54 @@ fn format_diff_summary(report: &DiffReport) -> String {
     )
 }
 
+/// Escape a string as a JSON string literal (including surrounding quotes).
+fn json_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_string_array(paths: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, path) in paths.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_escape_string(path));
+    }
+    out.push(']');
+    out
+}
+
+/// One JSON object aligned with the text `diff:` summary field names.
+fn format_diff_json(report: &DiffReport) -> String {
+    format!(
+        "{{\"added\":{},\"removed\":{},\"changed\":{},\"meta_changed\":{},\"chunks_shared\":{},\"chunks_only_left\":{},\"chunks_only_right\":{}}}",
+        json_string_array(&report.added),
+        json_string_array(&report.removed),
+        json_string_array(&report.changed),
+        json_string_array(&report.meta_changed),
+        report.chunks_shared,
+        report.chunks_only_left,
+        report.chunks_only_right,
+    )
+}
+
 fn print_diff_path_category(label: &str, paths: &[String], max_paths: Option<usize>) {
     if paths.is_empty() {
         return;
@@ -1389,23 +1452,38 @@ fn print_diff_path_category(label: &str, paths: &[String], max_paths: Option<usi
     }
 }
 
-fn emit_diff_report(report: &DiffReport, max_paths: Option<usize>) -> Result<()> {
-    print_diff_path_category("added", &report.added, max_paths);
-    print_diff_path_category("removed", &report.removed, max_paths);
-    print_diff_path_category("changed", &report.changed, max_paths);
-    print_diff_path_category("meta_changed", &report.meta_changed, max_paths);
-
-    let summary = format_diff_summary(report);
-    // Path lists + summary on stdout (documented in `diff --help` / docs/diff.md).
-    println!("{summary}");
-
+fn diff_has_differences(report: &DiffReport) -> bool {
     let has_path_diff = !(report.added.is_empty()
         && report.removed.is_empty()
         && report.changed.is_empty()
         && report.meta_changed.is_empty());
     let has_chunk_diff = report.chunks_only_left > 0 || report.chunks_only_right > 0;
-    if has_path_diff || has_chunk_diff {
+    has_path_diff || has_chunk_diff
+}
+
+fn emit_diff_report(
+    report: &DiffReport,
+    max_paths: Option<usize>,
+    format: DiffFormat,
+) -> Result<()> {
+    match format {
+        DiffFormat::Text => {
+            print_diff_path_category("added", &report.added, max_paths);
+            print_diff_path_category("removed", &report.removed, max_paths);
+            print_diff_path_category("changed", &report.changed, max_paths);
+            print_diff_path_category("meta_changed", &report.meta_changed, max_paths);
+            // Path lists + summary on stdout (documented in `diff --help` / docs/diff.md).
+            println!("{}", format_diff_summary(report));
+        }
+        DiffFormat::Json => {
+            // Full path arrays; `--max-paths` does not truncate JSON.
+            println!("{}", format_diff_json(report));
+        }
+    }
+
+    if diff_has_differences(report) {
         // Like diff(1): differences → exit 1 without an "error:" prefix.
+        // Exit code is independent of `--format`.
         std::process::exit(1);
     }
     Ok(())
@@ -1416,6 +1494,7 @@ fn cmd_diff_dispatch(
     left: &Path,
     right: Option<&Path>,
     max_paths: Option<usize>,
+    format: DiffFormat,
 ) -> Result<()> {
     match tree {
         Some(src_dir) => {
@@ -1425,7 +1504,7 @@ fn cmd_diff_dispatch(
                     extra.display()
                 );
             }
-            cmd_diff_tree(src_dir, left, max_paths)
+            cmd_diff_tree(src_dir, left, max_paths, format)
         }
         None => {
             let Some(right) = right else {
@@ -1439,20 +1518,30 @@ fn cmd_diff_dispatch(
                     "diff without --tree expects two `.cfdir` files; got a directory.                      Use: chunkforge diff --tree <src-dir> <listing.cfdir>"
                 );
             }
-            cmd_diff_listings(left, right, max_paths)
+            cmd_diff_listings(left, right, max_paths, format)
         }
     }
 }
 
-fn cmd_diff_listings(left: &Path, right: &Path, max_paths: Option<usize>) -> Result<()> {
+fn cmd_diff_listings(
+    left: &Path,
+    right: &Path,
+    max_paths: Option<usize>,
+    format: DiffFormat,
+) -> Result<()> {
     let left_arch = load_cfdir_for_diff(left)?;
     let right_arch = load_cfdir_for_diff(right)?;
     let report = diff_dir_archives(&left_arch, &right_arch);
-    emit_diff_report(&report, max_paths)
+    emit_diff_report(&report, max_paths, format)
 }
 
 /// Tree↔listing: left = ephemeral DirArchive from `src_dir`, right = listing.
-fn cmd_diff_tree(src_dir: &Path, listing: &Path, max_paths: Option<usize>) -> Result<()> {
+fn cmd_diff_tree(
+    src_dir: &Path,
+    listing: &Path,
+    max_paths: Option<usize>,
+    format: DiffFormat,
+) -> Result<()> {
     if !src_dir.is_dir() {
         bail!(
             "diff --tree source {} is not a directory (or is unreadable)",
@@ -1469,7 +1558,7 @@ fn cmd_diff_tree(src_dir: &Path, listing: &Path, max_paths: Option<usize>) -> Re
     let tree_arch = build_ephemeral_tree_archive(src_dir, &listing_arch)?;
     // Documented orientation: left=tree, right=listing.
     let report = diff_dir_archives(&tree_arch, &listing_arch);
-    emit_diff_report(&report, max_paths)
+    emit_diff_report(&report, max_paths, format)
 }
 
 /// Build an in-memory `DirArchive` from a source tree for `diff --tree`.

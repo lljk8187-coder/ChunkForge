@@ -4425,6 +4425,14 @@ fn diff_help_lists_max_paths_and_stdout_summary() {
         "diff --help should mention .cfdir:\n{s}"
     );
     assert!(s.contains("--tree"), "diff --help should list --tree:\n{s}");
+    assert!(
+        s.contains("--format"),
+        "diff --help should list --format:\n{s}"
+    );
+    assert!(
+        s.contains("json") || s.contains("text"),
+        "diff --help should mention text/json formats:\n{s}"
+    );
 }
 
 #[test]
@@ -4836,6 +4844,241 @@ fn diff_without_tree_rejects_bare_directory() {
     assert!(
         err.contains("--tree") || err.contains("directory"),
         "bare dir without --tree should error helpfully; stderr={err}"
+    );
+}
+
+// --- Phase 8 M4: diff --format json ---
+
+fn parse_diff_summary_counts(summary: &str) -> (usize, usize, usize, usize, usize, usize, usize) {
+    let mut added = None;
+    let mut removed = None;
+    let mut changed = None;
+    let mut meta_changed = None;
+    let mut chunks_shared = None;
+    let mut chunks_only_left = None;
+    let mut chunks_only_right = None;
+    let body = summary
+        .strip_prefix("diff: ")
+        .unwrap_or_else(|| panic!("expected diff: prefix; got {summary}"));
+    for part in body.split_whitespace() {
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        let n: usize = v
+            .parse()
+            .unwrap_or_else(|_| panic!("bad count {part} in {summary}"));
+        match k {
+            "added" => added = Some(n),
+            "removed" => removed = Some(n),
+            "changed" => changed = Some(n),
+            "meta_changed" => meta_changed = Some(n),
+            "chunks_shared" => chunks_shared = Some(n),
+            "chunks_only_left" => chunks_only_left = Some(n),
+            "chunks_only_right" => chunks_only_right = Some(n),
+            _ => {}
+        }
+    }
+    (
+        added.expect("added"),
+        removed.expect("removed"),
+        changed.expect("changed"),
+        meta_changed.expect("meta_changed"),
+        chunks_shared.expect("chunks_shared"),
+        chunks_only_left.expect("chunks_only_left"),
+        chunks_only_right.expect("chunks_only_right"),
+    )
+}
+
+fn parse_diff_json_counts(json: &str) -> (usize, usize, usize, usize, usize, usize, usize) {
+    let v: serde_json::Value = serde_json::from_str(json.trim())
+        .unwrap_or_else(|e| panic!("invalid json: {e}; body={json}"));
+    let arr_len = |key: &str| -> usize {
+        v.get(key)
+            .unwrap_or_else(|| panic!("missing {key} in {json}"))
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} must be array in {json}"))
+            .len()
+    };
+    let num = |key: &str| -> usize {
+        v.get(key)
+            .unwrap_or_else(|| panic!("missing {key} in {json}"))
+            .as_u64()
+            .unwrap_or_else(|| panic!("{key} must be number in {json}")) as usize
+    };
+    (
+        arr_len("added"),
+        arr_len("removed"),
+        arr_len("changed"),
+        arr_len("meta_changed"),
+        num("chunks_shared"),
+        num("chunks_only_left"),
+        num("chunks_only_right"),
+    )
+}
+
+#[test]
+fn diff_format_json_counts_match_text() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"hello-format-v1\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"shared-format\n").unwrap();
+    fs::write(src.join("c.txt"), b"will-remove\n").unwrap();
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Content change, add, remove.
+    fs::write(src.join("a.txt"), b"hello-format-v2\n").unwrap();
+    fs::write(src.join("new.txt"), b"brand-new\n").unwrap();
+    fs::remove_file(src.join("c.txt")).unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        "--seed",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let text_out = run_fail(&["diff", v1.to_str().unwrap(), v2.to_str().unwrap()]);
+    assert_eq!(text_out.status.code(), Some(1));
+    let text_stdout = String::from_utf8_lossy(&text_out.stdout);
+    let text_counts = parse_diff_summary_counts(parse_diff_summary(&text_stdout));
+
+    let json_out = run_fail(&[
+        "diff",
+        "--format",
+        "json",
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        json_out.status.code(),
+        Some(1),
+        "json format must keep exit 1 on differences; status={:?}",
+        json_out.status
+    );
+    let json_stdout = String::from_utf8_lossy(&json_out.stdout);
+    let json_counts = parse_diff_json_counts(&json_stdout);
+    assert_eq!(
+        text_counts, json_counts,
+        "text vs json counts mismatch\ntext={text_stdout}\njson={json_stdout}"
+    );
+    assert!(
+        text_counts.0 >= 1 && text_counts.1 >= 1 && text_counts.2 >= 1,
+        "fixture should exercise added/removed/changed; counts={text_counts:?}"
+    );
+
+    // Default (no --format) must match explicit --format text.
+    let default_out = run_fail(&["diff", v1.to_str().unwrap(), v2.to_str().unwrap()]);
+    let explicit_text = run_fail(&[
+        "diff",
+        "--format",
+        "text",
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        String::from_utf8_lossy(&default_out.stdout),
+        String::from_utf8_lossy(&explicit_text.stdout),
+        "default format must ≡ --format text"
+    );
+}
+
+#[test]
+fn diff_format_json_identical_exit_zero() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"same-format\n").unwrap();
+    let store = dir.path().join("store");
+    let left = dir.path().join("left.cfdir");
+    let right = dir.path().join("right.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        left.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        right.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "diff",
+        "--format",
+        "json",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let counts = parse_diff_json_counts(&stdout);
+    assert_eq!(counts.0, 0);
+    assert_eq!(counts.1, 0);
+    assert_eq!(counts.2, 0);
+    assert_eq!(counts.3, 0);
+    assert_eq!(counts.5, 0);
+    assert_eq!(counts.6, 0);
+    assert!(counts.4 >= 1, "expected shared chunks; stdout={stdout}");
+}
+
+#[test]
+fn diff_format_json_still_rejects_cfidx() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("single.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let fail = run_fail(&[
+        "diff",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx") || err.contains("cfdir"),
+        "json format must still reject .cfidx; stderr={err}"
     );
 }
 

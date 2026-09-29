@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`diff --format text|json`** (Phase 8 M4 / G5): default **`text`** ≡ 0.7.0
+  path lists + `diff:` summary; **`json`** emits one object with stable
+  `added` / `removed` / `changed` / `meta_changed` arrays plus
+  `chunks_shared` / `chunks_only_left` / `chunks_only_right`. Exit codes
+  unchanged and format-independent. See `docs/diff.md`.
+
 - **HTTP error classification** (Phase 8 M3): `ErrorClass` + `classify_http_status` /
   `classify_source_error` / `classify_sink_error` in `chunkforge-remote` (no
   `ChunkSource`/`ChunkSink` signature change). push/pull summaries add

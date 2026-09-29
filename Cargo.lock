@@ -159,6 +159,7 @@ dependencies = [
  "chunkforge-remote",
  "chunkforge-store",
  "clap",
+ "serde_json",
  "tempfile",
  "tiny_http",
  "ureq",

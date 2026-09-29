@@ -3,13 +3,14 @@
 Compare two directory listings (`.cfdir`), or a live source tree against a
 listing (`--tree`). **Read-only**: never writes a local store or a `.cfdir`.
 
-Phase 7. See also [`doctor-gc.md`](doctor-gc.md) for presence / GC tooling, and
-[`dir-format.md`](dir-format.md) for `.cfdir` layout.
+Phase 7 (+ Phase 8 `--format json`). See also [`doctor-gc.md`](doctor-gc.md)
+for presence / GC tooling, and [`dir-format.md`](dir-format.md) for `.cfdir`
+layout.
 
 ## Listing ↔ listing
 
 ```bash
-chunkforge diff [--max-paths N] left.cfdir right.cfdir
+chunkforge diff [--format text|json] [--max-paths N] left.cfdir right.cfdir
 ```
 
 - Both arguments must be **`.cfdir`** files (`.cfidx` / bad magic → error).
@@ -36,9 +37,9 @@ each side (`all_chunk_ids`):
 ## Tree ↔ listing (`--tree`)
 
 ```bash
-chunkforge diff --tree <src-dir> [--max-paths N] <listing.cfdir>
+chunkforge diff --tree <src-dir> [--format text|json] [--max-paths N] <listing.cfdir>
 # or:
-chunkforge diff [--max-paths N] --tree <src-dir> <listing.cfdir>
+chunkforge diff [--format text|json] [--max-paths N] --tree <src-dir> <listing.cfdir>
 ```
 
 - Exactly **one** source directory (`--tree <src-dir>`) and **one** listing
@@ -62,7 +63,10 @@ chunkforge diff [--max-paths N] --tree <src-dir> <listing.cfdir>
 
 ## Output
 
-Non-empty path categories print on **stdout** (sorted paths):
+### `--format text` (default ≡ 0.7.0)
+
+Omitting `--format` or passing `--format text` preserves the 0.7.0 text path:
+non-empty path categories on **stdout** (sorted paths), then the summary line:
 
 ```text
 added:
@@ -78,15 +82,44 @@ The last line is the stable, machine-parseable summary (exact field names):
 diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunks_only_left=… chunks_only_right=…
 ```
 
-`--max-paths N` truncates each category listing after N paths (prints
+`--max-paths N` truncates each **text** category listing after N paths (prints
 `... and K more`); **summary counts stay full**.
+
+### `--format json` (Phase 8)
+
+One JSON object on stdout (single line). Field names are stable and match the
+text summary semantics:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `added` | string array | Paths in right, not in left (sorted) |
+| `removed` | string array | Paths in left, not in right (sorted) |
+| `changed` | string array | Same path; content differs |
+| `meta_changed` | string array | Same path; same blake3; mode/mtime differ |
+| `chunks_shared` | number | Unique chunk ids in both |
+| `chunks_only_left` | number | Unique chunk ids only in left |
+| `chunks_only_right` | number | Unique chunk ids only in right |
+
+Example:
+
+```bash
+chunkforge diff --format json v1.cfdir v2.cfdir || true
+```
+
+```json
+{"added":["new.txt"],"removed":[],"changed":["a.txt"],"meta_changed":[],"chunks_shared":2,"chunks_only_left":0,"chunks_only_right":1}
+```
+
+JSON always emits **full** path arrays (`--max-paths` does not truncate JSON).
+Array lengths equal the corresponding `added=` / `removed=` / … counts in the
+text summary for the same two inputs.
 
 ## Exit codes
 
 | Code | When |
 |---|---|
 | **0** | No path differences and no `chunks_only_left` / `chunks_only_right` |
-| **1** | Any added / removed / changed / meta_changed, or either chunks_only_* > 0 (like `diff(1)`; no `error:` prefix) |
+| **1** | Any added / removed / changed / meta_changed, or either chunks_only_* > 0 (like `diff(1)`; no `error:` prefix). **Independent of `--format`.** |
 | **non-zero (≠1)** | Usage / decode / I/O errors (clap / anyhow) |
 
 ## Responsibility table
