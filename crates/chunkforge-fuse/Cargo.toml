@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Read-only single-blob FUSE filesystem for ChunkForge indexes"
+description = "Read-only FUSE filesystems for ChunkForge (.cfidx blob + .cfdir tree)"
 readme = false
 
 [features]

@@ -1,12 +1,12 @@
-//! Read-only single-blob FUSE filesystem for ChunkForge.
+//! Read-only FUSE filesystems for ChunkForge.
 //!
-//! Phase 2 M4: given a `.cfidx` [`Index`] and a [`ChunkSource`], present **one**
-//! virtual regular file under the mount root. Kernel mounts are forced
-//! [`MountOption::RO`]; write-side FUSE ops return `EROFS` / `EACCES`.
+//! - [`BlobFs`]: single-blob mount from a `.cfidx` [`Index`] (Phase 2)
+//! - [`DirFs`]: directory-tree mount from a `.cfdir` [`DirArchive`] (Phase 5 M4)
 //!
-//! This crate is a **library** only — the CLI `mount` subcommand is M5.
+//! Kernel mounts are forced [`MountOption::RO`]; write-side FUSE ops return
+//! `EROFS` / `EACCES`.
 //!
-//! # Layout
+//! # Layout (BlobFs)
 //!
 //! - Root directory inode = [`ROOT_INO`] (1)
 //! - Blob file inode = [`FILE_INO`] (2), size = `index.total_size`
@@ -14,18 +14,21 @@
 //!
 //! # Testing without `/dev/fuse`
 //!
-//! [`BlobFs::read_at`] / [`read_range`] exercise the offset→chunk→splice path
-//! with an in-memory [`ChunkSource`]. Real mount tests are `#[ignore]`.
+//! [`BlobFs::read_at`] / [`read_range`] / [`DirFs::read_at_path`] /
+//! [`DirFs::lookup_path`] exercise the offset→chunk→splice path with an
+//! in-memory [`ChunkSource`]. Real mount tests are `#[ignore]`.
 
+mod dir_fs;
 mod fs;
 mod mount;
 mod read;
 
+pub use dir_fs::{DirFs, DirFsError};
 pub use fs::{BlobFs, FILE_INO, ROOT_INO};
 pub use mount::{mount_options, mount_ro};
-pub use read::read_range;
+pub use read::{read_entries, read_range};
 
-pub use chunkforge_index::Index;
+pub use chunkforge_index::{DirArchive, Index};
 pub use chunkforge_store::{ChunkSource, SourceError};
 pub use fuser::{Filesystem, MountOption};
 
@@ -51,7 +54,7 @@ pub fn default_blob_name(index_path: &Path) -> String {
 mod tests {
     use super::*;
     use chunkforge_chunk::{ChunkId, ChunkParams};
-    use chunkforge_index::IndexEntry;
+    use chunkforge_index::{DirEntry, DirEntryKind, IndexEntry};
     use chunkforge_store::SourceError;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -103,6 +106,26 @@ mod tests {
         )
         .unwrap();
         (index, src)
+    }
+
+    /// Split `data` into chunks at `cuts`, store in `src`, return chunk table.
+    fn chunks_from_cuts(data: &[u8], cuts: &[usize], src: &mut MemSource) -> Vec<IndexEntry> {
+        assert!(!cuts.is_empty());
+        assert_eq!(*cuts.last().unwrap(), data.len());
+        let mut entries = Vec::new();
+        let mut prev = 0usize;
+        for &end in cuts {
+            assert!(end > prev);
+            let slice = &data[prev..end];
+            let id = ChunkId::hash(slice);
+            src.chunks.insert(id, slice.to_vec());
+            entries.push(IndexEntry {
+                end_offset: end as u64,
+                chunk_id: id,
+            });
+            prev = end;
+        }
+        entries
     }
 
     fn hello_bytes() -> Vec<u8> {
@@ -262,6 +285,215 @@ mod tests {
         assert_eq!(got, data);
 
         let write_err = fs::write(&file, b"x");
+        assert!(write_err.is_err(), "write should fail on RO mount");
+
+        let _ = Command::new("fusermount3").args(["-u"]).arg(&mnt).status();
+        let _ = Command::new("fusermount").args(["-u"]).arg(&mnt).status();
+        let _ = handle.join();
+    }
+
+    // --- Phase 5 M4: DirFs ---
+
+    fn sample_tree() -> (DirArchive, MemSource, Vec<u8>, Vec<u8>) {
+        let a = b"hello-tree-root\n".to_vec();
+        let b = hello_bytes();
+        let mut src = MemSource::default();
+        let a_chunks = chunks_from_cuts(&a, &[a.len()], &mut src);
+        // Multi-chunk nested file.
+        let cuts = vec![3usize, 7, 12, b.len()];
+        let b_chunks = chunks_from_cuts(&b, &cuts, &mut src);
+
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "a.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: a.len() as u64,
+                        mtime_secs: 1_700_000_000,
+                        blob_blake3: ChunkId::hash(&a),
+                        chunks: a_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "sub/b.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o600,
+                        size: b.len() as u64,
+                        mtime_secs: 1_700_000_001,
+                        blob_blake3: ChunkId::hash(&b),
+                        chunks: b_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "sub/empty-dir".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "sub/nested/c.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: 0,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(b""),
+                        chunks: vec![],
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        (arch, src, a, b)
+    }
+
+    #[test]
+    fn dir_fs_lookup_nested_paths() {
+        let (arch, src, _, _) = sample_tree();
+        let fs = DirFs::new(arch, src);
+
+        assert!(fs.lookup_path("").is_some());
+        assert!(fs.lookup_path(".").is_some());
+        assert!(fs.is_dir_path(""));
+        assert!(fs.is_file_path("a.txt"));
+        assert!(fs.is_dir_path("sub"));
+        assert!(fs.is_file_path("sub/b.txt"));
+        assert!(fs.is_dir_path("sub/empty-dir"));
+        assert!(fs.is_dir_path("sub/nested"));
+        assert!(fs.is_file_path("sub/nested/c.txt"));
+
+        assert!(fs.lookup_path("missing").is_none());
+        assert!(fs.lookup_path("sub/missing").is_none());
+        assert!(fs.lookup_path("a.txt/nope").is_none());
+        assert!(fs.lookup_path("..").is_none());
+        assert!(fs.lookup_path("sub/../a.txt").is_none());
+    }
+
+    #[test]
+    fn dir_fs_readdir_root_and_sub() {
+        let (arch, src, _, _) = sample_tree();
+        let fs = DirFs::new(arch, src);
+
+        let root = fs.readdir_path("").unwrap();
+        let names: Vec<_> = root.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["a.txt", "sub"]);
+        assert!(!root[0].1); // a.txt is file
+        assert!(root[1].1); // sub is dir
+
+        let sub = fs.readdir_path("sub").unwrap();
+        let names: Vec<_> = sub.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["b.txt", "empty-dir", "nested"]);
+
+        let err = fs.readdir_path("nope").unwrap_err();
+        assert!(matches!(err, DirFsError::NotFound));
+        let err = fs.readdir_path("a.txt").unwrap_err();
+        assert!(matches!(err, DirFsError::NotADirectory));
+    }
+
+    #[test]
+    fn dir_fs_read_at_path_nested_and_enoent() {
+        let (arch, src, a, b) = sample_tree();
+        let fs = DirFs::new(arch, src);
+
+        assert_eq!(fs.read_at_path("a.txt", 0, 64).unwrap(), a);
+        assert_eq!(fs.read_at_path("sub/b.txt", 0, 64).unwrap(), b);
+        assert_eq!(fs.read_at_path("sub/b.txt", 6, 5).unwrap(), &b[6..11]);
+        assert!(
+            fs.read_at_path("sub/nested/c.txt", 0, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Multi-chunk splice across cuts on b.txt
+        for off in [0u64, 1, 3, 7, 12] {
+            for len in [1u32, 4, 17, 64] {
+                let got = fs.read_at_path("sub/b.txt", off, len).unwrap();
+                let end = ((off as usize) + len as usize).min(b.len());
+                let start = (off as usize).min(b.len());
+                assert_eq!(&got[..], &b[start..end], "off={off} len={len}");
+            }
+        }
+
+        let err = fs.read_at_path("missing", 0, 10).unwrap_err();
+        assert!(matches!(err, DirFsError::NotFound));
+        let err = fs.read_at_path("sub/nope", 0, 10).unwrap_err();
+        assert!(matches!(err, DirFsError::NotFound));
+        let err = fs.read_at_path("sub", 0, 10).unwrap_err();
+        assert!(matches!(err, DirFsError::IsDirectory));
+    }
+
+    #[test]
+    fn dir_fs_synthesizes_parent_dirs_from_file_prefixes() {
+        // Archive lists only files — no explicit Dir entries.
+        let data = b"deep-file\n";
+        let mut src = MemSource::default();
+        let chunks = chunks_from_cuts(data, &[data.len()], &mut src);
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "x/y/z.txt".into(),
+                kind: DirEntryKind::File {
+                    mode: 0o644,
+                    size: data.len() as u64,
+                    mtime_secs: 0,
+                    blob_blake3: ChunkId::hash(data),
+                    chunks,
+                },
+            }],
+        )
+        .unwrap();
+        let fs = DirFs::new(arch, src);
+        assert!(fs.is_dir_path("x"));
+        assert!(fs.is_dir_path("x/y"));
+        assert!(fs.is_file_path("x/y/z.txt"));
+        assert_eq!(fs.read_at_path("x/y/z.txt", 0, 32).unwrap(), data);
+        let kids = fs.readdir_path("x/y").unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].0, "z.txt");
+    }
+
+    /// Real DirFs FUSE mount — needs fuse3 + /dev/fuse; skipped by default.
+    #[test]
+    #[ignore = "requires fuse3 + /dev/fuse; run with --ignored when available"]
+    fn real_mount_dir_fs_cmp() {
+        use std::fs;
+        use std::process::Command;
+        use std::thread;
+        use std::time::Duration;
+        use tempfile::tempdir;
+
+        let (arch, src, a, b) = sample_tree();
+        let fs = DirFs::new(arch, src);
+
+        let dir = tempdir().unwrap();
+        let mnt = dir.path().join("mnt");
+        fs::create_dir(&mnt).unwrap();
+
+        let mnt2 = mnt.clone();
+        let handle = thread::spawn(move || {
+            let _ = mount_ro(
+                fs,
+                &mnt2,
+                [
+                    MountOption::FSName("chunkforge-dir-test".into()),
+                    MountOption::AutoUnmount,
+                ],
+            );
+        });
+
+        let a_path = mnt.join("a.txt");
+        for _ in 0..50 {
+            if a_path.is_file() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(a_path.is_file(), "mount did not appear");
+        assert_eq!(fs::read(&a_path).unwrap(), a);
+        assert_eq!(fs::read(mnt.join("sub/b.txt")).unwrap(), b);
+        assert!(mnt.join("sub/empty-dir").is_dir());
+        assert_eq!(fs::read(mnt.join("sub/nested/c.txt")).unwrap(), b"");
+
+        let write_err = fs::write(&a_path, b"x");
         assert!(write_err.is_err(), "write should fail on RO mount");
 
         let _ = Command::new("fusermount3").args(["-u"]).arg(&mnt).status();

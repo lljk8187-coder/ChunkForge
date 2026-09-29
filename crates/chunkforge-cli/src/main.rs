@@ -152,7 +152,7 @@ enum Commands {
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
     },
-    /// Mount a .cfidx as a single read-only virtual file (Linux + fuse3)
+    /// Mount a `.cfidx` (single file) or `.cfdir` (directory tree) read-only (Linux + fuse3)
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Mount {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -166,10 +166,10 @@ enum Commands {
         cache: Option<PathBuf>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
-        /// Override the virtual file name (default: index stem without `.cfidx`)
+        /// Override the virtual file name for `.cfidx` mounts (default: stem without `.cfidx`; ignored for `.cfdir`)
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Input .cfidx
+        /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
         /// Empty directory to mount onto
         mountpoint: PathBuf,
@@ -1800,7 +1800,7 @@ fn cmd_mount_fuse(
     mountpoint: &Path,
     name: Option<&str>,
 ) -> Result<()> {
-    use chunkforge_fuse::{BlobFs, MountOption, default_blob_name, mount_ro};
+    use chunkforge_fuse::{BlobFs, DirFs, MountOption, default_blob_name, mount_ro};
 
     if !mountpoint.exists() {
         bail!(
@@ -1812,36 +1812,55 @@ fn cmd_mount_fuse(
         bail!("mountpoint {} is not a directory", mountpoint.display());
     }
 
-    let blob_name = match name {
-        Some(n) => {
-            if n.is_empty() || n.contains('/') || n.contains('\\') {
-                bail!("invalid --name {n:?}: must be a single non-empty path component");
-            }
-            n.to_string()
+    let opts = [
+        MountOption::FSName("chunkforge".into()),
+        MountOption::AutoUnmount,
+        MountOption::DefaultPermissions,
+    ];
+
+    match peek_listing_kind(index_path)? {
+        ListingKind::Index => {
+            let blob_name = match name {
+                Some(n) => {
+                    if n.is_empty() || n.contains('/') || n.contains('\\') {
+                        bail!("invalid --name {n:?}: must be a single non-empty path component");
+                    }
+                    n.to_string()
+                }
+                None => default_blob_name(index_path),
+            };
+
+            let index = load_index(index_path)?;
+            let fs = BlobFs::new(index, source, blob_name.clone());
+
+            eprintln!(
+                "mount: {} → {}/{} (read-only; Ctrl-C or fusermount3 -u to unmount)",
+                index_path.display(),
+                mountpoint.display(),
+                blob_name
+            );
+
+            mount_ro(fs, mountpoint, opts).map_err(explain_fuse_mount_error)?;
         }
-        None => default_blob_name(index_path),
-    };
+        ListingKind::DirArchive => {
+            if name.is_some() {
+                eprintln!(
+                    "warning: --name is ignored for `.cfdir` directory mounts ({})",
+                    index_path.display()
+                );
+            }
+            let archive = load_dir_archive(index_path)?;
+            let fs = DirFs::new(archive, source);
 
-    let index = load_index(index_path)?;
-    let fs = BlobFs::new(index, source, blob_name.clone());
+            eprintln!(
+                "mount: {} → {}/ (directory tree, read-only; Ctrl-C or fusermount3 -u to unmount)",
+                index_path.display(),
+                mountpoint.display()
+            );
 
-    eprintln!(
-        "mount: {} → {}/{} (read-only; Ctrl-C or fusermount3 -u to unmount)",
-        index_path.display(),
-        mountpoint.display(),
-        blob_name
-    );
-
-    mount_ro(
-        fs,
-        mountpoint,
-        [
-            MountOption::FSName("chunkforge".into()),
-            MountOption::AutoUnmount,
-            MountOption::DefaultPermissions,
-        ],
-    )
-    .map_err(explain_fuse_mount_error)?;
+            mount_ro(fs, mountpoint, opts).map_err(explain_fuse_mount_error)?;
+        }
+    }
 
     Ok(())
 }

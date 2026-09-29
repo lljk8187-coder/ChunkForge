@@ -1,8 +1,6 @@
 //! Mount helpers with [`MountOption::RO`] hard-coded.
 
-use crate::fs::BlobFs;
-use chunkforge_store::ChunkSource;
-use fuser::{MountOption, mount2};
+use fuser::{Filesystem, MountOption, mount2};
 use std::io;
 use std::path::Path;
 
@@ -31,17 +29,19 @@ pub fn mount_options(extra: impl IntoIterator<Item = MountOption>) -> Vec<MountO
     opts
 }
 
-/// Mount `fs` at `mountpoint` with read-only options (blocks until unmount).
+/// Mount any FUSE [`Filesystem`] at `mountpoint` with read-only options (blocks until unmount).
 ///
 /// Always injects [`MountOption::RO`]. Requires a working FUSE stack (`fuse3`,
 /// `/dev/fuse`) at runtime; library unit tests do not call this.
-pub fn mount_ro<S>(
-    fs: BlobFs<S>,
+///
+/// Accepts [`crate::BlobFs`] or [`crate::DirFs`] (or any other [`Filesystem`]).
+pub fn mount_ro<FS>(
+    fs: FS,
     mountpoint: impl AsRef<Path>,
     extra: impl IntoIterator<Item = MountOption>,
 ) -> io::Result<()>
 where
-    S: ChunkSource + 'static,
+    FS: Filesystem,
 {
     let opts = mount_options(extra);
     debug_assert!(

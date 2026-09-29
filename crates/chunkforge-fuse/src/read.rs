@@ -1,6 +1,6 @@
 //! Map blob byte ranges onto index entries and fetch plaintext from a [`ChunkSource`].
 
-use chunkforge_index::{Index, entry_length};
+use chunkforge_index::{Index, IndexEntry, entry_length};
 use chunkforge_store::{ChunkSource, SourceError};
 
 /// Read up to `size` bytes starting at `offset` from the logical blob described by `index`.
@@ -14,15 +14,26 @@ pub fn read_range(
     offset: u64,
     size: u32,
 ) -> Result<Vec<u8>, SourceError> {
-    if size == 0 || offset >= index.total_size {
+    read_entries(&index.entries, index.total_size, source, offset, size)
+}
+
+/// Same as [`read_range`], but operates on a bare chunk table + size (e.g. a `.cfdir` file entry).
+pub fn read_entries(
+    entries: &[IndexEntry],
+    total_size: u64,
+    source: &dyn ChunkSource,
+    offset: u64,
+    size: u32,
+) -> Result<Vec<u8>, SourceError> {
+    if size == 0 || offset >= total_size {
         return Ok(Vec::new());
     }
 
-    let want_end = offset.saturating_add(u64::from(size)).min(index.total_size);
+    let want_end = offset.saturating_add(u64::from(size)).min(total_size);
     let mut out = Vec::with_capacity((want_end - offset) as usize);
     let mut chunk_start = 0u64;
 
-    for (i, entry) in index.entries.iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate() {
         let chunk_end = entry.end_offset;
         if chunk_end <= offset {
             chunk_start = chunk_end;
@@ -33,7 +44,7 @@ pub fn read_range(
         }
 
         let plain = source.get(&entry.chunk_id)?;
-        let expected = entry_length(&index.entries, i).expect("entry index in range");
+        let expected = entry_length(entries, i).expect("entry index in range");
         if plain.len() as u64 != expected {
             return Err(SourceError::Backend(format!(
                 "chunk {} length mismatch: got {}, expected {expected}",
