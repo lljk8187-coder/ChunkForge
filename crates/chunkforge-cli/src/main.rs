@@ -11,8 +11,8 @@ use chunkforge_index::{
     validate_archive_path,
 };
 use chunkforge_remote::{
-    FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SummaryFailureBucket,
-    classify_sink_error, classify_source_error,
+    FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
+    SummaryFailureBucket, classify_sink_error, classify_source_error,
 };
 use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
@@ -378,9 +378,9 @@ enum DiffFormat {
 /// Optional HTTP URL / header templates and retry knobs for `cat` / `verify` /
 /// `mount` / `doctor` / `push` / `pull` / `extract`.
 ///
-/// Template flags (`--url-template` / `--prefix` / `--header`) are only meaningful
-/// with an `http(s)://` `--source` / `--dest`. Omitting them preserves the Phase 2
-/// default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
+/// Template flags (`--url-template` / `--prefix` / `--header`) and `--aws-sigv4`
+/// are only meaningful with an `http(s)://` `--source` / `--dest`. Omitting them
+/// preserves the Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
 ///
 /// `--http-retries` / `--http-retry-backoff-ms` apply only to HTTP(S) origins;
 /// local `--store` / `file://` paths ignore them (no-op).
@@ -409,6 +409,13 @@ struct HttpTemplateArgs {
         value_name = "MS"
     )]
     http_retry_backoff_ms: u64,
+    /// Sign HTTP GET/HEAD/PUT with AWS SigV4 (AWS4-HMAC-SHA256). Default **off**
+    /// ≡ 0.7.0 (no SigV4 headers). Credentials from env only:
+    /// `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (required when set);
+    /// optional `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` with a
+    /// warning). Conflicts with `--header Authorization:…`. See `docs/sigv4.md`.
+    #[arg(long = "aws-sigv4", default_value_t = false)]
+    aws_sigv4: bool,
 }
 
 impl Default for HttpTemplateArgs {
@@ -419,6 +426,7 @@ impl Default for HttpTemplateArgs {
             headers: Vec::new(),
             http_retries: 0,
             http_retry_backoff_ms: 100,
+            aws_sigv4: false,
         }
     }
 }
@@ -676,7 +684,10 @@ fn open_chunk_source(
 }
 
 fn http_template_flags_set(http_tmpl: &HttpTemplateArgs) -> bool {
-    http_tmpl.url_template.is_some() || http_tmpl.prefix.is_some() || !http_tmpl.headers.is_empty()
+    http_tmpl.url_template.is_some()
+        || http_tmpl.prefix.is_some()
+        || !http_tmpl.headers.is_empty()
+        || http_tmpl.aws_sigv4
 }
 
 /// Build a [`RetryPolicy`] from CLI HTTP retry flags.
@@ -690,6 +701,32 @@ fn retry_policy_from_http_args(http_tmpl: &HttpTemplateArgs) -> RetryPolicy {
         base_backoff: Duration::from_millis(http_tmpl.http_retry_backoff_ms),
         max_backoff: Duration::from_secs(2),
     }
+}
+
+/// Build an optional [`SigV4Signer`] from `--aws-sigv4` + env credentials.
+///
+/// Returns `None` when the flag is off. Errors clearly when the flag is on but
+/// credentials are missing, or when an `Authorization` header is also set.
+fn sigv4_signer_from_http_args(http_tmpl: &HttpTemplateArgs) -> Result<Option<SigV4Signer>> {
+    if !http_tmpl.aws_sigv4 {
+        return Ok(None);
+    }
+    for raw in &http_tmpl.headers {
+        let (name, _) = parse_header_flag(raw)?;
+        if name.eq_ignore_ascii_case("Authorization") {
+            bail!(
+                "--aws-sigv4 conflicts with --header Authorization:…;                  omit the Authorization header or disable --aws-sigv4"
+            );
+        }
+    }
+    let (config, region_defaulted) = SigV4Config::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if region_defaulted {
+        eprintln!(
+            "warning: AWS_REGION unset; defaulting SigV4 region to {}              (set AWS_REGION to silence this warning)",
+            config.region
+        );
+    }
+    Ok(Some(SigV4Signer::new(config)))
 }
 
 /// Parse `--header 'Name: value-template'` into (name, value_template).
@@ -711,7 +748,7 @@ fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<d
 
     if !is_http && http_template_flags_set(http_tmpl) {
         bail!(
-            "--url-template / --prefix / --header apply only to http(s):// sources;              got non-HTTP source {trimmed:?}"
+            "--url-template / --prefix / --header / --aws-sigv4 apply only to http(s):// sources;              got non-HTTP source {trimmed:?}"
         );
     }
 
@@ -728,6 +765,9 @@ fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<d
         for raw in &http_tmpl.headers {
             let (name, value_tmpl) = parse_header_flag(raw)?;
             builder = builder.header(name, value_tmpl);
+        }
+        if let Some(signer) = sigv4_signer_from_http_args(http_tmpl)? {
+            builder = builder.aws_sigv4(signer);
         }
         let src = builder.build().context("build HTTP chunk source")?;
         return Ok(Box::new(src));
@@ -2428,6 +2468,9 @@ fn open_http_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Http
     for raw in &http_tmpl.headers {
         let (name, value_tmpl) = parse_header_flag(raw)?;
         builder = builder.header(name, value_tmpl);
+    }
+    if let Some(signer) = sigv4_signer_from_http_args(http_tmpl)? {
+        builder = builder.aws_sigv4(signer);
     }
     builder.build().context("build HTTP chunk sink")
 }

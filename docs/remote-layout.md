@@ -6,7 +6,8 @@ A static HTTP directory of an existing store root is a valid chunk source; so is
 
 Phase 3 extends `HttpChunkSource` with **URL / header templates** and an optional
 **key prefix** so object-store–friendly read paths (MinIO, R2, S3 public/CDN,
-path-style endpoints) work **without** an AWS SDK or in-process SigV4.
+path-style endpoints) work **without** an AWS SDK. Phase 8 adds optional
+**in-process SigV4** (`--aws-sigv4`; default off) — see [sigv4.md](sigv4.md).
 
 Phase 4 adds the symmetric write face: `HttpChunkSink` issues **single-object PUT**
 (optional POST) to the **same expanded URL** a GET would use, so
@@ -51,7 +52,8 @@ trailing `/` from `{base}` before expansion.
 > **CLI note:** `cat` / `verify` / `mount` / `doctor` / `push` / `pull` / `extract`
 > accept `--url-template` / `--prefix` / `--header` for `http(s)://` sources
 > (Phase 3+), plus `--http-retries` / `--http-retry-backoff-ms` (Phase 8; default
-> retries **0**). Non-HTTP sources reject template flags; retry flags are ignored.
+> retries **0**) and optional `--aws-sigv4` (Phase 8 P1; default **off**).
+> Non-HTTP sources reject template / SigV4 flags; retry flags are ignored for local origins.
 
 ## HTTP chunk URL (default ≡ Phase 2)
 
@@ -206,7 +208,7 @@ template = {base}/{prefix}{path}
 No code branch distinguishes path-style vs virtual-host — only the strings you
 pass as `base` / `prefix` / `url_template`.
 
-### Auth patterns that Phase 3 supports
+### Auth patterns
 
 1. **Public read / CDN / static site** — no headers (same as Phase 2).
 2. **Fixed header auth** — e.g. `Authorization: Bearer {env:TOKEN}` or a
@@ -214,7 +216,10 @@ pass as `base` / `prefix` / `url_template`.
 3. **Presigned query in the URL template** — you may embed query parameters in
    `url_template`; they are preserved literally aside from placeholder
    expansion. **Per-object signatures that differ for every key are not
-   auto-generated** (out of scope).
+   auto-generated** by the template engine alone.
+4. **In-process SigV4** (Phase 8 P1) — `--aws-sigv4` + env credentials; signs
+   GET/HEAD/PUT with AWS4-HMAC-SHA256. Default **off**. Conflicts with
+   `--header Authorization:…`. Details: [sigv4.md](sigv4.md).
 
 ## HTTP chunk PUT (Phase 4)
 
@@ -267,16 +272,16 @@ chunkforge verify --source http://127.0.0.1:8766 hello.cfidx
 Full smoke: [`scripts/demo_push.sh`](../scripts/demo_push.sh) / `make demo-push`.
 Details: [push.md](push.md).
 
-## Explicit non-goals (this layout / Phase 3–4)
+## Explicit non-goals (this layout / Phase 3–8)
 
 | Non-goal | Status |
 |---|---|
-| ❌ **`aws-sdk-*` / `aws-config` / ListObjects** | Forbidden — dependency surface stays `ureq` |
-| ❌ **In-process SigV4** (even GET-only HMAC) | Not in Phase 3; use external presign or header templates |
-| ❌ **S3 multipart upload API** | No Initiate/UploadPart/Complete; Phase 4 uses **per-chunk single PUT** only |
+| ❌ **`aws-sdk-*` / `aws-config` / `aws-smithy-*` / ListObjects** | Forbidden — HTTP stays **ureq**; SigV4 is a small HMAC helper |
+| ❌ **Full credential provider chain** | Env vars only (`AWS_ACCESS_KEY_ID` / …); no IMDS / SSO / shared files |
+| ❌ **S3 multipart upload API** | No Initiate/UploadPart/Complete; **per-chunk single PUT** only |
 | ❌ **Remote GC / bucket lifecycle** | Local `chunkforge gc` only touches a local store |
-| ❌ **Auto batch-presign every chunk** | Static URL template only |
-| ❌ **In-process SigV4 for PUT** | Same as GET — header templates / external presign / open endpoints |
+| ❌ **Auto batch-presign every chunk** | Static URL template only; or use `--aws-sigv4` for in-process signing |
+| ❌ **`UNSIGNED-PAYLOAD` / chunked streaming signing** | Always `hex(SHA256(body))` |
 
 ## `file://` (`FileUrlSource`)
 
@@ -295,6 +300,7 @@ let bytes = src.get(&chunk_id)?;
 
 - CLI `--url-template` / `--prefix` / `--header` on `cat` / `verify` / `mount` / `doctor` (Phase 3) and **`push`** (Phase 4); `pull` / `extract` share the same template flags
 - `--http-retries N` / `--http-retry-backoff-ms` (Phase 8): bounded retries for transient HTTP failures (default **0** ≡ single attempt); local `--store` / `file://` ignore them
+- `--aws-sigv4` (Phase 8 P1): optional AWS4-HMAC-SHA256; default **off**; see [sigv4.md](sigv4.md)
 - Error classification + push/pull `failed_transient=` / `failed_permanent=` — see [http-retry.md](http-retry.md)
 - `chunkforge push` — per-chunk PUT with optional `--jobs` concurrency; see [push.md](push.md)
 - `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
@@ -303,5 +309,7 @@ let bytes = src.get(&chunk_id)?;
 ## Still out of scope
 
 - Mixed compression over HTTP; byte-range / partial-chunk retries (Phase 8 retries **whole chunks** only)
-- In-process SigV4, `aws-sdk-*`, S3 multipart upload API, remote GC (see non-goals above)
+- `aws-sdk-*` / full credential chain / S3 multipart / ListObjects / remote GC (see non-goals above)
 - Uploading `.cfidx` into the chunk object layout (indexes stay out-of-band)
+
+Minimal **in-process SigV4** is delivered as Phase 8 P1 (`--aws-sigv4`, default off) — see [sigv4.md](sigv4.md).

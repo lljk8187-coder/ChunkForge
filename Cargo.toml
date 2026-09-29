@@ -29,3 +29,5 @@ chunkforge-remote = { path = "crates/chunkforge-remote" }
 chunkforge-fuse = { path = "crates/chunkforge-fuse" }
 ureq = "3"
 tiny_http = "0.12"
+hmac = "0.12"
+sha2 = "0.10"

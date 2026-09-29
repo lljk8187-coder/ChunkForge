@@ -1,8 +1,11 @@
 //! HTTP chunk-directory [`ChunkSink`] (PUT), isomorphic with [`crate::HttpChunkSource`].
 
 use crate::endpoint::HttpEndpoint;
-use crate::http::DEFAULT_URL_TEMPLATE;
+use crate::http::{
+    DEFAULT_URL_TEMPLATE, HttpBuildError, check_sigv4_auth_conflict, headers_with_sigv4,
+};
 use crate::retry::{Attempt, RetryPolicy, run_with_retry, ureq_error_is_transient};
+use crate::sigv4::SigV4Signer;
 use crate::template::TemplateError;
 use chunkforge_store::{ChunkId, ChunkSink, PutOutcome, SinkError};
 use std::time::Duration;
@@ -41,6 +44,7 @@ pub struct HttpChunkSink {
     put_method: HttpPutMethod,
     content_type: String,
     retry_policy: RetryPolicy,
+    sigv4: Option<SigV4Signer>,
 }
 
 impl HttpChunkSink {
@@ -66,6 +70,7 @@ impl HttpChunkSink {
             header_templates: Vec::new(),
             prefix: String::new(),
             retry_policy: RetryPolicy::default(),
+            sigv4: None,
         }
     }
 
@@ -119,6 +124,11 @@ impl HttpChunkSink {
         &self.retry_policy
     }
 
+    /// Optional SigV4 signer (default `None` ≡ no SigV4 headers).
+    pub fn sigv4(&self) -> Option<&SigV4Signer> {
+        self.sigv4.as_ref()
+    }
+
     /// Absolute URL for `id` — same expansion as [`crate::HttpChunkSource::url_for`]
     /// when configured identically.
     pub fn url_for(&self, id: &ChunkId) -> String {
@@ -162,6 +172,7 @@ pub struct HttpChunkSinkBuilder {
     header_templates: Vec<(String, String)>,
     prefix: String,
     retry_policy: RetryPolicy,
+    sigv4: Option<SigV4Signer>,
 }
 
 impl HttpChunkSinkBuilder {
@@ -238,8 +249,23 @@ impl HttpChunkSinkBuilder {
         self
     }
 
+    /// Enable AWS SigV4 signing for PUT/HEAD/GET probes (default off).
+    pub fn aws_sigv4(mut self, signer: SigV4Signer) -> Self {
+        self.sigv4 = Some(signer);
+        self
+    }
+
+    /// Clear any SigV4 signer (explicit off).
+    pub fn clear_aws_sigv4(mut self) -> Self {
+        self.sigv4 = None;
+        self
+    }
+
     /// Build the sink (validates templates against an all-zero [`ChunkId`]).
-    pub fn build(self) -> Result<HttpChunkSink, TemplateError> {
+    ///
+    /// SigV4 + Authorization header template → [`HttpBuildError::AuthorizationConflict`].
+    pub fn build(self) -> Result<HttpChunkSink, HttpBuildError> {
+        check_sigv4_auth_conflict(&self.header_templates, &self.sigv4)?;
         let endpoint = HttpEndpoint::build(
             self.base,
             self.timeout,
@@ -255,6 +281,7 @@ impl HttpChunkSinkBuilder {
             put_method: self.put_method,
             content_type: self.content_type,
             retry_policy: self.retry_policy,
+            sigv4: self.sigv4,
         })
     }
 }
@@ -265,10 +292,13 @@ impl ChunkSink for HttpChunkSink {
             .endpoint
             .expand_url(id)
             .map_err(|e| Self::template_err(id, e))?;
-        let headers = self
+        let user_headers = self
             .endpoint
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
+        let headers =
+            headers_with_sigv4(self.sigv4.as_ref(), "HEAD", &url, &user_headers, b"", &[])
+                .map_err(|e| SinkError::Backend(format!("SigV4 sign HEAD for {id}: {e}")))?;
 
         run_with_retry(&self.retry_policy, || self.has_once(id, &url, &headers))
     }
@@ -289,10 +319,24 @@ impl ChunkSink for HttpChunkSink {
             .endpoint
             .expand_url(id)
             .map_err(|e| Self::template_err(id, e))?;
-        let headers = self
+        let user_headers = self
             .endpoint
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
+
+        // Sign PUT with body hash + Content-Type (set on the wire below).
+        let headers = headers_with_sigv4(
+            self.sigv4.as_ref(),
+            match self.put_method {
+                HttpPutMethod::Put => "PUT",
+                HttpPutMethod::Post => "POST",
+            },
+            &url,
+            &user_headers,
+            plain,
+            &[("Content-Type", self.content_type.as_str())],
+        )
+        .map_err(|e| SinkError::Backend(format!("SigV4 sign PUT for {id}: {e}")))?;
 
         run_with_retry(&self.retry_policy, || {
             // Re-check presence before each PUT attempt when skip_if_exists
@@ -345,8 +389,29 @@ impl HttpChunkSink {
             Ok(_resp) => Attempt::Ok(true),
             Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Attempt::Ok(false),
             Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
+                let user_only: Vec<(String, String)> = headers
+                    .iter()
+                    .filter(|(n, _)| {
+                        let l = n.to_ascii_lowercase();
+                        l != "authorization"
+                            && l != "x-amz-date"
+                            && l != "x-amz-content-sha256"
+                            && l != "x-amz-security-token"
+                    })
+                    .cloned()
+                    .collect();
+                let get_headers =
+                    match headers_with_sigv4(self.sigv4.as_ref(), "GET", url, &user_only, b"", &[])
+                    {
+                        Ok(h) => h,
+                        Err(e) => {
+                            return Attempt::Fatal(SinkError::Backend(format!(
+                                "SigV4 sign GET fallback for {id}: {e}"
+                            )));
+                        }
+                    };
                 let mut req = self.endpoint.agent.get(url);
-                for (name, value) in headers {
+                for (name, value) in &get_headers {
                     req = req.header(name.as_str(), value.as_str());
                 }
                 match req.call() {
@@ -708,7 +773,10 @@ mod tests {
             .url_template("{base}/{bucket}/{path}")
             .build()
             .unwrap_err();
-        assert_eq!(err, TemplateError::UnknownPlaceholder("bucket".into()));
+        assert_eq!(
+            err,
+            HttpBuildError::Template(TemplateError::UnknownPlaceholder("bucket".into()))
+        );
     }
 
     /// Phase8-M1: 2×503 then 200 on PUT → success; PUT attempts == 3 (max_retries=2).
@@ -858,5 +926,131 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// Phase8-M6: PUT with SigV4 → Authorization + x-amz-date on the wire.
+    #[test]
+    fn put_with_sigv4_sends_authorization_and_amz_date() {
+        let seen: Arc<Mutex<SeenPut>> = Arc::new(Mutex::new(SeenPut::default()));
+        let store: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+        // Extend stub to capture x-amz-date
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let seen2 = Arc::clone(&seen);
+        let store2 = Arc::clone(&store);
+        let amz_date: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let amz2 = Arc::clone(&amz_date);
+        let _handle = thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let method = request.method().clone();
+                let url = request.url().to_string();
+                let path = url.split('?').next().unwrap_or(&url).to_string();
+                let auth = request
+                    .headers()
+                    .iter()
+                    .find(|h| {
+                        h.field
+                            .as_str()
+                            .as_str()
+                            .eq_ignore_ascii_case("Authorization")
+                    })
+                    .map(|h| h.value.as_str().to_string());
+                let date = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("x-amz-date"))
+                    .map(|h| h.value.as_str().to_string());
+                if date.is_some() {
+                    *amz2.lock().unwrap() = date;
+                }
+                {
+                    let mut g = seen2.lock().unwrap();
+                    g.method = Some(format!("{method:?}"));
+                    g.path = Some(path.clone());
+                    if auth.is_some() {
+                        g.authorization = auth;
+                    }
+                    if method == Method::Head {
+                        g.head_count += 1;
+                    }
+                }
+                match method {
+                    Method::Head => {
+                        let exists = store2.lock().unwrap().contains_key(&path);
+                        let _ = request.respond(Response::empty(StatusCode(if exists {
+                            200
+                        } else {
+                            404
+                        })));
+                    }
+                    Method::Put | Method::Post => {
+                        let mut body = Vec::new();
+                        let _ = request.as_reader().read_to_end(&mut body);
+                        {
+                            let mut g = seen2.lock().unwrap();
+                            g.body = Some(body.clone());
+                            g.put_count += 1;
+                        }
+                        store2.lock().unwrap().insert(path, body);
+                        let _ = request.respond(Response::empty(StatusCode(200)));
+                    }
+                    _ => {
+                        let _ = request.respond(Response::empty(StatusCode(405)));
+                    }
+                }
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let plain = b"phase8-m6-sigv4-put";
+        let id = ChunkId::hash(plain);
+        let creds = crate::AwsCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            session_token: None,
+        };
+        let signer = crate::SigV4Signer::new(crate::SigV4Config::new(creds, "us-east-1", "s3"))
+            .with_clock(crate::SigningClock::Fixed("20130524T000000Z".into()));
+        let sink = HttpChunkSink::builder(&base)
+            .aws_sigv4(signer)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+        assert!(sink.sigv4().is_some());
+        assert_eq!(sink.put(&id, plain).unwrap(), PutOutcome::Written);
+
+        let g = seen.lock().unwrap();
+        let auth = g.authorization.as_deref().expect("Authorization on PUT");
+        assert!(
+            auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"),
+            "got {auth}"
+        );
+        assert!(auth.contains("Signature="));
+        assert_eq!(
+            amz_date.lock().unwrap().as_deref(),
+            Some("20130524T000000Z")
+        );
+        assert_eq!(
+            g.body.as_deref(),
+            Some(plain.as_slice())
+        );
+    }
+
+    /// Phase8-M6: no SigV4 → PUT has no Authorization / x-amz-date.
+    #[test]
+    fn put_without_sigv4_sends_no_amz_headers() {
+        let seen: Arc<Mutex<SeenPut>> = Arc::new(Mutex::new(SeenPut::default()));
+        let store: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let (base, _handle) = spawn_put_stub(Arc::clone(&seen), store, false);
+        let plain = b"phase8-m6-put-plain";
+        let id = ChunkId::hash(plain);
+        let sink = HttpChunkSink::builder(&base)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+        assert!(sink.sigv4().is_none());
+        assert_eq!(sink.put(&id, plain).unwrap(), PutOutcome::Written);
+        assert!(seen.lock().unwrap().authorization.is_none());
     }
 }

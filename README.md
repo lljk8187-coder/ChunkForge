@@ -14,12 +14,11 @@
 | **Phase 6** | **0.6.0** | `archive --seed` incremental reuse; `chunkforge pull` CAS fill; `archive --jobs`; `scripts/demo_seed.sh` |
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 
-## Non-goals (current / Phase 7)
+## Non-goals (current / Phase 7–8)
 
 | Not this | Why |
 |---|---|
-| ❌ **In-process SigV4** | No GET or PUT HMAC; use public/CDN, fixed header templates, or externally presigned query in `--url-template` |
-| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential chain — dependency surface stays **ureq** |
+| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential provider chain — HTTP stays **ureq**; optional minimal SigV4 via `--aws-sigv4` (env creds only; see `docs/sigv4.md`) |
 | ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
 | ❌ **Write mount / COW** | FUSE stays `RO` (single blob **and** directory tree); writes return `EROFS` / `EACCES` |
 | ❌ **Bidirectional sync** | `archive` / `extract` / `push` / `pull` are explicit one-way — no watch directories, conflict resolution, or mutual sync |

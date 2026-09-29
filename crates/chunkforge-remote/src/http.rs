@@ -2,10 +2,62 @@
 
 use crate::endpoint::HttpEndpoint;
 use crate::retry::{Attempt, RetryPolicy, run_with_retry, ureq_error_is_transient};
+use crate::sigv4::{SigV4Error, SigV4Signer};
 use crate::template::TemplateError;
 use chunkforge_store::{ChunkId, ChunkSource, SourceError};
 use std::time::Duration;
 use ureq::Agent;
+
+/// Errors from [`HttpChunkSourceBuilder::build`] / [`crate::HttpChunkSinkBuilder::build`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HttpBuildError {
+    #[error(transparent)]
+    Template(#[from] TemplateError),
+    #[error(
+        "SigV4 signing conflicts with an Authorization header template;          omit the Authorization header or disable aws_sigv4"
+    )]
+    AuthorizationConflict,
+    #[error(transparent)]
+    SigV4(#[from] SigV4Error),
+}
+
+pub(crate) fn check_sigv4_auth_conflict(
+    header_templates: &[(String, String)],
+    sigv4: &Option<SigV4Signer>,
+) -> Result<(), HttpBuildError> {
+    if sigv4.is_none() {
+        return Ok(());
+    }
+    for (name, _) in header_templates {
+        if name.eq_ignore_ascii_case("Authorization") {
+            return Err(HttpBuildError::AuthorizationConflict);
+        }
+    }
+    Ok(())
+}
+
+/// Expand user headers, then append SigV4 headers when a signer is present.
+pub(crate) fn headers_with_sigv4(
+    signer: Option<&SigV4Signer>,
+    method: &str,
+    url: &str,
+    user_headers: &[(String, String)],
+    body: &[u8],
+    extra_sign: &[(&str, &str)],
+) -> Result<Vec<(String, String)>, SigV4Error> {
+    let Some(signer) = signer else {
+        return Ok(user_headers.to_vec());
+    };
+    let mut extras: Vec<(&str, &str)> = user_headers
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    extras.extend_from_slice(extra_sign);
+    let signed = signer.sign(method, url, &extras, body)?;
+    let mut out = user_headers.to_vec();
+    out.extend(signed.as_pairs());
+    Ok(out)
+}
 
 /// Default URL template — byte-compatible with Phase 2 `chunk_url` layout.
 pub const DEFAULT_URL_TEMPLATE: &str = "{base}/{path}";
@@ -32,6 +84,7 @@ pub struct HttpChunkSource {
     endpoint: HttpEndpoint,
     verify_hash: bool,
     retry_policy: RetryPolicy,
+    sigv4: Option<SigV4Signer>,
 }
 
 impl HttpChunkSource {
@@ -53,6 +106,7 @@ impl HttpChunkSource {
             header_templates: Vec::new(),
             prefix: String::new(),
             retry_policy: RetryPolicy::default(),
+            sigv4: None,
         }
     }
 
@@ -84,6 +138,11 @@ impl HttpChunkSource {
     /// Retry policy for transient HTTP failures (default: 0 extra attempts).
     pub fn retry_policy(&self) -> &RetryPolicy {
         &self.retry_policy
+    }
+
+    /// Optional SigV4 signer (default `None` ≡ no SigV4 headers).
+    pub fn sigv4(&self) -> Option<&SigV4Signer> {
+        self.sigv4.as_ref()
     }
 
     /// Absolute URL for `id` under this source's template.
@@ -134,6 +193,7 @@ pub struct HttpChunkSourceBuilder {
     header_templates: Vec<(String, String)>,
     prefix: String,
     retry_policy: RetryPolicy,
+    sigv4: Option<SigV4Signer>,
 }
 
 impl HttpChunkSourceBuilder {
@@ -186,12 +246,26 @@ impl HttpChunkSourceBuilder {
         self
     }
 
+    /// Enable AWS SigV4 signing for GET/HEAD (default off ≡ no SigV4 headers).
+    pub fn aws_sigv4(mut self, signer: SigV4Signer) -> Self {
+        self.sigv4 = Some(signer);
+        self
+    }
+
+    /// Clear any SigV4 signer (explicit off).
+    pub fn clear_aws_sigv4(mut self) -> Self {
+        self.sigv4 = None;
+        self
+    }
+
     /// Build the source.
     ///
     /// Validates `url_template` and every header value template by expanding
     /// once against an all-zero [`ChunkId`]. Unknown placeholders / missing
-    /// `{env:…}` variables fail fast here.
-    pub fn build(self) -> Result<HttpChunkSource, TemplateError> {
+    /// `{env:…}` variables fail fast here. SigV4 + Authorization header
+    /// template → [`HttpBuildError::AuthorizationConflict`].
+    pub fn build(self) -> Result<HttpChunkSource, HttpBuildError> {
+        check_sigv4_auth_conflict(&self.header_templates, &self.sigv4)?;
         let endpoint = HttpEndpoint::build(
             self.base,
             self.timeout,
@@ -203,6 +277,7 @@ impl HttpChunkSourceBuilder {
             endpoint,
             verify_hash: self.verify_hash,
             retry_policy: self.retry_policy,
+            sigv4: self.sigv4,
         })
     }
 }
@@ -210,18 +285,23 @@ impl HttpChunkSourceBuilder {
 impl ChunkSource for HttpChunkSource {
     fn has(&self, id: &ChunkId) -> Result<bool, SourceError> {
         let url = self.expand_url(id).map_err(|e| Self::template_err(id, e))?;
-        let headers = self
+        let user_headers = self
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
+        let headers =
+            headers_with_sigv4(self.sigv4.as_ref(), "HEAD", &url, &user_headers, b"", &[])
+                .map_err(|e| SourceError::Backend(format!("SigV4 sign HEAD for {id}: {e}")))?;
 
         run_with_retry(&self.retry_policy, || self.has_once(id, &url, &headers))
     }
 
     fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
         let url = self.expand_url(id).map_err(|e| Self::template_err(id, e))?;
-        let headers = self
+        let user_headers = self
             .expand_headers(id)
             .map_err(|e| Self::template_err(id, e))?;
+        let headers = headers_with_sigv4(self.sigv4.as_ref(), "GET", &url, &user_headers, b"", &[])
+            .map_err(|e| SourceError::Backend(format!("SigV4 sign GET for {id}: {e}")))?;
 
         let body = run_with_retry(&self.retry_policy, || self.get_once(id, &url, &headers))?;
 
@@ -271,8 +351,35 @@ impl HttpChunkSource {
             Err(ureq::Error::StatusCode(404) | ureq::Error::StatusCode(410)) => Attempt::Ok(false),
             // Some static servers reject HEAD; fall back to a GET and discard the body.
             Err(ureq::Error::StatusCode(405) | ureq::Error::StatusCode(501)) => {
+                // Re-sign as GET when falling back (SigV4 Authorization is method-bound).
+                let get_headers = match headers_with_sigv4(
+                    self.sigv4.as_ref(),
+                    "GET",
+                    url,
+                    // Strip prior SigV4 headers; keep only non-amz user headers.
+                    &headers
+                        .iter()
+                        .filter(|(n, _)| {
+                            let l = n.to_ascii_lowercase();
+                            l != "authorization"
+                                && l != "x-amz-date"
+                                && l != "x-amz-content-sha256"
+                                && l != "x-amz-security-token"
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    b"",
+                    &[],
+                ) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return Attempt::Fatal(SourceError::Backend(format!(
+                            "SigV4 sign GET fallback for {id}: {e}"
+                        )));
+                    }
+                };
                 let mut req = self.agent().get(url);
-                for (name, value) in headers {
+                for (name, value) in &get_headers {
                     req = req.header(name.as_str(), value.as_str());
                 }
                 match req.call() {
@@ -541,7 +648,10 @@ mod tests {
             .url_template("{base}/{bucket}/{path}")
             .build()
             .unwrap_err();
-        assert_eq!(err, TemplateError::UnknownPlaceholder("bucket".into()));
+        assert_eq!(
+            err,
+            HttpBuildError::Template(TemplateError::UnknownPlaceholder("bucket".into()))
+        );
     }
 
     #[test]
@@ -550,7 +660,10 @@ mod tests {
             .header("X-Trace", "{request_id}")
             .build()
             .unwrap_err();
-        assert_eq!(err, TemplateError::UnknownPlaceholder("request_id".into()));
+        assert_eq!(
+            err,
+            HttpBuildError::Template(TemplateError::UnknownPlaceholder("request_id".into()))
+        );
     }
 
     #[test]
@@ -610,7 +723,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            TemplateError::MissingEnv("CHUNKFORGE_M1_MISSING_ENV_XYZ".into())
+            HttpBuildError::Template(TemplateError::MissingEnv(
+                "CHUNKFORGE_M1_MISSING_ENV_XYZ".into()
+            ))
         );
     }
 
@@ -941,5 +1056,137 @@ mod tests {
         assert!(!crate::classify_source_error(&err).is_retryable());
         // Hash failure must not be retried (single GET).
         assert_eq!(*attempts.lock().unwrap(), 1);
+    }
+
+    /// Phase8-M6: no signer → no SigV4 headers on GET.
+    #[test]
+    fn get_without_sigv4_sends_no_amz_headers() {
+        #[derive(Default)]
+        struct Seen {
+            authorization: Option<String>,
+            amz_date: Option<String>,
+            content_sha: Option<String>,
+        }
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
+        let seen2 = Arc::clone(&seen);
+        let body = b"phase8-m6-no-sigv4".to_vec();
+        let id = ChunkId::hash(&body);
+        let body2 = body.clone();
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            if let Ok(request) = server.recv() {
+                let mut g = seen2.lock().unwrap();
+                for h in request.headers() {
+                    let name = h.field.as_str().as_str();
+                    if name.eq_ignore_ascii_case("Authorization") {
+                        g.authorization = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-date") {
+                        g.amz_date = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-content-sha256") {
+                        g.content_sha = Some(h.value.as_str().to_string());
+                    }
+                }
+                drop(g);
+                let _ = request.respond(Response::from_data(body2));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let src = HttpChunkSource::builder(&base)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+        assert!(src.sigv4().is_none());
+        assert_eq!(src.get(&id).unwrap(), body);
+        let g = seen.lock().unwrap();
+        assert!(g.authorization.is_none(), "no Authorization without SigV4");
+        assert!(g.amz_date.is_none(), "no x-amz-date without SigV4");
+        assert!(
+            g.content_sha.is_none(),
+            "no x-amz-content-sha256 without SigV4"
+        );
+    }
+
+    /// Phase8-M6: SigV4 enabled → Authorization + x-amz-date (+ content-sha256) present.
+    #[test]
+    fn get_with_sigv4_sends_authorization_and_amz_date() {
+        #[derive(Default)]
+        struct Seen {
+            authorization: Option<String>,
+            amz_date: Option<String>,
+            content_sha: Option<String>,
+        }
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
+        let seen2 = Arc::clone(&seen);
+        let body = b"phase8-m6-sigv4-get".to_vec();
+        let id = ChunkId::hash(&body);
+        let body2 = body.clone();
+
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let _handle = thread::spawn(move || {
+            if let Ok(request) = server.recv() {
+                let mut g = seen2.lock().unwrap();
+                for h in request.headers() {
+                    let name = h.field.as_str().as_str();
+                    if name.eq_ignore_ascii_case("Authorization") {
+                        g.authorization = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-date") {
+                        g.amz_date = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-content-sha256") {
+                        g.content_sha = Some(h.value.as_str().to_string());
+                    }
+                }
+                drop(g);
+                let _ = request.respond(Response::from_data(body2));
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+
+        let creds = crate::AwsCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            session_token: None,
+        };
+        let signer = crate::SigV4Signer::new(crate::SigV4Config::new(creds, "us-east-1", "s3"))
+            .with_clock(crate::SigningClock::Fixed("20130524T000000Z".into()));
+        let src = HttpChunkSource::builder(&base)
+            .aws_sigv4(signer)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .unwrap();
+        assert!(src.sigv4().is_some());
+        assert_eq!(src.get(&id).unwrap(), body);
+
+        let g = seen.lock().unwrap();
+        let auth = g.authorization.as_deref().expect("Authorization");
+        assert!(
+            auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"),
+            "got {auth}"
+        );
+        assert!(auth.contains("Signature="), "got {auth}");
+        assert_eq!(g.amz_date.as_deref(), Some("20130524T000000Z"));
+        assert_eq!(g.content_sha.as_deref(), Some(crate::EMPTY_PAYLOAD_HASH));
+    }
+
+    /// Phase8-M6: SigV4 + Authorization header template → build error.
+    #[test]
+    fn sigv4_conflicts_with_authorization_header() {
+        let creds = crate::AwsCredentials {
+            access_key_id: "AKIATEST".into(),
+            secret_access_key: "secret".into(),
+            session_token: None,
+        };
+        let signer = crate::SigV4Signer::new(crate::SigV4Config::new(creds, "us-east-1", "s3"));
+        let err = HttpChunkSource::builder("http://127.0.0.1:9")
+            .header("Authorization", "Bearer tok")
+            .aws_sigv4(signer)
+            .build()
+            .unwrap_err();
+        assert_eq!(err, HttpBuildError::AuthorizationConflict);
     }
 }

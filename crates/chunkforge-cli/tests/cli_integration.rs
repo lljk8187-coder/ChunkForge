@@ -5650,3 +5650,305 @@ fn restore_mtime_secs(path: &Path, secs: u64) {
         path.display()
     );
 }
+
+// --- Phase 8 M6: CLI `--aws-sigv4` ---
+
+#[test]
+fn aws_sigv4_help_listed_on_http_commands() {
+    for cmd in ["cat", "verify", "doctor", "push", "extract", "pull"] {
+        let out = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("--aws-sigv4"),
+            "{cmd} --help should list --aws-sigv4:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn aws_sigv4_without_credentials_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("t.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"phase8-m6-cli-no-creds").unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Ensure credentials are absent for this process invocation.
+    let out = Command::new(bin())
+        .args([
+            "verify",
+            "--source",
+            "http://127.0.0.1:9",
+            "--aws-sigv4",
+            idx.to_str().unwrap(),
+        ])
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("AWS_ACCESS_KEY_ID") || err.contains("aws-sigv4"),
+        "expected clear credentials error, got: {err}"
+    );
+}
+
+#[test]
+fn aws_sigv4_conflicts_with_authorization_header() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("t.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"phase8-m6-cli-auth-conflict").unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = Command::new(bin())
+        .args([
+            "verify",
+            "--source",
+            "http://127.0.0.1:9",
+            "--aws-sigv4",
+            "--header",
+            "Authorization: Bearer tok",
+            idx.to_str().unwrap(),
+        ])
+        .env("AWS_ACCESS_KEY_ID", "AKIATEST")
+        .env("AWS_SECRET_ACCESS_KEY", "secret")
+        .env("AWS_REGION", "us-east-1")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("authorization") && err.contains("aws-sigv4"),
+        "expected Authorization conflict error, got: {err}"
+    );
+}
+
+#[test]
+fn aws_sigv4_push_sends_authorization_header() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Seen {
+        authorization: Option<String>,
+        amz_date: Option<String>,
+        put_count: usize,
+    }
+    let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
+    let seen2 = Arc::clone(&seen);
+
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            {
+                let mut g = seen2.lock().unwrap();
+                for h in request.headers() {
+                    let name = h.field.as_str().as_str();
+                    if name.eq_ignore_ascii_case("Authorization") {
+                        g.authorization = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-date") {
+                        g.amz_date = Some(h.value.as_str().to_string());
+                    }
+                }
+                if method == Method::Put || method == Method::Post {
+                    g.put_count += 1;
+                }
+            }
+            match method {
+                Method::Head => {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    let _ = request.respond(Response::empty(StatusCode(200)));
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("t.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"phase8-m6-cli-sigv4-push").unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = Command::new(bin())
+        .args([
+            "push",
+            "--store",
+            store.to_str().unwrap(),
+            "--dest",
+            &base,
+            "--aws-sigv4",
+            idx.to_str().unwrap(),
+        ])
+        .env("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        .env(
+            "AWS_SECRET_ACCESS_KEY",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        .env("AWS_REGION", "us-east-1")
+        .output()
+        .expect("spawn push");
+    assert!(
+        out.status.success(),
+        "push --aws-sigv4 failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let g = seen.lock().unwrap();
+    assert!(g.put_count >= 1, "expected at least one PUT");
+    let auth = g
+        .authorization
+        .as_deref()
+        .expect("Authorization header on signed PUT");
+    assert!(
+        auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"),
+        "got {auth}"
+    );
+    assert!(auth.contains("Signature="), "got {auth}");
+    assert!(
+        g.amz_date
+            .as_ref()
+            .is_some_and(|d| d.len() == 16 && d.ends_with('Z')),
+        "x-amz-date should look like YYYYMMDDTHHMMSSZ, got {:?}",
+        g.amz_date
+    );
+}
+
+#[test]
+fn push_without_aws_sigv4_sends_no_sigv4_headers() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Seen {
+        authorization: Option<String>,
+        amz_date: Option<String>,
+        put_count: usize,
+    }
+    let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
+    let seen2 = Arc::clone(&seen);
+
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let _handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            {
+                let mut g = seen2.lock().unwrap();
+                for h in request.headers() {
+                    let name = h.field.as_str().as_str();
+                    if name.eq_ignore_ascii_case("Authorization") {
+                        g.authorization = Some(h.value.as_str().to_string());
+                    } else if name.eq_ignore_ascii_case("x-amz-date") {
+                        g.amz_date = Some(h.value.as_str().to_string());
+                    }
+                }
+                if method == Method::Put || method == Method::Post {
+                    g.put_count += 1;
+                }
+            }
+            match method {
+                Method::Head => {
+                    let _ = request.respond(Response::empty(StatusCode(404)));
+                }
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    let _ = request.respond(Response::empty(StatusCode(200)));
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("t.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"phase8-m6-cli-no-flag").unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Even with AWS_* set, without --aws-sigv4 there must be no SigV4 headers.
+    let out = Command::new(bin())
+        .args([
+            "push",
+            "--store",
+            store.to_str().unwrap(),
+            "--dest",
+            &base,
+            idx.to_str().unwrap(),
+        ])
+        .env("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        .env(
+            "AWS_SECRET_ACCESS_KEY",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        .env("AWS_REGION", "us-east-1")
+        .output()
+        .expect("spawn push");
+    assert!(
+        out.status.success(),
+        "push without --aws-sigv4 failed\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let g = seen.lock().unwrap();
+    assert!(g.put_count >= 1);
+    assert!(
+        g.authorization.is_none(),
+        "default off must not send Authorization: {:?}",
+        g.authorization
+    );
+    assert!(
+        g.amz_date.is_none(),
+        "default off must not send x-amz-date: {:?}",
+        g.amz_date
+    );
+}

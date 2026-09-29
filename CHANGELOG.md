@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Minimal in-process AWS SigV4** (Phase 8 M6 / P1 O1): `chunkforge-remote`
+  signs GET/HEAD/PUT with AWS4-HMAC-SHA256 (`hmac` + `sha2`; **no** `aws-sdk-*`).
+  Payload hash = `hex(SHA256(body))` (empty → empty hash; never `UNSIGNED-PAYLOAD`).
+  CLI `--aws-sigv4` (default **off** ≡ 0.7.0); credentials from
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (required when flag on), optional
+  `AWS_SESSION_TOKEN` / `AWS_REGION` (default `us-east-1` + warning). Conflicts
+  with `--header Authorization:…` → clear error. Golden-vector unit tests + stub
+  header assertions. Docs: `docs/sigv4.md`. Non-goals: ListObjects, multipart,
+  IMDS/SSO, full credential chain, chunked signing.
+
 - **`diff --format text|json`** (Phase 8 M4 / G5): default **`text`** ≡ 0.7.0
   path lists + `diff:` summary; **`json`** emits one object with stable
   `added` / `removed` / `changed` / `meta_changed` arrays plus
