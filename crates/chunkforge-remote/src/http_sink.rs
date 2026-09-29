@@ -1031,10 +1031,7 @@ mod tests {
             amz_date.lock().unwrap().as_deref(),
             Some("20130524T000000Z")
         );
-        assert_eq!(
-            g.body.as_deref(),
-            Some(plain.as_slice())
-        );
+        assert_eq!(g.body.as_deref(), Some(plain.as_slice()));
     }
 
     /// Phase8-M6: no SigV4 → PUT has no Authorization / x-amz-date.
