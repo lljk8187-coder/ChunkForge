@@ -16,9 +16,17 @@
 
 ## Status
 
-**M3 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` + `chunkforge-index` (`.cfidx` v1 encode/decode).
+**M4 (current):** workspace + `chunkforge-chunk` + `chunkforge-store` + `chunkforge-index` + `chunkforge` CLI (`make` / `cat` / `verify` / `chunk-id`).
 
-Later milestones add the `chunkforge` CLI (`make` / `cat` / `verify`).
+## Quick demo
+
+```bash
+cargo build -p chunkforge-cli
+./target/debug/chunkforge make --store ./store -o v1.cfidx ./fixtures/hello.txt
+./target/debug/chunkforge verify --store ./store v1.cfidx
+./target/debug/chunkforge cat --store ./store v1.cfidx -o /tmp/hello.out
+cmp ./fixtures/hello.txt /tmp/hello.out
+```
 
 ## Develop
 
@@ -27,6 +35,7 @@ Later milestones add the `chunkforge` CLI (`make` / `cat` / `verify`).
 cargo test -p chunkforge-chunk
 cargo test -p chunkforge-store
 cargo test -p chunkforge-index
+cargo test -p chunkforge-cli
 # optional compression:
 cargo test -p chunkforge-store --features zstd
 ```

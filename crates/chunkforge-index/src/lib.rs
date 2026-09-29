@@ -10,8 +10,8 @@ mod index;
 
 pub use error::{Error, IndexError};
 pub use index::{
-    entry_length, Index, IndexEntry, ENTRY_SIZE, FLAG_CHUNKS_COMPRESSED_IN_STORE, FORMAT_VERSION_V1,
-    HEADER_SIZE, MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE,
+    ENTRY_SIZE, FLAG_CHUNKS_COMPRESSED_IN_STORE, FORMAT_VERSION_V1, HEADER_SIZE, Index, IndexEntry,
+    MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE, entry_length,
 };
 
 #[cfg(test)]
@@ -164,14 +164,8 @@ mod tests {
 
     #[test]
     fn reject_empty_with_nonzero_total() {
-        let err = Index::new(
-            0,
-            ChunkParams::default(),
-            10,
-            ChunkId::hash(b""),
-            vec![],
-        )
-        .unwrap_err();
+        let err =
+            Index::new(0, ChunkParams::default(), 10, ChunkId::hash(b""), vec![]).unwrap_err();
         assert!(matches!(err, Error::InvalidStructure(_)));
     }
 
@@ -190,7 +184,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::InvalidStructure(_)));
         let msg = err.to_string();
-        assert!(msg.contains("total_size") || msg.contains("end_offset"), "{msg}");
+        assert!(
+            msg.contains("total_size") || msg.contains("end_offset"),
+            "{msg}"
+        );
     }
 
     #[test]

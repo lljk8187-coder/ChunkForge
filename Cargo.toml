@@ -4,6 +4,7 @@ members = [
     "crates/chunkforge-chunk",
     "crates/chunkforge-index",
     "crates/chunkforge-store",
+    "crates/chunkforge-cli",
 ]
 
 [workspace.package]
@@ -13,8 +14,12 @@ rust-version = "1.85"
 version = "0.1.0"
 
 [workspace.dependencies]
+anyhow = "1"
 blake3 = "1"
+clap = { version = "4", features = ["derive"] }
 fastcdc = "5"
 thiserror = "2"
 tempfile = "3"
 chunkforge-chunk = { path = "crates/chunkforge-chunk" }
+chunkforge-index = { path = "crates/chunkforge-index" }
+chunkforge-store = { path = "crates/chunkforge-store" }

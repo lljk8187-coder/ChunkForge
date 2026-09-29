@@ -192,9 +192,8 @@ impl Index {
         let min = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
         let avg = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
         let max = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
-        let params = ChunkParams::new(min, avg, max).map_err(|e| {
-            Error::InvalidStructure(format!("chunk size params in header: {e}"))
-        })?;
+        let params = ChunkParams::new(min, avg, max)
+            .map_err(|e| Error::InvalidStructure(format!("chunk size params in header: {e}")))?;
 
         let total_size = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
         let chunk_count = u64::from_le_bytes(bytes[48..56].try_into().unwrap());
@@ -207,9 +206,10 @@ impl Index {
         }
         let n = chunk_count as usize;
         let expected_len = HEADER_SIZE
-            .checked_add(n.checked_mul(ENTRY_SIZE).ok_or_else(|| {
-                Error::Truncated("entry table size overflow".into())
-            })?)
+            .checked_add(
+                n.checked_mul(ENTRY_SIZE)
+                    .ok_or_else(|| Error::Truncated("entry table size overflow".into()))?,
+            )
             .and_then(|v| v.checked_add(TRAILER_SIZE))
             .ok_or_else(|| Error::Truncated("index size overflow".into()))?;
 
@@ -254,10 +254,6 @@ impl Index {
 /// Length of the i-th chunk (`end_offset[i] - end_offset[i-1]`, with prev=0 for i=0).
 pub fn entry_length(entries: &[IndexEntry], i: usize) -> Option<u64> {
     let end = entries.get(i)?.end_offset;
-    let start = if i == 0 {
-        0
-    } else {
-        entries[i - 1].end_offset
-    };
+    let start = if i == 0 { 0 } else { entries[i - 1].end_offset };
     Some(end - start)
 }
