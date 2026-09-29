@@ -1,10 +1,12 @@
-//! ChunkForge CLI: make / cat / verify / mount / doctor / gc (+ chunk-id debug).
+//! ChunkForge CLI: make / cat / verify / mount / doctor / gc / push (+ chunk-id debug).
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, entry_length};
-use chunkforge_remote::{FileUrlSource, HttpChunkSource};
-use chunkforge_store::{CacheSource, ChunkSource, Compression, PutOutcome, Store};
+use chunkforge_remote::{FileUrlSource, HttpChunkSource, HttpChunkSink};
+use chunkforge_store::{
+    CacheSource, ChunkSink, ChunkSource, Compression, PutOutcome, Store,
+};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -17,7 +19,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor / gc)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / cat / verify / mount / doctor / gc / push)",
     long_about = None
 )]
 struct Cli {
@@ -142,6 +144,28 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
+    /// Upload missing chunks referenced by .cfidx files to an HTTP(S) destination
+    ///
+    /// Reads plaintext chunks from the local `--store`, probes the remote with
+    /// `has`, and PUTs only missing ids. Does **not** upload `.cfidx` files.
+    /// Template flags (`--url-template` / `--prefix` / `--header`) match read-side
+    /// layout so a successful push is readable with `verify --source`.
+    Push {
+        /// Local CAS store providing plaintext chunks
+        #[arg(long)]
+        store: PathBuf,
+        /// HTTP(S) destination base URL (same layout as `--source` for verify/cat)
+        #[arg(long, value_name = "URL")]
+        dest: String,
+        #[command(flatten)]
+        http_tmpl: HttpTemplateArgs,
+        /// Probe and count only; do not issue PUT
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// One or more `.cfidx` files whose chunk ids are uploaded
+        #[arg(required = true, num_args = 1..)]
+        indexes: Vec<PathBuf>,
+    },
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -161,7 +185,7 @@ enum StoreCommands {
     },
 }
 
-/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor`.
+/// Optional HTTP URL / header templates for `cat` / `verify` / `mount` / `doctor` / `push`.
 ///
 /// Only meaningful with an `http(s)://` `--source`. Omitting all three flags
 /// preserves 0.2.0 / Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
@@ -268,6 +292,13 @@ fn run() -> Result<()> {
             apply,
             indexes,
         } => cmd_gc(&store, &indexes, apply),
+        Commands::Push {
+            store,
+            dest,
+            http_tmpl,
+            dry_run,
+            indexes,
+        } => cmd_push(&store, &dest, &http_tmpl, dry_run, &indexes),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -731,6 +762,140 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()>
             indexes_ok,
             if indexes_ok == 1 { "" } else { "es" },
             referenced.len()
+        );
+    }
+    Ok(())
+}
+
+fn open_http_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<HttpChunkSink> {
+    let trimmed = dest.trim();
+    let is_http = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+
+    if !is_http {
+        if http_template_flags_set(http_tmpl) {
+            bail!(
+                "--url-template / --prefix / --header apply only to http(s):// destinations; \
+                 got non-HTTP --dest {trimmed:?}"
+            );
+        }
+        bail!(
+            "push --dest must be an http(s):// URL (got {trimmed:?}); \
+             local/file destinations are not supported"
+        );
+    }
+
+    let mut builder = HttpChunkSink::builder(trimmed).timeout(Some(Duration::from_secs(30)));
+    if let Some(ref tmpl) = http_tmpl.url_template {
+        builder = builder.url_template(tmpl.clone());
+    }
+    if let Some(ref prefix) = http_tmpl.prefix {
+        builder = builder.prefix(prefix.clone());
+    }
+    for raw in &http_tmpl.headers {
+        let (name, value_tmpl) = parse_header_flag(raw)?;
+        builder = builder.header(name, value_tmpl);
+    }
+    builder.build().context("build HTTP chunk sink")
+}
+
+fn cmd_push(
+    store_path: &Path,
+    dest: &str,
+    http_tmpl: &HttpTemplateArgs,
+    dry_run: bool,
+    index_paths: &[PathBuf],
+) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+    let sink = open_http_chunk_sink(dest, http_tmpl)?;
+
+    let mut referenced: HashSet<ChunkId> = HashSet::new();
+    let mut indexes_ok = 0usize;
+    for index_path in index_paths {
+        let index = load_index(index_path)?;
+        index
+            .validate()
+            .map_err(|e| anyhow::anyhow!("index structure {}: {e}", index_path.display()))?;
+        indexes_ok += 1;
+        for entry in &index.entries {
+            referenced.insert(entry.chunk_id);
+        }
+    }
+
+    let mut ids: Vec<ChunkId> = referenced.into_iter().collect();
+    ids.sort();
+
+    let mut skipped = 0usize;
+    let mut uploaded = 0usize;
+    let mut failed = 0usize;
+    let mut first_error: Option<String> = None;
+
+    for id in &ids {
+        let plain = match store.get(id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                failed += 1;
+                let msg = format!("local chunk {id} unavailable from store {}: {e}", store_path.display());
+                eprintln!("push: fail {id}: {msg}");
+                if first_error.is_none() {
+                    first_error = Some(msg);
+                }
+                continue;
+            }
+        };
+
+        match sink.has(id) {
+            Ok(true) => {
+                skipped += 1;
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                failed += 1;
+                let msg = format!("remote has check failed for {id}: {e}");
+                eprintln!("push: fail {id}: {msg}");
+                if first_error.is_none() {
+                    first_error = Some(msg);
+                }
+                continue;
+            }
+        }
+
+        if dry_run {
+            uploaded += 1;
+            continue;
+        }
+
+        match ChunkSink::put(&sink, id, &plain) {
+            Ok(PutOutcome::Written) => uploaded += 1,
+            Ok(PutOutcome::SkippedExists) => skipped += 1,
+            Err(e) => {
+                failed += 1;
+                let msg = format!("put failed for {id}: {e}");
+                eprintln!("push: fail {id}: {msg}");
+                if first_error.is_none() {
+                    first_error = Some(msg);
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "push: skipped={skipped} uploaded={uploaded} failed={failed} \
+         ({} unique chunk id{}, {} index{}, dry_run={dry_run})",
+        ids.len(),
+        if ids.len() == 1 { "" } else { "s" },
+        indexes_ok,
+        if indexes_ok == 1 { "" } else { "es" },
+    );
+
+    if failed > 0 {
+        bail!(
+            "push: {failed} failure{}{}",
+            if failed == 1 { "" } else { "s" },
+            first_error
+                .map(|m| format!(" (first: {m})"))
+                .unwrap_or_default()
         );
     }
     Ok(())

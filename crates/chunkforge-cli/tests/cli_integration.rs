@@ -1526,3 +1526,318 @@ fn gc_dry_run_clean_store_prints_nothing() {
         "stderr={err}"
     );
 }
+
+// --- Phase 4 M3: push (serial) + dry-run ---
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// PUT/HEAD/GET stub that mirrors the default CAS layout under `store_root`
+/// (`chunks/<2hex>/<62hex>.cnk`). Counts PUT bodies for dry-run assertions.
+fn spawn_put_get_store_server(
+    store_root: PathBuf,
+    put_count: Arc<AtomicUsize>,
+) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            match method {
+                Method::Head => {
+                    if file_path.is_file() {
+                        let len = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                        let response = Response::empty(200).with_header(
+                            Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap(),
+                        );
+                        let _ = request.respond(response);
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Get => {
+                    if file_path.is_file() {
+                        let data = fs::read(&file_path).unwrap_or_default();
+                        let _ = request.respond(Response::from_data(data));
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    put_count.fetch_add(1, Ordering::SeqCst);
+                    if let Some(parent) = file_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&file_path, &body);
+                    let _ = request.respond(Response::empty(StatusCode(200)).with_header(
+                        Header::from_bytes(&b"Content-Length"[..], "0").unwrap(),
+                    ));
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
+#[test]
+fn push_help_lists_store_dest_dry_run_templates() {
+    let help = run_ok(&["--help"]);
+    let top = String::from_utf8_lossy(&help.stdout);
+    assert!(top.contains("push"), "top-level help should list push:\n{top}");
+
+    let p = run_ok(&["push", "--help"]);
+    let s = String::from_utf8_lossy(&p.stdout);
+    assert!(s.contains("--store"), "{s}");
+    assert!(s.contains("--dest"), "{s}");
+    assert!(s.contains("--dry-run"), "{s}");
+    assert!(s.contains("--url-template"), "{s}");
+    assert!(s.contains("--prefix"), "{s}");
+    assert!(s.contains("--header"), "{s}");
+    assert!(
+        s.to_ascii_lowercase().contains("cfidx") || s.contains("index"),
+        "help should mention indexes:\n{s}"
+    );
+}
+
+#[test]
+fn push_rejects_non_http_dest_and_template_flags() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("http") && (err.contains("dest") || err.contains("--dest")),
+        "stderr={err}"
+    );
+
+    let out = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        store.to_str().unwrap(),
+        "--url-template",
+        "{base}/{path}",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("url-template")
+            || err.contains("prefix")
+            || err.contains("header")
+            || err.contains("http"),
+        "stderr={err}"
+    );
+}
+
+#[test]
+fn push_to_mock_then_verify_source_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("uploaded="), "stderr={err}");
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "expected at least one PUT, got {}",
+        put_count.load(Ordering::SeqCst)
+    );
+    assert!(
+        count_cnk(&mirror.join("chunks")) >= 1,
+        "mirror should contain uploaded .cnk files"
+    );
+
+    run_ok(&["verify", "--source", &base, idx.to_str().unwrap()]);
+}
+
+#[test]
+fn push_dry_run_issues_no_put() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("dry_run=true") || err.contains("uploaded="), "stderr={err}");
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        0,
+        "dry-run must not issue PUT"
+    );
+    assert_eq!(
+        count_cnk(&mirror.join("chunks")),
+        0,
+        "dry-run must not write remote objects"
+    );
+}
+
+#[test]
+fn push_second_run_idempotent_uploaded_zero() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let first_puts = put_count.load(Ordering::SeqCst);
+    assert!(first_puts >= 1, "first push should PUT, got {first_puts}");
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("uploaded=0"),
+        "second push should report uploaded=0; stderr={err}"
+    );
+    assert!(
+        err.contains("skipped=") && !err.contains("skipped=0"),
+        "second push should skip existing chunks; stderr={err}"
+    );
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        first_puts,
+        "idempotent push must not issue additional PUTs"
+    );
+}
+
+#[test]
+fn push_missing_local_chunk_fails() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    delete_cnk_files(&local.join("chunks"));
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let out = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("fail") || err.contains("unavailable") || err.contains("missing"),
+        "stderr={err}"
+    );
+    assert_eq!(put_count.load(Ordering::SeqCst), 0);
+}
