@@ -14225,3 +14225,136 @@ fn push_file_url_dest_compression_zstd() {
     );
     assert!(count_cnk(&dest) >= 1);
 }
+
+// --- Phase 21 M6: store list ---
+
+#[test]
+fn store_list_help_lists_list_and_format() {
+    let s = run_ok(&["store", "--help"]);
+    let s_out = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        s_out.contains("list"),
+        "store --help should list list:\n{s_out}"
+    );
+
+    let list = run_ok(&["store", "list", "--help"]);
+    let list_s = String::from_utf8_lossy(&list.stdout);
+    assert!(list_s.contains("--store"), "{list_s}");
+    assert!(
+        list_s.contains("--format"),
+        "store list --help must list --format:\n{list_s}"
+    );
+    let lower = list_s.to_ascii_lowercase();
+    assert!(
+        lower.contains("not") && (lower.contains("gc") || lower.contains("scrub") || lower.contains("trim") || lower.contains("lru")),
+        "store list --help should nail ≠ GC/scrub/trim/LRU:\n{list_s}"
+    );
+}
+
+#[test]
+fn store_list_empty_store_text_and_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    {
+        use chunkforge_store::{Compression, Store};
+        Store::create(&store, Compression::None).unwrap();
+    }
+
+    let out = run_ok(&["store", "list", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "empty store text must print no lines; stdout={stdout:?}"
+    );
+
+    let out = run_ok(&[
+        "store",
+        "list",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("list json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["chunks"].as_u64(), Some(0));
+    let ids = v["ids"].as_array().expect("ids array");
+    assert!(ids.is_empty(), "empty ids; {v}");
+}
+
+#[test]
+fn store_list_sorted_hex_and_json_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx_a = dir.path().join("a.cfidx");
+    let idx_b = dir.path().join("b.cfidx");
+    let a = dir.path().join("a.bin");
+    let b = dir.path().join("b.bin");
+    // Distinct plaintext → distinct chunk ids
+    fs::write(&a, b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    fs::write(&b, b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_a.to_str().unwrap(),
+        a.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_b.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["store", "list", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(
+        lines.len() >= 2,
+        "expected >=2 chunk ids; got {} lines; stdout={stdout}",
+        lines.len()
+    );
+    for id in &lines {
+        assert_eq!(id.len(), 64, "hex id length; id={id}");
+        assert!(
+            id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "lowercase hex only; id={id}"
+        );
+    }
+    let mut sorted = lines.clone();
+    sorted.sort();
+    assert_eq!(lines, sorted, "text output must be stably sorted");
+
+    let out = run_ok(&[
+        "store",
+        "list",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.lines().any(|l| l.len() == 64 && l.chars().all(|c| c.is_ascii_hexdigit())),
+        "json must not dual-write bare hex lines; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("list json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    let ids = v["ids"].as_array().expect("ids");
+    assert_eq!(v["chunks"].as_u64(), Some(ids.len() as u64));
+    assert_eq!(ids.len(), lines.len());
+    let hexes: Vec<&str> = ids.iter().map(|x| x.as_str().unwrap()).collect();
+    assert_eq!(hexes, lines, "json ids must match sorted text lines");
+}

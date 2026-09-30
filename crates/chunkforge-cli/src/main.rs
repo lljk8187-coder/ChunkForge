@@ -1093,15 +1093,32 @@ enum StoreCommands {
         #[arg(long = "decode")]
         decode: bool,
     },
+    /// List every loose chunk id in a local CAS store (`Store::list_chunk_ids`)
+    ///
+    /// Read-only enumeration — **not** GC / scrub / trim / LRU. Default
+    /// **`--format text`**: one lowercase hex id per line, **stably sorted**.
+    /// Empty store → no lines (exit 0). **`--format json`**: one JSON object on
+    /// stdout (`ok` / `chunks` / `ids`); `ids` is a sorted string array; no text
+    /// dual-write. Exit codes are format-independent (success → 0). Same
+    /// `--store` convention as other `store` subcommands.
+    List {
+        /// Local CAS store directory
+        #[arg(long)]
+        store: PathBuf,
+        /// Output format (default text = one hex id per line; json = one object)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
+    },
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
 /// `push` / `pull` / `gc` / `store scrub` / `store stats` / `store create` /
-/// `archive` / `make` / `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 +
-/// Phase 15 M3/M4 + Phase 19 M1).
+/// `store list` / `archive` / `make` / `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 +
+/// Phase 15 M3/M4 + Phase 19 M1 + Phase 21 M6).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
-/// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent).
+/// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent;
+/// `store list` ≡ sorted hex ids one-per-line).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -1645,6 +1662,9 @@ fn run() -> Result<()> {
                     decode,
                 },
         } => cmd_store_stats(&store, format, decode),
+        Commands::Store {
+            command: StoreCommands::List { store, format },
+        } => cmd_store_list(&store, format),
     }
 }
 
@@ -5108,6 +5128,36 @@ fn cmd_store_stats(store_path: &Path, format: CliFormat, decode: bool) -> Result
                 "bytes_on_disk": s.bytes_on_disk,
                 "bytes_plaintext": s.bytes_plaintext,
                 "compression": s.compression.as_str(),
+            });
+            println!("{obj}");
+        }
+    }
+    Ok(())
+}
+
+/// Read-only enumeration of loose chunk ids via `Store::list_chunk_ids`.
+///
+/// Text: one lowercase hex id per line, stably sorted. Json: `{ok, chunks, ids}`.
+/// **Not** GC / scrub / trim / LRU — observation only.
+fn cmd_store_list(store_path: &Path, format: CliFormat) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+    let mut ids = store
+        .list_chunk_ids()
+        .with_context(|| format!("list chunks in {}", store_path.display()))?;
+    ids.sort();
+    match format {
+        CliFormat::Text => {
+            for id in &ids {
+                println!("{id}");
+            }
+        }
+        CliFormat::Json => {
+            let hexes: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let obj = serde_json::json!({
+                "ok": true,
+                "chunks": hexes.len(),
+                "ids": hexes,
             });
             println!("{obj}");
         }

@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-zero**; still single dest (**≠** `--fallback` / multi-dest). **≠** `store
   recompress` / default zstd / HTTP wire compression. Thin `docs/push.md`.
   Workspace version still **1.10.0** (bump → M7).
+- **`store list`** (Phase 21 M6 / P1 O2): CLI over `Store::list_chunk_ids`;
+  default **text** = one lowercase hex id per line (**stably sorted**); empty
+  store → no lines; **`--format json`** → `{ok, chunks, ids}` (additive;
+  orthogonal field set). Read-only — **≠** GC / scrub / trim / LRU. Thin
+  `docs/store.md` / `docs/ops-json.md` (+ responsibility nail **mount path ≠
+  write mount ≠ prune ≠ gc-path ≠ sync ≠ pack** where thin). Workspace version
+  still **1.10.0** (bump → M7).
 
 ## [1.10.0] — 2026-09-30
 
