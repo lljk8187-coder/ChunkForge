@@ -16,13 +16,14 @@ adds further opt-in only: `store stats`/`du` `--format json`,
 `push --path`/`--exclude`/`--exclude-from`, `--exclude-from` on
 archive/extract/pull, `check_compat_1_3`; defaults stay ≡ **1.3.0** (no new
 flags ⇒ full reference set; jobs=1, retries=0, text, progress off). The
-workspace reports **1.4.0**. **1.5** (Unreleased / Phase 15) adds further
-opt-in only: `--cache-max-bytes` (refuse-fill, not LRU), `make`/`cat
---format json`, ops-json make/cat rows finalized; defaults stay ≡ **1.4.0**
-(no max ⇒ unbounded cache fill; make/cat default **text**). Version bump to
-**1.5.0** is a later milestone — this tree may still report **1.4.0**. See
-[ops-json.md](ops-json.md) for the expanded matrix (incl. **archive** /
-**store stats** / **make** / **cat**).
+workspace reports **1.4.0**. **1.5.0** adds further opt-in only:
+`--cache-max-bytes` (refuse-fill, not LRU), `make`/`cat --format json`,
+ops-json make/cat rows finalized, `check_compat_1_4` (+ P1
+`store scrub --listing`); defaults stay ≡ **1.4.0** (no max ⇒ unbounded
+cache fill; make/cat default **text**; jobs=1, retries=0, text, progress
+off). The workspace reports **1.5.0**. See [ops-json.md](ops-json.md) for
+the expanded matrix (incl. **archive** / **store stats** / **make** /
+**cat**).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -46,7 +47,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `store stats`/`du`, `push --path`, `--cache-max-bytes`, `make`/`cat
 --format json`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, **1.4.0**, and **1.5** (Unreleased) are such minors: all new flags
+**1.3.0**, **1.4.0**, and **1.5.0** are such minors: all new flags
 default off / text / jobs=1 / depth 1 / no path filter / no cache-max ≡ prior
 release. Soft budget is **refuse-fill only** (≠ LRU ≠ trim ≠ GC ≠ sync).
 
@@ -92,7 +93,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); Phase 15 still does not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** still does not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -130,6 +131,8 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.0 defaults), [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
 (1.1/1.2 additive flags; calls 1_0),
 [`scripts/check_compat_1_2.sh`](../scripts/check_compat_1_2.sh)
-(1.3 path/archive flags; calls 1_1), and
+(1.3 path/archive flags; calls 1_1),
 [`scripts/check_compat_1_3.sh`](../scripts/check_compat_1_3.sh)
-(1.4 push path / store stats / exclude-from; calls 1_2). No absolute perf SLA.
+(1.4 push path / store stats / exclude-from; calls 1_2), and
+[`scripts/check_compat_1_4.sh`](../scripts/check_compat_1_4.sh)
+(1.5 cache-max / make·cat format; calls 1_3). No absolute perf SLA.

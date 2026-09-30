@@ -83,5 +83,6 @@ flags are gated by **`check_compat_1_2.sh`** (calls 1_1; no absolute perf SLA).
 Phase 14 (`store stats`, `push --path`/`--exclude`/`--exclude-from`) is gated
 by **`check_compat_1_3.sh`** (calls 1_2; no absolute perf SLA).
 Phase 15 finalizes **`make`/`cat`** in this matrix and soft cache budget
-(`--cache-max-bytes`); `check_compat_1_4.sh` arrives in a later milestone.
+(`--cache-max-bytes`); gated by **`check_compat_1_4.sh`** (calls 1_3; no
+absolute perf SLA).
 Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).

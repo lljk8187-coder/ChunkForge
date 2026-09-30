@@ -5631,11 +5631,21 @@ fn store_scrub_listing_only_referenced_ids() {
     ]);
 
     // Full scrub sees both blobs' chunks (at least 2).
-    let full = run_ok(&["store", "scrub", "--store", store.to_str().unwrap(), "--format", "json"]);
+    let full = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     let full_s = String::from_utf8_lossy(&full.stdout);
     let full_v: serde_json::Value = serde_json::from_str(full_s.trim()).unwrap();
     let full_checked = full_v["checked"].as_u64().unwrap();
-    assert!(full_checked >= 2, "full scrub checked={full_checked}; json={full_s}");
+    assert!(
+        full_checked >= 2,
+        "full scrub checked={full_checked}; json={full_s}"
+    );
 
     // Listing a only → fewer (or equal) checked; still healthy.
     let listed = run_ok(&[
@@ -10051,7 +10061,10 @@ fn cat_verify_cache_max_bytes_caps_disk_and_still_serves() {
 
     // Soft budget smaller than full fill: disk must not exceed N.
     let max = unbounded / 2;
-    assert!(max > 0, "need positive half-budget from unbounded={unbounded}");
+    assert!(
+        max > 0,
+        "need positive half-budget from unbounded={unbounded}"
+    );
     let max_s = max.to_string();
     run_ok(&[
         "verify",
@@ -10303,7 +10316,11 @@ fn make_format_json_reused_on_second_make() {
         .unwrap_or_else(|e| panic!("make json invalid: {e}; stdout={stdout}"));
     assert_eq!(v["ok"], true);
     let chunks = v["chunks"].as_u64().expect("chunks");
-    assert_eq!(v["new"].as_u64(), Some(0), "second make should write no new chunks");
+    assert_eq!(
+        v["new"].as_u64(),
+        Some(0),
+        "second make should write no new chunks"
+    );
     assert_eq!(
         v["reused"].as_u64(),
         Some(chunks),

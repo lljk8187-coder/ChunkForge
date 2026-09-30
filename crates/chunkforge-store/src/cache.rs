@@ -84,11 +84,7 @@ impl<P: ChunkSource> ChunkSource for CacheSource<P, Store> {
                 // Soft budget: skip fill when adding this plaintext would
                 // exceed max; never evict. Still return primary data.
                 if let Some(max) = self.max_bytes {
-                    let on_disk = self
-                        .cache
-                        .stats()
-                        .map_err(SourceError::from)?
-                        .bytes_on_disk;
+                    let on_disk = self.cache.stats().map_err(SourceError::from)?.bytes_on_disk;
                     if on_disk.saturating_add(data.len() as u64) > max {
                         return Ok(data);
                     }
@@ -210,7 +206,11 @@ mod tests {
         let after_a = src.cache().stats().unwrap().bytes_on_disk;
         assert_eq!(after_a, 100);
 
-        assert_eq!(src.get(&id_b).unwrap(), b, "get must still succeed from primary");
+        assert_eq!(
+            src.get(&id_b).unwrap(),
+            b,
+            "get must still succeed from primary"
+        );
         assert!(
             !src.cache().has(&id_b),
             "second chunk must not enter cache under soft budget"

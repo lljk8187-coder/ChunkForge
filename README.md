@@ -20,7 +20,7 @@
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
 | **Phase 13** | **1.3.0** | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2`; path **≠** prune **≠** sync; **not** pack / write mount |
 | **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
-| **Phase 15** | **1.5** (Unreleased) | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU / **1.5.0** tag yet (M7) |
+| **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -45,7 +45,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 / 1.5 is in progress (Unreleased)**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — **no** `1.5.0` tag yet; workspace may still report **1.4.0**.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
 
 ## Quick start (local CAS)
 
@@ -665,14 +665,18 @@ Details: [docs/push.md](docs/push.md), [docs/ops-json.md](docs/ops-json.md),
 [`scripts/check_compat_1_3.sh`](scripts/check_compat_1_3.sh).
 
 
-## Phase 15 / 1.5: cache soft budget + make/cat ops JSON (Unreleased)
+## Phase 15 / 1.5.0: cache soft budget + make/cat ops JSON
 
-Phase 15 targets **1.5.0** (compat minor; **not tagged yet** — this tree may
-still report **1.4.0**). Opt-in only; **defaults ≡ 1.4.0** (no `--cache-max-bytes`
-⇒ unbounded cache fill; `make`/`cat` default **text**; jobs=1, retries=0,
-SigV4 off, progress off, mount prefetch depth 1).
+Phase 15 closes **ops JSON closeout** and **cache soft budget** at
+**1.5.0**: opt-in **`--cache-max-bytes`** (refuse-fill ≠ LRU),
+**`make`/`cat --format text|json`**, ops-json finalize,
+`demo_cache_budget_ops_json`, and **`check_compat_1_4`** (+ P1
+`store scrub --listing`). All additive; **defaults ≡ 1.4.0** (no
+`--cache-max-bytes` ⇒ unbounded cache fill; `make`/`cat` default **text**;
+jobs=1, retries=0, SigV4 off, progress off, mount prefetch depth 1).
+Workspace / CLI version is **1.5.0**.
 
-**Delivered so far (Unreleased / M1–M6):**
+**Delivered:**
 
 - **`--cache-max-bytes N`** on `cat` / `verify` / `extract` / `mount` (requires
   `--cache`): soft fill budget in pure integer bytes. Over budget **refuse-fill**
@@ -692,8 +696,7 @@ SigV4 off, progress off, mount prefetch depth 1).
   `--cache-max-bytes` on cat/verify/extract/mount); thin non-goals (no pack /
   prune / LRU); demo presence. No absolute perf SLA.
 - **P1 `store scrub --listing <index>`**: local referenced-id rehash only
-  (default ≡ 1.4 full-store); **not** remote scrub. `bytes_plaintext` **not**
-  delivered.
+  (default ≡ 1.4 full-store); **not** remote scrub.
 
 **`cache-max-bytes` ≠ LRU ≠ trim ≠ GC ≠ sync:**
 
@@ -703,13 +706,12 @@ SigV4 off, progress off, mount prefetch depth 1).
 | `store stats` / `du` | Observe local CAS size; **not** an eviction knob |
 | `gc` / `store scrub` | Local unreferenced / bitrot; **not** cache policy |
 
-**Not yet / non-goals this phase:** **1.5.0** tag / version bump (M7);
-`bytes_plaintext` (store stats P1 — deferred); packfile; write mount / COW;
-bidirectional sync; extract prune / `--delete`; remote scrub; full aws-sdk /
-multipart / IMDS / SSO / ListObjects; byte-range resume; push listing upload;
-**cache LRU** / auto trim; changing default jobs·retries·SigV4·progress;
-absolute perf SLA in CI; video analysis. Pack stance: [docs/perf.md](docs/perf.md)
-— **Phase15 still does not implement pack**.
+**Not delivered / non-goals (carry forward):** `bytes_plaintext` (store stats
+P1); packfile; write mount / COW; bidirectional sync; extract prune /
+`--delete`; remote scrub; full aws-sdk / multipart / IMDS / SSO / ListObjects;
+byte-range resume; push listing upload; **cache LRU** / auto trim; changing
+default jobs·retries·SigV4·progress; absolute perf SLA in CI; video analysis.
+Pack stance: [docs/perf.md](docs/perf.md) — **1.5.0 still does not implement pack**.
 
 ```bash
 # Phase 15 cache-budget + ops-json smoke (~minutes; local file primary)
@@ -720,8 +722,8 @@ bash scripts/demo_cache_budget_ops_json.sh
 #    first blob fills; second distinct blob: disk unchanged, read OK
 # C: --cache-max-bytes without --cache → clear non-zero
 
-# Compat gate (includes 1_3 → 1_2 → 1_1 → 1_0 + 1.5 flags)
-bash scripts/check_compat_1_4.sh
+bash scripts/check_compat_1_4.sh   # includes 1_3 → 1_2 → 1_1 → 1_0 + 1.5 flags
+./target/debug/chunkforge --version   # → chunkforge 1.5.0
 
 # Manual sketch (same semantics):
 # ./target/debug/chunkforge make --store ./store -o a.cfidx --format json ./a.bin
@@ -733,8 +735,8 @@ bash scripts/check_compat_1_4.sh
 
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/mount.md](docs/mount.md),
 [docs/stability.md](docs/stability.md), [docs/perf.md](docs/perf.md),
-[docs/doctor-gc.md](docs/doctor-gc.md).
-**1.5.0** tag / version bump lands in M7.
+[docs/doctor-gc.md](docs/doctor-gc.md). Gate:
+[`scripts/check_compat_1_4.sh`](scripts/check_compat_1_4.sh).
 
 ## Incremental dedup demo
 

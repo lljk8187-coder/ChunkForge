@@ -917,7 +917,8 @@ fn run() -> Result<()> {
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(store.as_deref(), source.as_deref(), None, None, &http_tmpl)?;
+            let src =
+                open_chunk_source(store.as_deref(), source.as_deref(), None, None, &http_tmpl)?;
             let origin_spec = match (store.as_deref(), source.as_deref()) {
                 (Some(path), None) => path.to_string_lossy().into_owned(),
                 (None, Some(s)) => s.to_string(),

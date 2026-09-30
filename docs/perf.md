@@ -24,11 +24,11 @@ now.
 > change product defaults (`jobs=1`, `retries=0`). Promotion checklist
 > condition 1 remains unmet on local stub evidence; pack stays deferred.
 >
-> **Phase 15 still does not implement pack.** Cache soft budget
+> **1.5.0 / Phase 15 still does not implement pack.** Cache soft budget
 > (`--cache-max-bytes` refuse-fill) and `make`/`cat --format json` do not
-> change the loose `.cnk` layout or product defaults. Promotion checklist
-> condition 1 (high RTT dominant) remains unmet on local stub evidence;
-> pack stays deferred.
+> change the loose `.cnk` layout or product defaults (`jobs=1`, `retries=0`).
+> Promotion checklist condition 1 (high RTT dominant) remains unmet on local
+> stub evidence; pack stays deferred.
 
 ## What we measure
 

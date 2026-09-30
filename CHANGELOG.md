@@ -7,20 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-29
+
+Phase 15 closeout — `CacheSource` soft budget / `--cache-max-bytes`
+(refuse-fill ≠ LRU); `make`/`cat --format text|json`; ops-json finalize;
+`demo_cache_budget_ops_json.sh`; `check_compat_1_4.sh`; P1
+`store scrub --listing`. Defaults remain ≡ **1.4.0**. No pack / write mount /
+aws-sdk / remote scrub / extract prune / bidirectional sync / push listing /
+LRU / store trim. P1 `bytes_plaintext` not delivered.
+
 ### Added
 
-- **Phase15-M1 — `CacheSource` soft budget**: `CacheSource::with_max_bytes(primary, cache, max_bytes: Option<u64>)`; `None` / `new` ≡ 1.4 unbounded fill. On miss, if `cache.stats().bytes_on_disk + plaintext.len() > max` → skip `put`, still return primary plaintext. Never evicts / removes. No `ChunkSource`/`ChunkSink` signature change; no CLI wiring yet (M2).
-- **Phase15-M2 — CLI `--cache-max-bytes`**: `cat` / `verify` / `extract` / `mount` (every command that already has `--cache`). Pure integer bytes (`u64`); no KiB suffix. Requires `--cache` — without it → clear non-zero error. With `--cache` + max → `CacheSource::with_max_bytes(..., Some(N))`; `--cache` alone → `new` / `None` ≡ 1.4 unbounded. Orthogonal to jobs / format / prefetch / retries / SigV4. No LRU / eviction / prune. See `docs/mount.md` / `docs/extract.md`.
-- **Phase15-M3 — `make --format text|json`**: Shared `CliFormat`; default **text** ≡ 1.4.0 stderr summary. **json**: one stdout object `{ok, bytes, chunks, new, reused}` (no text dual-write); exit format-independent. `docs/ops-json.md` make row (finalized in M5). No version bump.
-- **Phase15-M4 — `cat --format text|json`**: Shared `CliFormat`; default **text** ≡ 1.4.0 (still writes `-o`; almost silent on success). **json**: one stdout object `{ok, bytes}` (`bytes` = written / `index.total_size`); still writes `-o`; no text dual-write; exit format-independent. Orthogonal to `--cache` / `--cache-max-bytes` / `--jobs`. `docs/ops-json.md` cat row (finalized in M5). No version bump.
-- **Phase15-M5 — ops-json finalize + demo + README**: `docs/ops-json.md` make/cat rows **final** (`make`: `ok`/`bytes`/`chunks`/`new`/`reused`; `cat`: `ok`/`bytes`); Out of scope make/cat removed; explicit `--cache-max-bytes` = refuse-fill (**≠ LRU ≠ trim ≠ GC ≠ sync**). New `scripts/demo_cache_budget_ops_json.sh` (make/cat json parse + first-fill / second-miss no disk growth). README Phase 15 / 1.5 draft (Unreleased; **no** 1.5.0 tag yet). Thin brush: mount/extract/stability/perf («Phase15 still does not implement pack»). No version bump; no `check_compat_1_4` (M6).
-- **Phase15-M6 — `check_compat_1_4.sh` + 1.4 regression / P1 scrub listing**: New `scripts/check_compat_1_4.sh` runs `check_compat_1_3.sh`, then asserts 1.5 help flags (`make`/`cat --format`; `cat`/`verify`/`extract`/`mount --cache-max-bytes`); thin non-goals: no `--delete`/prune, no pack, no `--cache-lru` / `store trim`; asserts `demo_cache_budget_ops_json.sh` present + executable (does not force-run). **No** absolute perf SLA. P1: `store scrub --listing <index>` (local referenced-id rehash only; default no flag ≡ 1.4 full-store; **not** remote scrub). README Phase 15 notes compat_1_4. No version bump (**1.5.0** = M7).
+- **`CacheSource` soft budget** (Phase 15 M1):
+  `CacheSource::with_max_bytes(primary, cache, max_bytes: Option<u64>)`;
+  `None` / `new` ≡ 1.4 unbounded fill. On miss, if
+  `cache.stats().bytes_on_disk + plaintext.len() > max` → skip `put`, still
+  return primary plaintext. Never evicts / removes. No `ChunkSource` /
+  `ChunkSink` signature change.
+- **CLI `--cache-max-bytes`** (Phase 15 M2): `cat` / `verify` / `extract` /
+  `mount` (every command that already has `--cache`). Pure integer bytes
+  (`u64`); no KiB suffix. Requires `--cache` — without it → clear non-zero
+  error. With `--cache` + max → `with_max_bytes(..., Some(N))`; `--cache`
+  alone → `new` / `None` ≡ 1.4 unbounded. Orthogonal to jobs / format /
+  prefetch / retries / SigV4. No LRU / eviction / prune. See `docs/mount.md` /
+  `docs/extract.md`.
+- **`make --format text|json`** (Phase 15 M3): Shared `CliFormat`; default
+  **text** ≡ 1.4.0 stderr summary. **json**: one stdout object
+  `{ok, bytes, chunks, new, reused}` (no text dual-write); exit
+  format-independent. See `docs/ops-json.md`.
+- **`cat --format text|json`** (Phase 15 M4): Shared `CliFormat`; default
+  **text** ≡ 1.4.0 (still writes `-o`; almost silent on success). **json**:
+  one stdout object `{ok, bytes}` (`bytes` = written / `index.total_size`);
+  still writes `-o`; no text dual-write; exit format-independent. Orthogonal
+  to `--cache` / `--cache-max-bytes` / `--jobs`. See `docs/ops-json.md`.
+- **Ops-json finalize + `demo_cache_budget_ops_json`** (Phase 15 M5):
+  `docs/ops-json.md` make/cat rows **final**; Out of scope make/cat removed;
+  explicit `--cache-max-bytes` = refuse-fill (**≠ LRU ≠ trim ≠ GC ≠ sync**).
+  Smoke `scripts/demo_cache_budget_ops_json.sh` (make/cat json parse +
+  first-fill / second-miss no disk growth). README Phase 15 / **1.5.0**;
+  `docs/perf.md` notes **1.5.0** still does not implement pack.
+- **`check_compat_1_4.sh` + 1.4 regression gate** (Phase 15 M6): runs
+  `check_compat_1_3.sh` (keeps 1_0…1_3 independently runnable), then asserts
+  1.5 help flags (`make`/`cat --format`; `cat`/`verify`/`extract`/`mount
+  --cache-max-bytes`); thin non-goals: no `--delete`/prune, no pack, no
+  `--cache-lru` / `store trim`. Asserts `demo_cache_budget_ops_json.sh`
+  present + executable (does not force-run). No absolute perf SLA.
+- **P1 `store scrub --listing <index>`** (Phase 15 M6): local referenced-id
+  rehash only; default no flag ≡ 1.4 full-store; **not** remote scrub.
+- Workspace version **1.5.0** (Phase 15 M7 closeout).
 
-### Not delivered (Phase15 Unreleased / M6)
+### Not delivered / deferred (Phase 15)
 
-- **`bytes_plaintext` (store stats)** — P1 O2 **not** delivered (decode cost; do not alter `.cnk`; deferred)
-- **1.5.0** version bump / tag — M7
-- packfile / write mount / aws-sdk / prune / LRU / remote scrub — non-goals (unchanged)
+- **`bytes_plaintext` (store stats)** — P1 **not** delivered (decode cost;
+  do not alter `.cnk`; deferred)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.4.0**: no `--cache-max-bytes` ⇒ unbounded cache fill;
+  `make`/`cat --format` default **text**; `jobs=1`, `http-retries=0`, SigV4
+  **off**, ops commands default **text**, `--progress` **off**, mount prefetch
+  default depth **1** ≡ 1.4.0 / 1.3.0 / 1.2.0 / 1.1.0 / 1.0.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; `--cache-max-bytes` = refuse-fill ≠ LRU ≠ trim ≠ GC ≠
+  sync; no silent break of 1.4.0 behaviour
 
 ## [1.4.0] — 2026-09-29
 
@@ -761,6 +819,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.5.0
 [1.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.4.0
 [1.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.3.0
 [1.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.2.0
