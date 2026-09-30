@@ -137,9 +137,9 @@ mod tests {
             vec!["pkgs", "pkgs/foo", "pkgs/foo/a.txt", "pkgs/foo/b.txt"]
         );
         // Unrelated empty dir and other subtree dropped.
-        assert!(!paths_of(&filtered).iter().any(|p| *p == "pkgs/empty"));
-        assert!(!paths_of(&filtered).iter().any(|p| *p == "pkgs/bar"));
-        assert!(!paths_of(&filtered).iter().any(|p| *p == "readme.txt"));
+        assert!(!paths_of(&filtered).contains(&"pkgs/empty"));
+        assert!(!paths_of(&filtered).contains(&"pkgs/bar"));
+        assert!(!paths_of(&filtered).contains(&"readme.txt"));
         // Ancestor Dir mode preserved.
         let pkgs_foo = filtered
             .entries
@@ -162,9 +162,9 @@ mod tests {
         assert!(paths.contains(&"pkgs/foo"));
         assert!(!paths.iter().any(|p| p.starts_with("pkgs/bar")));
         // empty dir under pkgs is not an ancestor of any kept file → dropped.
-        assert!(!paths.iter().any(|p| *p == "pkgs/empty"));
-        assert!(!paths.iter().any(|p| *p == "readme.txt"));
-        assert!(!paths.iter().any(|p| *p == "other/x.txt"));
+        assert!(!paths.contains(&"pkgs/empty"));
+        assert!(!paths.contains(&"readme.txt"));
+        assert!(!paths.contains(&"other/x.txt"));
     }
 
     #[test]

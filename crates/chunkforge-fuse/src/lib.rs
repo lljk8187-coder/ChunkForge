@@ -970,18 +970,8 @@ mod tests {
             assert_eq!(full.is_file_path(path), via_filter.is_file_path(path));
         }
 
-        let root_full: Vec<_> = full
-            .readdir_path("")
-            .unwrap()
-            .into_iter()
-            .map(|(n, d)| (n, d))
-            .collect();
-        let root_filt: Vec<_> = via_filter
-            .readdir_path("")
-            .unwrap()
-            .into_iter()
-            .map(|(n, d)| (n, d))
-            .collect();
+        let root_full: Vec<_> = full.readdir_path("").unwrap();
+        let root_filt: Vec<_> = via_filter.readdir_path("").unwrap();
         assert_eq!(root_full, root_filt);
 
         assert_eq!(
