@@ -257,8 +257,8 @@ if ! "$BIN" pull --help | grep -F -- '--verify' >/dev/null; then
 fi
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! echo "$VER" | grep -F '1.7.0' >/dev/null; then
-  echo "error: workspace version must stay 1.7.0 until M7; got $VER" >&2
+if ! echo "$VER" | grep -F '1.8.0' >/dev/null; then
+  echo "error: expected chunkforge 1.8.0; got $VER" >&2
   exit 1
 fi
 
