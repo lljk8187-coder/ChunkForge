@@ -709,8 +709,12 @@ enum Commands {
     /// `.cfdir` listing files themselves (chunks only). **`--dest`** may be
     /// `http(s)://`, a **local store path**, or **`file://`** (single dest;
     /// **≠** read-side fallback / multi-dest). Local/`file://` opens an existing
-    /// Store or creates one with compression **none** (≡ 1.9 create default)
-    /// via `Store` as `ChunkSink`. HTTP template flags
+    /// Store or creates one (omit/`--compression` ≡ create **none** ≡ 1.10;
+    /// explicit `zstd` only for **new** local/`file://` dest) via `Store` as
+    /// `ChunkSink`. **`http(s)://` dest + any `--compression` (including
+    /// explicit `none`) → clear non-zero.** Still **single** dest (**≠**
+    /// `--fallback` / multi-dest; **≠** `store recompress` / default zstd /
+    /// HTTP wire compression). HTTP template flags
     /// (`--url-template` / `--prefix` / `--header` / `--aws-sigv4` /
     /// `--http-retries`) apply only to `http(s)://` dest — with a local dest
     /// they are a clear non-zero error. For HTTP dest, templates match
@@ -738,7 +742,8 @@ enum Commands {
         #[arg(long)]
         store: PathBuf,
         /// Destination: `http(s)://` base URL, local CAS path, or `file://`
-        /// (single dest; local/`file://` ⇒ Store as ChunkSink, create none)
+        /// (single dest; local/`file://` ⇒ Store as ChunkSink; create uses
+        /// `--compression` / omit ≡ none ≡ 1.10)
         #[arg(long, value_name = "URL|PATH")]
         dest: String,
         #[command(flatten)]
@@ -788,6 +793,22 @@ enum Commands {
         /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
         #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
         path_from: Vec<PathBuf>,
+        /// On-disk chunk compression for a **new** local/`file://` `--dest` only
+        /// (`none`|`zstd`; case-insensitive). Same create semantics as
+        /// `pull`/`make`/`archive`/`store create`: omit ≡ create with `none`
+        /// (≡ 1.10); existing dest store opens by `meta.toml` (omit → no
+        /// mismatch check; explicit value that differs from meta → clear
+        /// non-zero error). **`http(s)://` dest + any `--compression`
+        /// (including explicit `none`) → clear non-zero.** Disk zstd is **not**
+        /// HTTP wire compression. **≠** `store recompress` / default zstd /
+        /// `--fallback` / multi-dest. Orthogonal to `--verify` / `--jobs` /
+        /// `--progress` / path scope.
+        #[arg(
+            long = "compression",
+            value_name = "none|zstd",
+            value_parser = parse_cli_compression
+        )]
+        compression: Option<Compression>,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -1500,6 +1521,7 @@ fn run() -> Result<()> {
             excludes,
             exclude_from,
             path_from,
+            compression,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
@@ -1518,6 +1540,7 @@ fn run() -> Result<()> {
                 format,
                 progress,
                 &path_filter,
+                compression,
             )
         }
         Commands::Pull {
@@ -4356,10 +4379,21 @@ fn cmd_gc(
     Ok(())
 }
 
-fn open_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn ChunkSink>> {
+fn open_chunk_sink(
+    dest: &str,
+    http_tmpl: &HttpTemplateArgs,
+    compression: Option<Compression>,
+) -> Result<Box<dyn ChunkSink>> {
     let trimmed = dest.trim();
 
     if is_http_spec(trimmed) {
+        // Disk --compression is local/`file://` create-only; never silently
+        // no-op on HTTP (including explicit `--compression none`).
+        if compression.is_some() {
+            bail!(
+                "--compression applies only to local/file:// --dest create                  (omit ≡ none ≡ 1.10); http(s):// destinations reject any                  --compression (including explicit none) — disk zstd is not                  HTTP wire compression / Content-Encoding, and push stays                  single-dest (≠ --fallback / store recompress)"
+            );
+        }
         let mut builder = HttpChunkSink::builder(trimmed)
             .timeout(Some(Duration::from_secs(30)))
             .retry_policy(retry_policy_from_http_args(http_tmpl));
@@ -4390,9 +4424,10 @@ fn open_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn C
 
     let path = parse_store_location(trimmed)
         .with_context(|| format!("parse push --dest {trimmed:?} (local path or file:// URL)"))?;
-    // Existing store: open as recorded. Missing: create with compression none
-    // (≡ 1.9 create default). Same open_or_create_store helper as pull/make.
-    let store = open_or_create_store(&path, None)?;
+    // Existing store: open as recorded (explicit mismatch → non-zero).
+    // Missing: create with omit ≡ none ≡ 1.10 (or explicit zstd). Same
+    // open_or_create_store helper as pull/make/store create.
+    let store = open_or_create_store(&path, compression)?;
     Ok(Box::new(store))
 }
 
@@ -4408,10 +4443,11 @@ fn cmd_push(
     format: CliFormat,
     progress: bool,
     path_filter: &PathFilter,
+    compression: Option<Compression>,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
-    let sink = open_chunk_sink(dest, http_tmpl)?;
+    let sink = open_chunk_sink(dest, http_tmpl, compression)?;
 
     let (referenced, listings_ok) = union_listing_chunk_ids_filtered(index_paths, path_filter)?;
 

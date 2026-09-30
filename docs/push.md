@@ -1,13 +1,17 @@
 # `chunkforge push`
 
-Phase 4 write path (Phase 5 extended; Phase 20 M6 local dest): upload
-**plaintext chunks** referenced by one or more `.cfidx` **or** `.cfdir`
-listings from a local CAS `--store` to **`--dest`**: `http(s)://` (URL layout
-matches the Phase 3 read path), a **local store path**, or **`file://`**.
-Still **one** dest (**≠** `--fallback` / multi-dest). After a successful HTTP
-push, the same base URL works with existing `verify` / `cat` / `doctor` /
-`mount --source`; a local/`file://` dest is the same Store layout and works
-with `verify --store` / `open_primary_source` for `--verify`.
+Phase 4 write path (Phase 5 extended; Phase 20 M6 local dest; Phase 21 M5
+`--compression`): upload **plaintext chunks** referenced by one or more
+`.cfidx` **or** `.cfdir` listings from a local CAS `--store` to **`--dest`**:
+`http(s)://` (URL layout matches the Phase 3 read path), a **local store
+path**, or **`file://`**. Still **one** dest (**≠** `--fallback` / multi-dest).
+Local/`file://` dest create accepts opt-in **`--compression none|zstd`**
+(omit ≡ **none** ≡ 1.10; same semantics as [`pull --compression`](pull.md);
+**≠** `store recompress` / default zstd / HTTP wire compression). HTTP dest +
+any `--compression` (including explicit `none`) → clear non-zero. After a
+successful HTTP push, the same base URL works with existing `verify` / `cat` /
+`doctor` / `mount --source`; a local/`file://` dest is the same Store layout
+and works with `verify --store` / `open_primary_source` for `--verify`.
 
 ## Usage
 
@@ -25,6 +29,7 @@ chunkforge push \
   [--dry-run] \
   [--verify] \
   [--format text|json] \
+  [--compression none|zstd] \
   [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
@@ -32,13 +37,14 @@ chunkforge push \
 | Flag | Meaning |
 |---|---|
 | `--store` | Local CAS providing plaintext chunk bytes (`Store::get`) |
-| `--dest` | **Single** destination: `http(s)://` base URL, local CAS path, or `file://`. Local/`file://` → `Store` as `ChunkSink` (open existing, or create with compression **none**). **≠** `--fallback` / multi-dest. HTTP template / SigV4 / `--http-retries` with a local dest → clear non-zero |
+| `--dest` | **Single** destination: `http(s)://` base URL, local CAS path, or `file://`. Local/`file://` → `Store` as `ChunkSink` (open existing, or create via `--compression` / omit ≡ **none** ≡ 1.10). **≠** `--fallback` / multi-dest. HTTP template / SigV4 / `--http-retries` with a local dest → clear non-zero. **`http(s)://` + any `--compression` → clear non-zero** |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
 | `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16); also used for post-push `--verify` fetches |
 | `--http-retries N` | Extra attempts after the first try for transient HTTP failures (default **0** ≡ 0.7.0). Wired into `RetryPolicy` on the HTTP sink/source. |
 | `--http-retry-backoff-ms MS` | Base backoff for retries (default **100**; exponential + jitter, capped at 2s) |
 | `--dry-run` | Probe + count only; **no** PUT |
 | `--verify` | After a successful push (`failed=0`), treat `--dest` (+ same templates) as a `ChunkSource` and run verify for **each** listing (`.cfidx` / `.cfdir`). Any verify failure → overall non-zero. Skipped on `--dry-run` (nothing uploaded) and when push already failed. |
+| `--compression` | On-disk chunk compression for a **new** local/`file://` `--dest` only (`none`\|`zstd`). Same create semantics as [`pull --compression`](pull.md) / `make` / `archive` / [`store create`](store.md): **omit ≡ create `none`** (≡ **1.10.0**); existing dest opens by `meta.toml` (omit → no mismatch check; explicit value that differs → clear non-zero). **`http(s)://` dest + any `--compression` (including explicit `none`) → clear non-zero.** Disk zstd ≠ HTTP wire compression. **≠** `store recompress` / default zstd / `--fallback` / multi-dest |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
 | `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.3.0** full reference set). Does **not** upload the listing. With `.cfidx` → clear non-zero error. |
 | `--exclude PAT` | Exclude matching File paths (repeatable): exact, trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. Applied after `--path`. With `.cfidx` → clear non-zero error. |
@@ -131,6 +137,7 @@ FUSE `mount` is unchanged (no per-read thread storm).
 | ❌ Remote GC / delete | Extra remote objects are left alone |
 | ❌ Bidirectional sync | Explicit one-way publish only |
 | ❌ `--fallback` / multi-dest | Write side stays **single** `--dest` (local dest included) |
+| ❌ `store recompress` / default zstd / HTTP wire compression | `--compression` is **create-time only** for new local/`file://` dest (omit ≡ none ≡ 1.10); disk zstd ≠ Content-Encoding |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |
 | ❌ `aws-sdk-*` / in-process SigV4 | ureq + template headers / external presign only |
 
@@ -171,7 +178,8 @@ chunkforge push \
 | PUT 409 Conflict (default) | Treated as success / **skipped** (`SkippedExists`) |
 | PUT other 4xx / 5xx / network error | **failed**; continue; exit non-zero |
 | Local/`file://` `--dest` + HTTP template / SigV4 / `--http-retries` | Immediate readable non-zero error |
-| Local/`file://` `--dest` (no HTTP knobs) | Open/create Store as `ChunkSink` (create compression **none**); single dest only |
+| `http(s)://` `--dest` + any `--compression` (incl. explicit `none`) | Immediate readable non-zero error (disk flag is local create-only) |
+| Local/`file://` `--dest` (no HTTP knobs) | Open/create Store as `ChunkSink` via `open_or_create_store` (omit ≡ create **none** ≡ 1.10; explicit mismatch → non-zero); single dest only |
 | `--dry-run` | Counts would-be uploads in `uploaded=`; **zero** PUT requests |
 | `--verify` + `--dry-run` | Verify is **skipped** (stderr note); dry-run never pretends the remote is verified |
 | `--verify` after push failures | Skipped; push already exits non-zero |

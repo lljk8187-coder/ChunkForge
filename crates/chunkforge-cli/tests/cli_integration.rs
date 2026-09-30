@@ -693,10 +693,7 @@ fn mount_help_lists_source_cache_name() {
     );
     // Phase 21 M2: path four-pack (≡ archive/extract/push/pull/diff/doctor/verify).
     for flag in ["--path", "--path-from", "--exclude", "--exclude-from"] {
-        assert!(
-            s.contains(flag),
-            "mount --help must list {flag}:\n{s}"
-        );
+        assert!(s.contains(flag), "mount --help must list {flag}:\n{s}");
     }
     assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
 }
@@ -890,13 +887,7 @@ fn mount_cli_cfdir_path_subset() {
     let handle = thread::spawn(move || {
         Command::new(&bin_path)
             .args([
-                "mount",
-                "--store",
-                &store_s,
-                "--path",
-                "pkgs/foo",
-                &cfdir_s,
-                &mnt_s,
+                "mount", "--store", &store_s, "--path", "pkgs/foo", &cfdir_s, &mnt_s,
             ])
             .status()
     });
@@ -13968,4 +13959,269 @@ fn doctor_verify_path_from_and_exclude_from_smoke() {
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["files"], 1, "{v}");
+}
+
+// --- Phase 21 M5: push --compression ---
+
+#[test]
+fn push_help_lists_compression() {
+    let help = run_ok(&["push", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--compression"),
+        "push --help must list --compression:\n{s}"
+    );
+    let lower = s.to_ascii_lowercase();
+    assert!(
+        lower.contains("none") && lower.contains("zstd"),
+        "push --help should mention none|zstd:\n{s}"
+    );
+    assert!(
+        lower.contains("new") || lower.contains("creat") || lower.contains("local"),
+        "push --help should say flag affects new local/file dest:\n{s}"
+    );
+    // Narrative may name `--fallback` as a non-goal; clap must not expose it
+    // as a real option (no `--fallback <…>` value slot).
+    assert!(
+        !s.contains("--fallback <") && !s.contains("--fallback <PATH"),
+        "push must not expose --fallback as a flag:\n{s}"
+    );
+    assert!(
+        lower.contains("recompress") && lower.contains("wire"),
+        "push --help should nail ≠ recompress / wire compression:\n{s}"
+    );
+}
+
+#[test]
+fn push_omit_compression_creates_none_dest() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-omit");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        dest.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let meta = fs::read_to_string(dest.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"none\""),
+        "omit push dest create must be none; meta={meta}"
+    );
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        dest.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
+    assert!(count_cnk(&dest) >= 1, "dest should have chunks");
+}
+
+#[test]
+fn push_compression_zstd_creates_zstd_dest() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-zstd");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        dest.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+
+    let meta = fs::read_to_string(dest.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"zstd\""),
+        "push --compression zstd must write zstd; meta={meta}"
+    );
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        dest.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("zstd"), "{v}");
+    assert!(count_cnk(&dest) >= 1, "zstd dest should have chunks");
+
+    // Round-trip: dest store must verify the listing.
+    run_ok(&[
+        "verify",
+        "--store",
+        dest.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn push_existing_none_dest_explicit_zstd_mismatch() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-none");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // First push creates none dest (omit).
+    run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        dest.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        dest.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("compression mismatch")
+            || err.to_ascii_lowercase().contains("mismatch"),
+        "expected mismatch error, got:\n{err}"
+    );
+}
+
+#[test]
+fn push_http_dest_with_compression_errors() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Explicit zstd + HTTP → non-zero before network.
+    let fail_z = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        "http://127.0.0.1:9",
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+    let err_z = String::from_utf8_lossy(&fail_z.stderr).to_ascii_lowercase();
+    assert!(
+        err_z.contains("compression")
+            && (err_z.contains("http") || err_z.contains("local") || err_z.contains("file")),
+        "HTTP + --compression zstd must fail clearly; stderr={err_z}"
+    );
+
+    // Explicit none + HTTP → also non-zero (any --compression).
+    let fail_n = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        "http://127.0.0.1:9",
+        "--compression",
+        "none",
+        idx.to_str().unwrap(),
+    ]);
+    let err_n = String::from_utf8_lossy(&fail_n.stderr).to_ascii_lowercase();
+    assert!(
+        err_n.contains("compression")
+            && (err_n.contains("http") || err_n.contains("local") || err_n.contains("file")),
+        "HTTP + --compression none must fail clearly; stderr={err_n}"
+    );
+}
+
+#[test]
+fn push_file_url_dest_compression_zstd() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-file-z");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let dest_url = format!("file://{}", dest.display());
+    run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &dest_url,
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+    let meta = fs::read_to_string(dest.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"zstd\""),
+        "file:// dest --compression zstd; meta={meta}"
+    );
+    assert!(count_cnk(&dest) >= 1);
 }

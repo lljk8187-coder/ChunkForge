@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`push --compression`** (Phase 21 M5 / P1 O1): local/`file://` `--dest`
+  **create** only (`none`|`zstd`; omit ≡ **none** ≡ 1.10); existing dest by
+  `meta.toml` / explicit mismatch → non-zero (reuses `open_or_create_store`);
+  **`http(s)://` dest + any `--compression` (including explicit `none`) → clear
+  non-zero**; still single dest (**≠** `--fallback` / multi-dest). **≠** `store
+  recompress` / default zstd / HTTP wire compression. Thin `docs/push.md`.
+  Workspace version still **1.10.0** (bump → M7).
 
 ## [1.10.0] — 2026-09-30
 
