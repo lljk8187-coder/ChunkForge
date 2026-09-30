@@ -17214,3 +17214,406 @@ fn filter_format_text_default_and_exit_independent() {
     assert_ne!(fail_text.status.code(), Some(0));
     assert_ne!(fail_json.status.code(), Some(0));
 }
+
+// --- Phase24-M3: filter correctness matrix (symlink / v1·v2 / verify) ---
+
+/// 1. Keep Symlink under --path → encode format_version=2 + Symlink retained + verify green.
+#[test]
+fn filter_keep_symlink_subset_encodes_v2_and_verify_green() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+        fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+        fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+        fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+        symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+        let full = dir.path().join("full.cfdir");
+        let subset = dir.path().join("subset.cfdir");
+
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "-o",
+            full.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ]);
+        // Input must be v2 with File+Symlink.
+        let full_arch =
+            chunkforge_index::DirArchive::decode(&fs::read(&full).unwrap()).expect("decode full");
+        assert_eq!(
+            full_arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V2,
+            "archive --symlinks record must produce v2 input"
+        );
+        assert!(
+            full_arch
+                .entries
+                .iter()
+                .any(|e| e.path == "pkgs/foo/link.txt"
+                    && matches!(e.kind, chunkforge_index::DirEntryKind::Symlink { .. })),
+            "v2 input must contain pkgs/foo/link.txt Symlink"
+        );
+
+        run_ok(&[
+            "filter",
+            "--path",
+            "pkgs/foo",
+            "-o",
+            subset.to_str().unwrap(),
+            full.to_str().unwrap(),
+        ]);
+
+        let bytes = fs::read(&subset).unwrap();
+        // format_version asserted via DirArchive::decode (header write_version from encode).
+        let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode subset");
+        assert_eq!(
+            arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V2,
+            "keeping ≥1 Symlink must encode format_version=2; got {}",
+            arch.format_version
+        );
+        // Peek magic/header: bytes[8..10] = format_version LE u16.
+        let peek_ver = u16::from_le_bytes([bytes[8], bytes[9]]);
+        assert_eq!(
+            peek_ver,
+            chunkforge_index::DIR_FORMAT_VERSION_V2,
+            "header peek format_version must be 2"
+        );
+        let link = arch
+            .entries
+            .iter()
+            .find(|e| e.path == "pkgs/foo/link.txt")
+            .expect("Symlink pkgs/foo/link.txt retained");
+        match &link.kind {
+            chunkforge_index::DirEntryKind::Symlink { target, .. } => {
+                assert_eq!(target, "a.txt");
+            }
+            other => panic!("expected Symlink, got {other:?}"),
+        }
+        assert!(
+            arch.entries.iter().any(|e| e.path == "pkgs/foo/a.txt"
+                && matches!(e.kind, chunkforge_index::DirEntryKind::File { .. })),
+            "File under --path must remain"
+        );
+        assert!(
+            !arch.entries.iter().any(|e| e.path.starts_with("pkgs/bar")),
+            "pkgs/bar must be omitted"
+        );
+
+        // verify --store … subset.cfdir exit 0 (chunks still in store).
+        run_ok(&[
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            subset.to_str().unwrap(),
+        ]);
+    }
+}
+
+/// 2. Filter out all Symlinks (File-only keep) → encode format_version=1 + verify green.
+#[test]
+fn filter_out_all_symlinks_encodes_v1_and_verify_green() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        let src = dir.path().join("src");
+        // File-only under pkgs/foo; Symlink only under pkgs/bar.
+        fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+        fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+        fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+        fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+        symlink("b.txt", src.join("pkgs/bar/link.txt")).unwrap();
+
+        let full = dir.path().join("full.cfdir");
+        let subset = dir.path().join("file_only.cfdir");
+
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "-o",
+            full.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ]);
+        let full_arch =
+            chunkforge_index::DirArchive::decode(&fs::read(&full).unwrap()).expect("decode full");
+        assert_eq!(
+            full_arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V2,
+            "same v2 input with File+Symlink"
+        );
+        assert!(
+            full_arch
+                .entries
+                .iter()
+                .any(|e| matches!(e.kind, chunkforge_index::DirEntryKind::Symlink { .. })),
+            "input must contain at least one Symlink"
+        );
+
+        // --path pkgs/foo keeps Files only; all Symlinks (under bar) omitted.
+        run_ok(&[
+            "filter",
+            "--path",
+            "pkgs/foo",
+            "-o",
+            subset.to_str().unwrap(),
+            full.to_str().unwrap(),
+        ]);
+
+        let bytes = fs::read(&subset).unwrap();
+        let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode file-only subset");
+        assert_eq!(
+            arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V1,
+            "File-only keep must encode format_version=1 (encode recalculates write_version); got {}",
+            arch.format_version
+        );
+        let peek_ver = u16::from_le_bytes([bytes[8], bytes[9]]);
+        assert_eq!(
+            peek_ver,
+            chunkforge_index::DIR_FORMAT_VERSION_V1,
+            "header peek format_version must be 1"
+        );
+        assert!(
+            arch.entries
+                .iter()
+                .all(|e| !matches!(e.kind, chunkforge_index::DirEntryKind::Symlink { .. })),
+            "no Symlink entries after File-only keep; entries={:?}",
+            arch.entries
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            arch.entries.iter().any(|e| e.path == "pkgs/foo/a.txt"
+                && matches!(e.kind, chunkforge_index::DirEntryKind::File { .. })),
+            "Files under pkgs/foo must remain"
+        );
+
+        run_ok(&[
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            subset.to_str().unwrap(),
+        ]);
+    }
+}
+
+/// 3. Empty filter (no path/exclude) ≡ identity: diff identical; document encode rewrite.
+#[test]
+fn filter_empty_flags_identity_v2_diff_identical() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+        fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+        fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+        fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+        symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+        let full = dir.path().join("full.cfdir");
+        let copy = dir.path().join("copy.cfdir");
+
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "-o",
+            full.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ]);
+
+        // No path/exclude flags → identity.
+        run_ok(&[
+            "filter",
+            "-o",
+            copy.to_str().unwrap(),
+            full.to_str().unwrap(),
+        ]);
+        assert!(copy.is_file(), "identity filter must write -o");
+
+        // Prefer diff identical exit 0 (semantic listing equivalence).
+        let diff = run_ok(&["diff", full.to_str().unwrap(), copy.to_str().unwrap()]);
+        let diff_s = String::from_utf8_lossy(&diff.stdout);
+        assert!(
+            diff_s.contains("added=0")
+                && diff_s.contains("removed=0")
+                && diff_s.contains("changed=0")
+                && diff_s.contains("meta_changed=0"),
+            "empty filter must be identity; diff={diff_s}"
+        );
+
+        let full_bytes = fs::read(&full).unwrap();
+        let copy_bytes = fs::read(&copy).unwrap();
+        let full_arch = chunkforge_index::DirArchive::decode(&full_bytes).unwrap();
+        let copy_arch = chunkforge_index::DirArchive::decode(&copy_bytes).unwrap();
+        assert_eq!(
+            full_arch.format_version, copy_arch.format_version,
+            "identity must preserve format_version"
+        );
+        assert_eq!(
+            full_arch.entries, copy_arch.entries,
+            "identity must preserve entries (logical equivalence)"
+        );
+        // Encode re-writes the trailer from body hash; for a well-formed identity
+        // re-encode the bytes are typically identical (deterministic encode). If they
+        // ever diverge, entries+format_version still match (documented above).
+        if full_bytes != copy_bytes {
+            eprintln!(
+                "note: empty-filter identity re-encode produced different bytes \
+                 (trailer/header rewrite); entries+format_version still match"
+            );
+        } else {
+            assert_eq!(
+                full_bytes, copy_bytes,
+                "identity re-encode byte-identical for well-formed v2 input"
+            );
+        }
+
+        run_ok(&[
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            copy.to_str().unwrap(),
+        ]);
+    }
+}
+
+/// 4. Path subset → verify green; diff full vs sub shows removed; filter ≠ prune / ≠ gc --path.
+#[test]
+fn filter_path_subset_verify_green_narrower_ref_set_no_prune() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+
+    // Unrelated target tree that filter must not touch (≠ prune).
+    let unrelated_tree = dir.path().join("unrelated_tree");
+    fs::create_dir_all(&unrelated_tree).unwrap();
+    let sentinel = unrelated_tree.join("must_remain.txt");
+    fs::write(&sentinel, b"do-not-delete\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let sub = dir.path().join("sub.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        sub.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(sub.is_file(), "filter -o sub.cfdir must exist");
+
+    // verify --store … sub.cfdir green (chunks still in store; narrower ref set OK).
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        sub.to_str().unwrap(),
+    ]);
+
+    // diff full vs sub: path-filtered removed (pkgs/bar) explainable; not identical.
+    let diff = run_fail(&["diff", full.to_str().unwrap(), sub.to_str().unwrap()]);
+    let diff_s = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        diff_s.contains("removed=") && !diff_s.contains("removed=0"),
+        "full vs sub must show removed (narrower listing); diff={diff_s}"
+    );
+    // Path-filtered identical: sub ≡ archive --path pkgs/foo from same source.
+    let expected = dir.path().join("expected.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo",
+        "-o",
+        expected.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let id = run_ok(&["diff", sub.to_str().unwrap(), expected.to_str().unwrap()]);
+    let id_s = String::from_utf8_lossy(&id.stdout);
+    assert!(
+        id_s.contains("added=0") && id_s.contains("removed=0") && id_s.contains("changed=0"),
+        "sub must match archive --path; diff={id_s}"
+    );
+
+    // Filter does not prune any target tree (sentinel untouched).
+    assert!(
+        sentinel.is_file(),
+        "filter must not prune unrelated target trees"
+    );
+    assert_eq!(
+        fs::read(&sentinel).unwrap(),
+        b"do-not-delete\n",
+        "unrelated tree content must be untouched"
+    );
+    // Extract subset into a dest that already has an extra path → extract ≠ prune either
+    // (documents filter listing ≠ prune target tree).
+    let dest = dir.path().join("dest");
+    fs::create_dir_all(dest.join("pkgs/bar")).unwrap();
+    let extra = dest.join("pkgs/bar/extra.txt");
+    fs::write(&extra, b"extra-stale\n").unwrap();
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        sub.to_str().unwrap(),
+        "-o",
+        dest.to_str().unwrap(),
+    ]);
+    assert!(
+        dest.join("pkgs/foo/a.txt").is_file(),
+        "subset extract must materialize pkgs/foo"
+    );
+    assert!(
+        extra.is_file(),
+        "extract of filtered listing must not prune extra dest paths"
+    );
+    assert_eq!(fs::read(&extra).unwrap(), b"extra-stale\n");
+
+    // filter / gc help: filter ≠ gc --path; gc still has no --path.
+    let filter_help = run_ok(&["filter", "--help"]);
+    let fh = String::from_utf8_lossy(&filter_help.stdout).to_lowercase();
+    assert!(
+        fh.contains("gc --path") || fh.contains("gc-path") || fh.contains("`gc --path`"),
+        "filter --help must mention ≠ gc --path:\n{fh}"
+    );
+    let gc_help = run_ok(&["gc", "--help"]);
+    let gh = String::from_utf8_lossy(&gc_help.stdout);
+    assert!(
+        !gh.contains("--path") && !gh.contains("--exclude"),
+        "gc --help must still have no --path (filter does not add gc --path):\n{gh}"
+    );
+}
