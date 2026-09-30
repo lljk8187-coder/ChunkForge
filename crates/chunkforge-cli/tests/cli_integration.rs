@@ -3147,13 +3147,20 @@ fn archive_help_documents_symlink_policy() {
         help_s.contains("symlink") || help_s.contains("Symlink"),
         "archive --help should mention symlink policy; got:\n{help_s}"
     );
+    assert!(
+        help_s.contains("--symlinks"),
+        "archive --help must list --symlinks; got:\n{help_s}"
+    );
+    assert!(
+        help_s.contains("skip") && help_s.contains("record"),
+        "archive --help should document skip|record; got:\n{help_s}"
+    );
     assert!(help_s.contains("--store"), "{help_s}");
     assert!(
         help_s.contains("--chunk-size") || help_s.contains("chunk-size"),
         "{help_s}"
     );
 }
-
 #[test]
 fn archive_small_tree_writes_chunks_and_second_run_reuses() {
     let dir = tempdir().unwrap();
@@ -14364,4 +14371,252 @@ fn store_list_sorted_hex_and_json_fields() {
     assert_eq!(ids.len(), lines.len());
     let hexes: Vec<&str> = ids.iter().map(|x| x.as_str().unwrap()).collect();
     assert_eq!(hexes, lines, "json ids must match sorted text lines");
+}
+
+#[test]
+fn archive_symlinks_default_skip_writes_v1() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello-symlink\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let out = dir.path().join("tree.cfdir");
+        let result = run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--format",
+            "json",
+            src.to_str().unwrap(),
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert!(
+            v["skipped_symlinks"].as_u64().unwrap_or(0) >= 1,
+            "default skip should count skipped_symlinks; json={stdout}"
+        );
+        assert_eq!(
+            v["recorded_symlinks"].as_u64().unwrap_or(0),
+            0,
+            "default skip records none; json={stdout}"
+        );
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("skip") || err.contains("symlink"),
+            "default should warn skip; stderr={err}"
+        );
+
+        let bytes = fs::read(&out).unwrap();
+        let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+        assert_eq!(
+            arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V1,
+            "default skip must write v1"
+        );
+        assert!(
+            arch.entries
+                .iter()
+                .all(|e| !matches!(e.kind, chunkforge_index::DirEntryKind::Symlink { .. })),
+            "default skip must not emit Symlink entries; entries={:?}",
+            arch.entries
+        );
+        assert!(
+            arch.entries.iter().any(|e| e.path == "a.txt"),
+            "file should be present"
+        );
+    }
+}
+
+#[test]
+fn archive_symlinks_record_writes_v2() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello-symlink\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let out = dir.path().join("tree-sym.cfdir");
+        let result = run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--format",
+            "json",
+            src.to_str().unwrap(),
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(
+            v["skipped_symlinks"].as_u64().unwrap_or(999),
+            0,
+            "record should not count recorded as skipped; json={stdout}"
+        );
+        assert_eq!(
+            v["recorded_symlinks"].as_u64().unwrap_or(0),
+            1,
+            "record should count recorded_symlinks; json={stdout}"
+        );
+
+        let bytes = fs::read(&out).unwrap();
+        let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+        assert_eq!(
+            arch.format_version,
+            chunkforge_index::DIR_FORMAT_VERSION_V2,
+            "record with ≥1 symlink must write v2"
+        );
+        let link = arch
+            .entries
+            .iter()
+            .find(|e| e.path == "link")
+            .expect("symlink entry present");
+        match &link.kind {
+            chunkforge_index::DirEntryKind::Symlink { target, mode } => {
+                assert_eq!(target, "a.txt");
+                // mode should be present (unix symlink mode bits non-zero typically)
+                let _ = mode;
+            }
+            other => panic!("expected Symlink kind, got {other:?}"),
+        }
+        assert!(
+            arch.entries.iter().any(|e| e.path == "a.txt"),
+            "file should still be present"
+        );
+    }
+}
+
+#[test]
+fn archive_symlinks_record_absolute_target_nonzero() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"x\n").unwrap();
+        symlink("/etc/passwd", src.join("bad")).unwrap();
+
+        let store = dir.path().join("store");
+        let out = dir.path().join("bad.cfdir");
+        let result = run_fail(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("absolute") || err.contains("bad"),
+            "absolute target must clear-error; stderr={err}"
+        );
+        assert!(
+            !out.is_file(),
+            "must not write .cfdir on absolute-target failure"
+        );
+    }
+}
+
+#[test]
+fn archive_symlinks_record_path_filter_orthogonal() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let keep = src.join("keep");
+        let drop = src.join("drop");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&drop).unwrap();
+        fs::write(keep.join("a.txt"), b"keep\n").unwrap();
+        fs::write(drop.join("b.txt"), b"drop\n").unwrap();
+        symlink("a.txt", keep.join("link-keep")).unwrap();
+        symlink("b.txt", drop.join("link-drop")).unwrap();
+
+        let store = dir.path().join("store");
+        let out = dir.path().join("filtered.cfdir");
+        let result = run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--path",
+            "keep",
+            "--format",
+            "json",
+            src.to_str().unwrap(),
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["recorded_symlinks"].as_u64().unwrap_or(0), 1);
+        assert!(
+            v["excluded"].as_u64().unwrap_or(0) >= 1,
+            "drop/* should be excluded; json={stdout}"
+        );
+
+        let bytes = fs::read(&out).unwrap();
+        let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+        let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"keep/a.txt"), "{paths:?}");
+        assert!(paths.contains(&"keep/link-keep"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("drop")), "{paths:?}");
+
+        let link = arch
+            .entries
+            .iter()
+            .find(|e| e.path == "keep/link-keep")
+            .unwrap();
+        match &link.kind {
+            chunkforge_index::DirEntryKind::Symlink { target, .. } => {
+                assert_eq!(target, "a.txt");
+            }
+            other => panic!("expected Symlink, got {other:?}"),
+        }
+
+        // Exclude a symlink path under record.
+        let out2 = dir.path().join("excluded-link.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--exclude",
+            "keep/link-keep",
+            src.to_str().unwrap(),
+        ]);
+        let arch2 = chunkforge_index::DirArchive::decode(&fs::read(&out2).unwrap()).unwrap();
+        assert!(
+            arch2.entries.iter().all(|e| e.path != "keep/link-keep"),
+            "excluded symlink path must be absent"
+        );
+        // Still has the drop symlink if not excluded — full tree minus one path.
+        assert!(
+            arch2.entries.iter().any(|e| e.path == "drop/link-drop"
+                && matches!(e.kind, chunkforge_index::DirEntryKind::Symlink { .. })),
+            "other symlink should remain"
+        );
+    }
 }

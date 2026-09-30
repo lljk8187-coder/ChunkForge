@@ -93,18 +93,22 @@ enum Commands {
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
-    /// Recurses regular files only (FastCDC + BLAKE3 per file). Chunks are
-    /// written into `--store` with content-addressed dedup; the output `.cfdir`
-    /// records relative paths and per-file chunk tables. Symlinks, fifos,
-    /// sockets, and device nodes are **skipped with a stderr warning** (P0
-    /// policy: do not follow / do not record) **before** `--path`/`--path-from`/`--exclude`
-    /// filtering. Empty directories are omitted (extract can recreate parents
-    /// from file paths). Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from` restrict
-    /// which regular files are chunked and listed (default: full tree ≡ 1.9.0).
-    /// Default **`--format text`** (≡ 1.2.0): summary on stderr.
-    /// **`--format json`**: one JSON object on stdout; no duplicate text
-    /// summary; exit codes are format-independent. `make` single-file
-    /// semantics are unchanged.
+    /// Recurses regular files (FastCDC + BLAKE3 per file). Chunks are written
+    /// into `--store` with content-addressed dedup; the output `.cfdir` records
+    /// relative paths and per-file chunk tables. Default **`--symlinks skip`**
+    /// (≡ 1.11.0): symlinks are skipped with a stderr warning and not followed,
+    /// **before** `--path`/`--path-from`/`--exclude` filtering. With
+    /// **`--symlinks record`**, symlink paths are archive candidates that go
+    /// through PathFilter (orthogonal to the path 四件套); recorded targets are
+    /// stored as-is (not followed / not canonicalized); ≥1 Symlink ⇒ listing
+    /// `format_version=2`. Fifos, sockets, and device nodes are always skipped
+    /// with a stderr warning. Empty directories are omitted (extract can recreate
+    /// parents from file paths). Optional repeatable `--path` / `--path-from` /
+    /// `--exclude` / `--exclude-from` restrict which candidates are chunked /
+    /// listed (default: full tree ≡ 1.9.0). Default **`--format text`** (≡ 1.2.0):
+    /// summary on stderr. **`--format json`**: one JSON object on stdout; no
+    /// duplicate text summary; exit codes are format-independent. `make`
+    /// single-file semantics are unchanged.
     Archive {
         /// Local CAS store directory (created if missing; not written in `--dry-run`)
         #[arg(long)]
@@ -181,6 +185,13 @@ enum Commands {
         /// (default off ≡ 1.6.0). Orthogonal to `--format json` and `--jobs`.
         #[arg(long = "progress")]
         progress: bool,
+        /// Symlink handling: `skip` (default ≡ 1.11 skip+warn; not recorded /
+        /// not followed) or `record` (write Symlink into the listing; not
+        /// followed; absolute or empty target → clear non-zero). Orthogonal to
+        /// `--path` / `--exclude` / seed / compression / progress / jobs.
+        /// Special files still skip+warn.
+        #[arg(long = "symlinks", value_enum, default_value_t = SymlinkPolicy::Skip)]
+        symlinks: SymlinkPolicy,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -1119,6 +1130,20 @@ enum StoreCommands {
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
 /// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent;
 /// `store list` ≡ sorted hex ids one-per-line).
+/// How `archive` treats symbolic links (Phase22-M2).
+///
+/// Default [`Skip`] ≡ 1.11.0 skip+warn (not recorded / not followed).
+/// [`Record`] writes [`DirEntryKind::Symlink`] entries (targets as-is; not
+/// followed); absolute or empty targets are rejected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum SymlinkPolicy {
+    /// Skip + warn (≡ 1.11.0); do not record / do not follow
+    #[default]
+    Skip,
+    /// Record Symlink into listing (not followed; absolute target → error)
+    Record,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -1243,6 +1268,7 @@ fn run() -> Result<()> {
             format,
             compression,
             progress,
+            symlinks,
         } => {
             let jobs = parse_jobs(jobs)?;
             let paths = merged_paths(&paths, &path_from)?;
@@ -1260,6 +1286,7 @@ fn run() -> Result<()> {
                 format,
                 compression,
                 progress,
+                symlinks,
             )
         }
         Commands::Extract {
@@ -2175,6 +2202,7 @@ fn cmd_archive(
     format: CliFormat,
     compression: Option<Compression>,
     progress: bool,
+    symlinks: SymlinkPolicy,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -2221,19 +2249,24 @@ fn cmd_archive(
         }
     }
 
-    // Collect regular files first (sorted) so .cfdir output is deterministic.
-    // Order: type skip (symlink/special) inside walk, then PathFilter on candidates.
+    // Collect candidates (sorted) so .cfdir output is deterministic.
+    // Order: discover (type skip for special; symlink skip-or-record per policy),
+    // then PathFilter. Symlink-to-dir is never followed.
     let mut file_paths: Vec<PathBuf> = Vec::new();
+    let mut symlink_candidates: Vec<ArchiveSymlinkCandidate> = Vec::new();
     let mut skipped_symlinks = 0usize;
     let mut skipped_special = 0usize;
     collect_archive_files(
         src_dir,
         src_dir,
         &mut file_paths,
+        &mut symlink_candidates,
         &mut skipped_symlinks,
         &mut skipped_special,
+        symlinks,
     )?;
     file_paths.sort();
+    symlink_candidates.sort_by(|a, b| a.full.cmp(&b.full));
 
     let mut excluded = 0usize;
     let mut kept: Vec<PathBuf> = Vec::with_capacity(file_paths.len());
@@ -2249,12 +2282,56 @@ fn cmd_archive(
     }
     let file_paths = kept;
 
-    if format == CliFormat::Text && (skipped_symlinks > 0 || skipped_special > 0) {
-        eprintln!(
-            "archive: symlink policy = skip+warn (not recorded / not followed); \
-             skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
-            if skipped_symlinks == 1 { "" } else { "s" },
-        );
+    let mut kept_symlinks: Vec<ArchiveSymlinkCandidate> =
+        Vec::with_capacity(symlink_candidates.len());
+    for cand in symlink_candidates {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+        if path_filter.allows(&rel) {
+            kept_symlinks.push(cand);
+        } else {
+            excluded += 1;
+        }
+    }
+
+    // Absolute / empty targets: reject only kept (path-filtered) symlink candidates.
+    for cand in &kept_symlinks {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        if cand.target.is_empty() {
+            bail!("archive: symlink {rel} has empty target (refusing to record)");
+        }
+        if Path::new(&cand.target).is_absolute() {
+            bail!(
+                "archive: symlink {rel} has absolute target {:?} (refusing; use a relative target)",
+                cand.target
+            );
+        }
+    }
+
+    if format == CliFormat::Text {
+        match symlinks {
+            SymlinkPolicy::Skip if skipped_symlinks > 0 || skipped_special > 0 => {
+                eprintln!(
+                    "archive: symlink policy = skip+warn (not recorded / not followed); \
+                     skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
+                    if skipped_symlinks == 1 { "" } else { "s" },
+                );
+            }
+            SymlinkPolicy::Record => {
+                if !kept_symlinks.is_empty() {
+                    eprintln!(
+                        "archive: symlink policy = record (not followed); recorded {} symlink{}",
+                        kept_symlinks.len(),
+                        if kept_symlinks.len() == 1 { "" } else { "s" },
+                    );
+                }
+                if skipped_special > 0 {
+                    eprintln!("archive: skipped {skipped_special} special (fifo/socket/device)");
+                }
+            }
+            SymlinkPolicy::Skip => {}
+        }
     }
 
     // Dry-run cross-file dedup set (Mutex so --jobs > 1 stays correct).
@@ -2304,7 +2381,25 @@ fn cmd_archive(
         }
     }
 
-    let file_count = entries.len();
+    // Append recorded Symlink entries (0 chunks; never seed-reused).
+    for cand in &kept_symlinks {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        entries.push(DirEntry {
+            path: rel,
+            kind: DirEntryKind::Symlink {
+                mode: cand.mode,
+                target: cand.target.clone(),
+            },
+        });
+    }
+    // Deterministic listing order: all paths sorted (File and Symlink interleaved).
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let recorded_symlinks = kept_symlinks.len();
+    let file_count = entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        .count();
     // Empty Dir entries are omitted (≡ 1.2.0); dirs counter stays 0 for File-only listings.
     let dir_count = entries
         .iter()
@@ -2363,6 +2458,7 @@ fn cmd_archive(
                     "rechunked_files": rechunked_files,
                     "skipped_symlinks": skipped_symlinks,
                     "skipped_special": skipped_special,
+                    "recorded_symlinks": recorded_symlinks,
                     "excluded": excluded,
                 });
                 println!("{obj}");
@@ -2439,6 +2535,7 @@ fn cmd_archive(
                 "rechunked_files": rechunked_files,
                 "skipped_symlinks": skipped_symlinks,
                 "skipped_special": skipped_special,
+                "recorded_symlinks": recorded_symlinks,
                 "excluded": excluded,
             });
             println!("{obj}");
@@ -2669,18 +2766,31 @@ fn load_seed_cfdir(path: &Path) -> Result<DirArchive> {
     Ok(arch)
 }
 
-/// Recursively collect regular-file paths under `dir` (relative walk from `root`).
+/// One filesystem symlink discovered during archive walk (`--symlinks record`).
+struct ArchiveSymlinkCandidate {
+    full: PathBuf,
+    /// Target string as returned by `read_link` (not canonicalized).
+    target: String,
+    mode: u32,
+}
+
+/// Recursively collect regular-file paths (and optionally symlink candidates)
+/// under `dir` (relative walk from `root`).
 ///
-/// Symlinks (including symlink-to-dir) and special files are skipped with a
-/// per-path stderr warning **before** any `--path`/`--exclude` filter (Phase 13
-/// M2 order: type skip → PathFilter on candidates). Does **not** follow
-/// directory symlinks (avoids loops).
+/// Special files are always skipped with a per-path stderr warning.
+/// With [`SymlinkPolicy::Skip`] (default ≡ 1.11): symlinks are skipped with warn
+/// **before** PathFilter. With [`SymlinkPolicy::Record`]: symlinks are collected
+/// as candidates (target via `read_link` as-is; mode from `symlink_metadata`)
+/// and later pass through PathFilter — still **not** followed (symlink-to-dir
+/// is not recursed into).
 fn collect_archive_files(
     root: &Path,
     dir: &Path,
     out: &mut Vec<PathBuf>,
+    symlink_out: &mut Vec<ArchiveSymlinkCandidate>,
     skipped_symlinks: &mut usize,
     skipped_special: &mut usize,
+    policy: SymlinkPolicy,
 ) -> Result<()> {
     let entries = fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
     for entry in entries {
@@ -2691,15 +2801,42 @@ fn collect_archive_files(
             .with_context(|| format!("file_type {}", path.display()))?;
 
         if ft.is_symlink() {
-            *skipped_symlinks += 1;
-            eprintln!(
-                "archive: skip symlink {} (policy: skip+warn; not recorded / not followed)",
-                display_under_root(root, &path)
-            );
+            match policy {
+                SymlinkPolicy::Skip => {
+                    *skipped_symlinks += 1;
+                    eprintln!(
+                        "archive: skip symlink {} (policy: skip+warn; not recorded / not followed)",
+                        display_under_root(root, &path)
+                    );
+                }
+                SymlinkPolicy::Record => {
+                    let target_path = fs::read_link(&path)
+                        .with_context(|| format!("read_link {}", path.display()))?;
+                    let target = target_path.to_string_lossy().into_owned();
+                    let meta = fs::symlink_metadata(&path)
+                        .with_context(|| format!("symlink_metadata {}", path.display()))?;
+                    // Match file mode recording: full unix mode bits from metadata.
+                    let mode = file_mode_u32(&meta);
+                    symlink_out.push(ArchiveSymlinkCandidate {
+                        full: path,
+                        target,
+                        mode,
+                    });
+                    // Do not recurse into symlink-to-dir.
+                }
+            }
             continue;
         }
         if ft.is_dir() {
-            collect_archive_files(root, &path, out, skipped_symlinks, skipped_special)?;
+            collect_archive_files(
+                root,
+                &path,
+                out,
+                symlink_out,
+                skipped_symlinks,
+                skipped_special,
+                policy,
+            )?;
             continue;
         }
         if ft.is_file() {
