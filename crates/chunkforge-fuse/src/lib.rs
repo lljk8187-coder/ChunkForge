@@ -2,6 +2,8 @@
 //!
 //! - [`BlobFs`]: single-blob mount from a `.cfidx` [`Index`] (Phase 2)
 //! - [`DirFs`]: directory-tree mount from a `.cfdir` [`DirArchive`] (Phase 5 M4)
+//! - Phase 21 M1: [`chunkforge_index::filter_dir_archive`] subsets a listing
+//!   (matching Files + ancestor Dirs) before [`DirFs::new`]; empty filter ≡ 1.10 full tree.
 //!
 //! Kernel mounts are forced [`MountOption::RO`]; write-side FUSE ops return
 //! `EROFS` / `EACCES`. Sequential forward reads prefetch subsequent chunk(s) into a
@@ -804,6 +806,185 @@ mod tests {
             counting.get_count(&a_id1),
             0,
             "cross-file must not reuse other file's prefetched chunk"
+        );
+    }
+
+
+    // --- Phase 21 M1: filter_dir_archive → DirFs (no real FUSE) ---
+
+    fn filter_sample_tree() -> (DirArchive, MemSource) {
+        let a = b"foo-a\n".to_vec();
+        let b = b"foo-b\n".to_vec();
+        let c = b"bar-c\n".to_vec();
+        let d = b"other\n".to_vec();
+        let mut src = MemSource::default();
+        let a_chunks = chunks_from_cuts(&a, &[a.len()], &mut src);
+        let b_chunks = chunks_from_cuts(&b, &[b.len()], &mut src);
+        let c_chunks = chunks_from_cuts(&c, &[c.len()], &mut src);
+        let d_chunks = chunks_from_cuts(&d, &[d.len()], &mut src);
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "pkgs".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "pkgs/foo".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "pkgs/foo/a.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: a.len() as u64,
+                        mtime_secs: 1,
+                        blob_blake3: ChunkId::hash(&a),
+                        chunks: a_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "pkgs/foo/b.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: b.len() as u64,
+                        mtime_secs: 2,
+                        blob_blake3: ChunkId::hash(&b),
+                        chunks: b_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "pkgs/bar".into(),
+                    kind: DirEntryKind::Dir { mode: 0o700 },
+                },
+                DirEntry {
+                    path: "pkgs/bar/c.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o600,
+                        size: c.len() as u64,
+                        mtime_secs: 3,
+                        blob_blake3: ChunkId::hash(&c),
+                        chunks: c_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "other/x.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: d.len() as u64,
+                        mtime_secs: 4,
+                        blob_blake3: ChunkId::hash(&d),
+                        chunks: d_chunks,
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        (arch, src)
+    }
+
+    #[test]
+    fn filter_include_prefix_lookup_readdir_subset() {
+        use chunkforge_index::{PathFilter, filter_dir_archive};
+
+        let (arch, src) = filter_sample_tree();
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let fs = DirFs::new(filtered, src);
+
+        // Matching files + ancestors visible.
+        assert!(fs.is_dir_path("pkgs"));
+        assert!(fs.is_dir_path("pkgs/foo"));
+        assert!(fs.is_file_path("pkgs/foo/a.txt"));
+        assert!(fs.is_file_path("pkgs/foo/b.txt"));
+        assert_eq!(fs.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(), b"foo-a\n");
+
+        // Non-matching paths absent from lookup / readdir.
+        assert!(fs.lookup_path("pkgs/bar").is_none());
+        assert!(fs.lookup_path("pkgs/bar/c.txt").is_none());
+        assert!(fs.lookup_path("other").is_none());
+        assert!(fs.lookup_path("other/x.txt").is_none());
+
+        let root = fs.readdir_path("").unwrap();
+        let names: Vec<_> = root.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["pkgs"]);
+
+        let pkgs = fs.readdir_path("pkgs").unwrap();
+        let names: Vec<_> = pkgs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["foo"]);
+
+        let foo = fs.readdir_path("pkgs/foo").unwrap();
+        let names: Vec<_> = foo.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn filter_exclude_hides_paths() {
+        use chunkforge_index::{PathFilter, filter_dir_archive};
+
+        let (arch, src) = filter_sample_tree();
+        let filter = PathFilter::new(["pkgs"], ["pkgs/bar/"]).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let fs = DirFs::new(filtered, src);
+
+        assert!(fs.is_file_path("pkgs/foo/a.txt"));
+        assert!(fs.is_file_path("pkgs/foo/b.txt"));
+        assert!(fs.lookup_path("pkgs/bar").is_none());
+        assert!(fs.lookup_path("pkgs/bar/c.txt").is_none());
+        // other/ not under pkgs include → gone
+        assert!(fs.lookup_path("other/x.txt").is_none());
+
+        let pkgs = fs.readdir_path("pkgs").unwrap();
+        let names: Vec<_> = pkgs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["foo"]);
+    }
+
+    #[test]
+    fn filter_empty_equiv_full_archive_dirfs() {
+        use chunkforge_index::{PathFilter, filter_dir_archive};
+
+        let (arch, src) = filter_sample_tree();
+        let empty = PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &empty);
+        assert_eq!(filtered, arch);
+
+        let full = DirFs::new(arch.clone(), src.clone());
+        let via_filter = DirFs::new(filtered, src);
+
+        // Same path visibility (full tree ≡ 1.10).
+        for path in [
+            "pkgs",
+            "pkgs/foo",
+            "pkgs/foo/a.txt",
+            "pkgs/bar/c.txt",
+            "other/x.txt",
+        ] {
+            assert_eq!(
+                full.lookup_path(path).is_some(),
+                via_filter.lookup_path(path).is_some(),
+                "path {path}"
+            );
+            assert_eq!(full.is_dir_path(path), via_filter.is_dir_path(path));
+            assert_eq!(full.is_file_path(path), via_filter.is_file_path(path));
+        }
+
+        let root_full: Vec<_> = full
+            .readdir_path("")
+            .unwrap()
+            .into_iter()
+            .map(|(n, d)| (n, d))
+            .collect();
+        let root_filt: Vec<_> = via_filter
+            .readdir_path("")
+            .unwrap()
+            .into_iter()
+            .map(|(n, d)| (n, d))
+            .collect();
+        assert_eq!(root_full, root_filt);
+
+        assert_eq!(
+            full.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(),
+            via_filter.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap()
         );
     }
 

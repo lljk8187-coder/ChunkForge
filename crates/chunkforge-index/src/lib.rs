@@ -6,6 +6,7 @@
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //! - [extract match](judge_extract_unchanged) — dest vs listing size+blake3 for `--skip-unchanged` (Phase 9); optional mtime trust (Phase 11)
 //! - [`PathFilter`] — `--path` / `--exclude` matching for archive paths (Phase 13; wired into `archive` / `extract` / `pull` / `push`); `--exclude-from` file loader (Phase 14 M4); [`load_path_file`] for `--path-from` include prefixes (Phase 20 M1; CLI wiring later)
+//! - [`filter_dir_archive`] — File-keep + ancestor-Dir subset of a `.cfdir` for DirFs / mount path (Phase 21 M1; mount CLI later)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
 //! `docs/dir-format.md`. Seed / diff / extract-match / path-filter helpers do **not** change those layouts.
@@ -16,6 +17,7 @@ mod diff;
 mod dir;
 mod error;
 mod extract_match;
+mod filter_dir;
 mod index;
 mod path;
 mod path_filter;
@@ -28,6 +30,7 @@ pub use dir::{
 };
 pub use error::{Error, IndexError};
 pub use extract_match::{UnchangedVerdict, judge_extract_unchanged, judge_extract_unchanged_opts};
+pub use filter_dir::filter_dir_archive;
 pub use index::{
     ENTRY_SIZE, FLAG_CHUNKS_COMPRESSED_IN_STORE, FORMAT_VERSION_V1, HEADER_SIZE, Index, IndexEntry,
     MAGIC_PREFIX, MAGIC_V1, MAJOR_V1, TRAILER_SIZE, entry_length,
