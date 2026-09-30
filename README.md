@@ -377,8 +377,8 @@ analysis — see **Non-goals (Phase 10 / 1.0)** above and `docs/stability.md`.
 
 | Command | Role (no remote scrub, no sync) |
 |---|---|
-| `verify` | Listing + referenced chunk integrity |
-| `doctor` | Presence (optional `--deep`) |
+| `verify` | Listing + referenced chunk integrity (`--format text\|json`) |
+| `doctor` | Presence (optional `--deep`; `--format text\|json`) |
 | `gc` | Local unreferenced loose chunks |
 | `store scrub` | Local loose BLAKE3 rehash |
 | `diff` | Listing↔listing; **not** sync |

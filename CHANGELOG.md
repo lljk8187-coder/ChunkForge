@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/demo_mount_prefetch.sh` (get-count unit tests; optional real mount).
   README Phase 10 section links both scripts plus `docs/stability.md` /
   `docs/mount.md`.
+- **Phase 10 M6 P1 O1**: `verify` / `doctor` **`--format text|json`** (default
+  **text** ≡ 0.9.0 stderr/stdout behaviour). JSON: one object on stdout
+  (`verify`: `ok`/`kind`/`bytes|files`/`chunks`; `doctor`: `ok`/`listings`/
+  `checked`/`missing`/`deep`/`retries`; missing ids only inside JSON, not
+  duplicated as bare stdout lines). Exit codes format-independent. Shared
+  `CliFormat` (renamed from `DiffFormat`; `diff --format` unchanged). See
+  `docs/doctor-gc.md`.
 
 ## [0.9.0] — 2026-09-29
 

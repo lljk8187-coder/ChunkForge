@@ -41,6 +41,13 @@ chunkforge doctor --source http://127.0.0.1:8765 --no-probe hello.cfidx
 | HTTP base probe | One HEAD (GET on 405/501) against `--source` base; `--no-probe` skips |
 | Local `meta.toml` | If origin is a local/`file://` store, print magic/version/compression to stderr |
 | Exit code | All present → **0**; any missing → **non-zero** and missing ids on **stdout** (one per line) |
+| `--format text\|json` | Default **text** ≡ 0.9.0. **json**: one object on stdout (`ok`, `listings`, `checked`, `missing`, `deep`, `retries`); when chunks are missing, `missing` is an array of hex ids (not also printed as bare lines). Exit code is format-independent. |
+
+```bash
+# Machine-readable presence report (Phase 10 M6 O1)
+chunkforge doctor --store ./store --format json hello.cfidx
+# → {"ok":true,"listings":1,"checked":N,"missing":0,"deep":false,"retries":0}
+```
 
 ## `chunkforge gc`
 

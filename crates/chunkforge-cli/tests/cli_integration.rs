@@ -1069,6 +1069,10 @@ fn doctor_help_lists_flags() {
     assert!(s.contains("--header"), "{s}");
     assert!(s.contains("--deep"), "{s}");
     assert!(s.contains("--no-probe"), "{s}");
+    assert!(
+        s.contains("--format"),
+        "doctor --help should list --format:\n{s}"
+    );
 }
 
 #[test]
@@ -6788,4 +6792,140 @@ fn extract_dry_run_invalid_listing_nonzero() {
     ]);
     assert!(!fail.status.success());
     assert!(!out.exists(), "failed dry-run must not create output");
+}
+
+// --- Phase 10 M6 P1 O1: verify / doctor --format json ---
+
+#[test]
+fn verify_format_json_cfidx_ok() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let text_out = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let text_err = String::from_utf8_lossy(&text_out.stderr);
+    assert!(
+        text_err.contains("verify: ok"),
+        "default text must keep stderr summary; stderr={text_err}"
+    );
+
+    let json_out = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("verify json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["kind"], "cfidx");
+    assert!(v["bytes"].as_u64().unwrap() > 0, "bytes={v}");
+    assert!(v["chunks"].as_u64().unwrap() >= 1, "chunks={v}");
+}
+
+#[test]
+fn verify_help_lists_format() {
+    let d = run_ok(&["verify", "--help"]);
+    let s = String::from_utf8_lossy(&d.stdout);
+    assert!(
+        s.contains("--format"),
+        "verify --help should list --format:\n{s}"
+    );
+}
+
+#[test]
+fn doctor_format_json_ok_and_missing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let ok = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&ok.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("doctor json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["listings"], 1);
+    assert_eq!(v["missing"], 0);
+    assert_eq!(v["deep"], false);
+    assert!(v["checked"].as_u64().unwrap() >= 1, "checked={v}");
+
+    // Empty store → missing; json must carry ids, not bare hex lines alone.
+    let empty = dir.path().join("empty-store");
+    fs::create_dir_all(&empty).unwrap();
+    // Need a valid store layout: make into empty then wipe chunks, or open via Store.
+    // Simpler: doctor against a fresh empty dir after Store::open via make of another file then delete chunks.
+    let store2 = dir.path().join("store2");
+    let idx2 = dir.path().join("other.cfidx");
+    run_ok(&[
+        "make",
+        "--store",
+        store2.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    // Remove all chunk files under store2 so presence fails.
+    let chunks_root = store2.join("chunks");
+    if chunks_root.exists() {
+        fs::remove_dir_all(&chunks_root).unwrap();
+        fs::create_dir_all(&chunks_root).unwrap();
+    }
+
+    let fail = run_fail(&[
+        "doctor",
+        "--store",
+        store2.to_str().unwrap(),
+        "--format",
+        "json",
+        idx2.to_str().unwrap(),
+    ]);
+    let fail_stdout = String::from_utf8_lossy(&fail.stdout);
+    let fv: serde_json::Value = serde_json::from_str(fail_stdout.trim())
+        .unwrap_or_else(|e| panic!("doctor missing json invalid: {e}; stdout={fail_stdout}"));
+    assert_eq!(fv["ok"], false);
+    let missing = fv["missing"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing must be array; {fv}"));
+    assert!(!missing.is_empty(), "expected missing ids; {fv}");
+    // Bare hex lines must NOT appear outside JSON (stdout should be one JSON object).
+    let trimmed = fail_stdout.trim();
+    assert!(
+        trimmed.starts_with('{') && trimmed.ends_with('}'),
+        "json mode must not print bare missing ids; stdout={fail_stdout}"
+    );
 }

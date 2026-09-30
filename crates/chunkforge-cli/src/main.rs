@@ -180,6 +180,9 @@ enum Commands {
     ///
     /// Magic-dispatches: `.cfidx` → single-blob verify (unchanged); `.cfdir` →
     /// tree verify (structure + per-file `blob_blake3` + missing chunks fail with id).
+    /// Default **`--format text`** (≡ 0.9.0): summary on stderr. **`--format json`**:
+    /// one JSON object on stdout (`ok` / `kind` / size fields); exit code is
+    /// format-independent (ok → 0, failure → non-zero).
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Verify {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -196,6 +199,9 @@ enum Commands {
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Output format: `text` (default ≡ 0.9.0 stderr summary) or `json`
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
     },
@@ -234,6 +240,12 @@ enum Commands {
         mountpoint: PathBuf,
     },
     /// Check indexes and chunk presence (missing ids → non-zero exit)
+    ///
+    /// Default **`--format text`** (≡ 0.9.0): ok summary on stderr; missing ids
+    /// one-per-line on stdout then non-zero. **`--format json`**: one JSON object
+    /// on stdout (`ok` / `listings` / `checked` / `missing` / `deep`); missing ids
+    /// live in the JSON only (not also printed as bare lines). Exit code is
+    /// format-independent.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Doctor {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -253,6 +265,9 @@ enum Commands {
         /// Skip the optional one-shot HTTP base connectivity probe
         #[arg(long = "no-probe")]
         no_probe: bool,
+        /// Output format: `text` (default ≡ 0.9.0) or `json`
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// One or more `.cfidx` / `.cfdir` listings to check
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -350,8 +365,8 @@ enum Commands {
     /// non-zero clap/anyhow path. See `docs/diff.md`.
     Diff {
         /// Output format: `text` (default ≡ 0.7.0 path lists + `diff:` summary) or `json`
-        #[arg(long = "format", value_enum, default_value_t = DiffFormat::Text)]
-        format: DiffFormat,
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// Max paths to print per category in text format (default: unlimited; ignored by json)
         #[arg(long = "max-paths", value_name = "N")]
         max_paths: Option<usize>,
@@ -391,13 +406,14 @@ enum StoreCommands {
     },
 }
 
-/// `diff --format` output mode (Phase 8 M4). Default `text` ≡ 0.7.0.
+/// Shared `--format text|json` for `diff` / `verify` / `doctor` (Phase 8 M4 + Phase 10 M6 O1).
+/// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-enum DiffFormat {
-    /// Path lists + `diff:` summary line (0.7.0 behaviour)
+enum CliFormat {
+    /// Human / prior-stable text (stderr or stdout summaries as documented per command)
     #[default]
     Text,
-    /// Single JSON object with path arrays + chunk stats
+    /// Single JSON object on stdout; exit codes unchanged vs text
     Json,
 }
 
@@ -558,6 +574,7 @@ fn run() -> Result<()> {
             cache,
             http_tmpl,
             jobs,
+            format,
             index,
         } => {
             let jobs = parse_jobs(jobs)?;
@@ -567,7 +584,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 &http_tmpl,
             )?;
-            cmd_verify(src.as_ref(), &index, jobs)
+            cmd_verify(src.as_ref(), &index, jobs, format)
         }
         Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
         Commands::Mount {
@@ -596,6 +613,7 @@ fn run() -> Result<()> {
             jobs,
             deep,
             no_probe,
+            format,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
@@ -613,6 +631,7 @@ fn run() -> Result<()> {
                 no_probe,
                 jobs,
                 http_tmpl.http_retries,
+                format,
             )
         }
         Commands::Gc {
@@ -1549,10 +1568,10 @@ fn diff_has_differences(report: &DiffReport) -> bool {
 fn emit_diff_report(
     report: &DiffReport,
     max_paths: Option<usize>,
-    format: DiffFormat,
+    format: CliFormat,
 ) -> Result<()> {
     match format {
-        DiffFormat::Text => {
+        CliFormat::Text => {
             print_diff_path_category("added", &report.added, max_paths);
             print_diff_path_category("removed", &report.removed, max_paths);
             print_diff_path_category("changed", &report.changed, max_paths);
@@ -1560,7 +1579,7 @@ fn emit_diff_report(
             // Path lists + summary on stdout (documented in `diff --help` / docs/diff.md).
             println!("{}", format_diff_summary(report));
         }
-        DiffFormat::Json => {
+        CliFormat::Json => {
             // Full path arrays; `--max-paths` does not truncate JSON.
             println!("{}", format_diff_json(report));
         }
@@ -1579,7 +1598,7 @@ fn cmd_diff_dispatch(
     left: &Path,
     right: Option<&Path>,
     max_paths: Option<usize>,
-    format: DiffFormat,
+    format: CliFormat,
 ) -> Result<()> {
     match tree {
         Some(src_dir) => {
@@ -1612,7 +1631,7 @@ fn cmd_diff_listings(
     left: &Path,
     right: &Path,
     max_paths: Option<usize>,
-    format: DiffFormat,
+    format: CliFormat,
 ) -> Result<()> {
     let left_arch = load_cfdir_for_diff(left)?;
     let right_arch = load_cfdir_for_diff(right)?;
@@ -1625,7 +1644,7 @@ fn cmd_diff_tree(
     src_dir: &Path,
     listing: &Path,
     max_paths: Option<usize>,
-    format: DiffFormat,
+    format: CliFormat,
 ) -> Result<()> {
     if !src_dir.is_dir() {
         bail!(
@@ -1989,14 +2008,24 @@ fn fetch_entry_plains(
     Ok(plains)
 }
 
-fn cmd_verify(source: &dyn ChunkSource, listing_path: &Path, jobs: usize) -> Result<()> {
+fn cmd_verify(
+    source: &dyn ChunkSource,
+    listing_path: &Path,
+    jobs: usize,
+    format: CliFormat,
+) -> Result<()> {
     match peek_listing_kind(listing_path)? {
-        ListingKind::Index => cmd_verify_index(source, listing_path, jobs),
-        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs),
+        ListingKind::Index => cmd_verify_index(source, listing_path, jobs, format),
+        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs, format),
     }
 }
 
-fn cmd_verify_index(source: &dyn ChunkSource, index_path: &Path, jobs: usize) -> Result<()> {
+fn cmd_verify_index(
+    source: &dyn ChunkSource,
+    index_path: &Path,
+    jobs: usize,
+    format: CliFormat,
+) -> Result<()> {
     let index = load_index(index_path)?;
     index
         .validate()
@@ -2061,16 +2090,32 @@ fn cmd_verify_index(source: &dyn ChunkSource, index_path: &Path, jobs: usize) ->
         );
     }
 
-    eprintln!(
-        "verify: ok ({} bytes, {} chunk{})",
-        index.total_size,
-        index.chunk_count(),
-        if index.chunk_count() == 1 { "" } else { "s" }
-    );
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "verify: ok ({} bytes, {} chunk{})",
+                index.total_size,
+                index.chunk_count(),
+                if index.chunk_count() == 1 { "" } else { "s" }
+            );
+        }
+        CliFormat::Json => {
+            println!(
+                "{{\"ok\":true,\"kind\":\"cfidx\",\"bytes\":{},\"chunks\":{}}}",
+                index.total_size,
+                index.chunk_count()
+            );
+        }
+    }
     Ok(())
 }
 
-fn cmd_verify_dir(source: &dyn ChunkSource, archive_path: &Path, jobs: usize) -> Result<()> {
+fn cmd_verify_dir(
+    source: &dyn ChunkSource,
+    archive_path: &Path,
+    jobs: usize,
+    format: CliFormat,
+) -> Result<()> {
     let archive = load_dir_archive(archive_path)?;
     archive
         .validate()
@@ -2145,13 +2190,23 @@ fn cmd_verify_dir(source: &dyn ChunkSource, archive_path: &Path, jobs: usize) ->
         }
     }
 
-    eprintln!(
-        "verify: ok ({} file{}, {} chunk{})",
-        file_count,
-        if file_count == 1 { "" } else { "s" },
-        total_chunks,
-        if total_chunks == 1 { "" } else { "s" }
-    );
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "verify: ok ({} file{}, {} chunk{})",
+                file_count,
+                if file_count == 1 { "" } else { "s" },
+                total_chunks,
+                if total_chunks == 1 { "" } else { "s" }
+            );
+        }
+        CliFormat::Json => {
+            println!(
+                "{{\"ok\":true,\"kind\":\"cfdir\",\"files\":{},\"chunks\":{}}}",
+                file_count, total_chunks
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2450,6 +2505,7 @@ fn cmd_extract_dry_run(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_doctor(
     source: &dyn ChunkSource,
     origin_spec: &str,
@@ -2458,6 +2514,7 @@ fn cmd_doctor(
     no_probe: bool,
     jobs: usize,
     http_retries: u32,
+    format: CliFormat,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
     maybe_print_local_store_meta(origin_spec);
@@ -2554,18 +2611,49 @@ fn cmd_doctor(
     missing.dedup();
 
     if missing.is_empty() {
-        eprintln!(
-            "doctor: ok ({} listing{}, {} chunk id{} checked, deep={}, retries={http_retries})",
-            listings_ok,
-            if listings_ok == 1 { "" } else { "s" },
-            checked,
-            if checked == 1 { "" } else { "s" },
-            deep
-        );
+        match format {
+            CliFormat::Text => {
+                eprintln!(
+                    "doctor: ok ({} listing{}, {} chunk id{} checked, deep={}, retries={http_retries})",
+                    listings_ok,
+                    if listings_ok == 1 { "" } else { "s" },
+                    checked,
+                    if checked == 1 { "" } else { "s" },
+                    deep
+                );
+            }
+            CliFormat::Json => {
+                let obj = serde_json::json!({
+                    "ok": true,
+                    "listings": listings_ok,
+                    "checked": checked,
+                    "missing": 0,
+                    "deep": deep,
+                    "retries": http_retries,
+                });
+                println!("{obj}");
+            }
+        }
         Ok(())
     } else {
-        for id in &missing {
-            println!("{id}");
+        match format {
+            CliFormat::Text => {
+                for id in &missing {
+                    println!("{id}");
+                }
+            }
+            CliFormat::Json => {
+                let missing_ids: Vec<String> = missing.iter().map(|id| id.to_string()).collect();
+                let obj = serde_json::json!({
+                    "ok": false,
+                    "listings": listings_ok,
+                    "checked": checked,
+                    "missing": missing_ids,
+                    "deep": deep,
+                    "retries": http_retries,
+                });
+                println!("{obj}");
+            }
         }
         bail!(
             "doctor: {} missing chunk{} ({} listing{}, {} checked)",
@@ -2795,7 +2883,7 @@ fn cmd_push(
         let source = open_primary_source(dest, http_tmpl)
             .context("build HTTP chunk source from --dest for push --verify")?;
         for path in index_paths {
-            cmd_verify(source.as_ref(), path, jobs).with_context(|| {
+            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text).with_context(|| {
                 format!(
                     "push --verify failed for {} (remote missing/corrupt chunk or hash mismatch)",
                     path.display()
