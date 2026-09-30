@@ -166,6 +166,32 @@ Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (calls
 1_13; asserts `ls` / `cat --path`; no absolute perf SLA). Defaults of
 existing commands stay ≡ **1.14.0**. The workspace reports **1.15.0**.
 
+**Phase26 (toward 1.16.0; not a version bump yet)** adds further **additive**
+behaviour only. Defaults of existing commands stay ≡ **1.15.0** (jobs=1,
+retries=0, SigV4 off, text format, progress off, empty-dirs **off**, symlink
+**skip**, create compression **none**). Workspace / CLI still report
+**1.15.0** until M7.
+
+- **`filter_dir_archive` leaf-Dir:** when the PathFilter is non-empty, an
+  explicit `Dir` is kept if `PathFilter::allows(path)`, in addition to
+  ancestor Dirs of kept File/Symlink leaves. Empty filter remains
+  **identity** ≡ 1.15 (clone; listings with no explicit Dir are unchanged).
+  Shared by `ls --path` / `filter` / `mount` path / path-scoped `diff`.
+  **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`** (no dest delete,
+  no `gc --path`, no ghost Dir synthesis).
+- **`store get`:** `--store` + hex id + required `-o`; optional `--verify`
+  (default off ≡ trust on-disk encoding); `--format text|json` with pinned
+  fields **`{ok,id,bytes}`**. **`store get` ≠ scrub ≠ cat ≠ extract ≠
+  recompress ≠ remove**.
+
+Hard bans unchanged: pack, write mount, prune, **`gc --path`**, LRU, default
+zstd, push `--fallback`, mount `--progress`, default record, remote scrub.
+Docs: [filter.md](filter.md) / [ls.md](ls.md) / [dir-format.md](dir-format.md)
+/ [store.md](store.md) / [ops-json.md](ops-json.md) / [perf.md](perf.md).
+Smoke: [`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).
+**`check_compat_1_15.sh` is M5 — not shipped in M4** (demo is note-only if
+the file is absent). No absolute perf SLA.
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [filter.md](filter.md), [ls.md](ls.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -199,7 +225,9 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `diff --tree --symlinks` + P1 `would_symlinks`), and **1.14.0** (Phase24
 `chunkforge filter` + P1 `make --seed` / mount help Symlink honesty), and
 **1.15.0** (Phase25 `chunkforge ls` + `cat --path` + P1 `archive --empty-dirs` /
-`chunk-id`·`store has --format json`) are such minors: all new
+`chunk-id`·`store has --format json`) are such minors. Phase26 leaf-Dir keep
+and **`store get`** are the same kind of additive change **aimed at 1.16.0**
+but the workspace **still reports 1.15.0** until that bump: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
@@ -220,9 +248,13 @@ prune ≠ `gc --path` ≠ default record**.
 **`make --seed` ≠ pack ≠ recompress ≠ path**.
 **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
 **`cat --path` ≠ extract ≠ prune ≠ sync**.
+**`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`**.
+**`store get` ≠ scrub ≠ cat ≠ extract ≠ recompress ≠ remove**.
 Omit make `--seed` ≡ 1.13 make; **`filter`** is additive (new subcommand).
 **`ls`** is additive (new subcommand); **`cat --path`** is additive
 (`.cfidx` cat unchanged). Omit archive `--empty-dirs` ≡ 1.14 omit empty dirs.
+Omit `store get --verify` ≡ trust on-disk encoding. Empty `filter_dir_archive`
+stays identity ≡ 1.15.
 
 ## Breaking-change policy
 
@@ -266,7 +298,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.15.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.15.0** still do not implement pack; **Phase26 / 1.16.0 still does not implement pack** |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -289,6 +321,8 @@ At 1.0, ChunkForge promises:
 | `filter` | Persist path-scoped subset of an existing `.cfdir` (`filter_dir_archive` → encode → `-o`); empty 四件套 ≡ identity; path 四件套 + `--dry-run` / `--force` / `--format`; Symlink keep → v2 / all filtered → v1; **≠** prune **≠** `gc --path` **≠** sync **≠** write mount **≠** pack **≠** `archive --path` (no source-tree walk). Warning: filtered listing → `gc` uses that listing's refs — still **no** `gc --path`. See [filter.md](filter.md) |
 | `ls` | Listing inventory for `.cfidx` / `.cfdir` (path 四件套 on `.cfdir`; text/json; optional `--chunks`; File+Symlink+Dir; **no store**); **≠** mount **≠** extract **≠** verify **≠** pack **≠** filter. See [ls.md](ls.md) |
 | `cat --path` | `.cfdir` exact File → single `-o` (`.cfidx` ≡ 1.14 omit `--path`); JSON field names `ok`/`bytes` frozen; **≠** extract **≠** prune **≠** sync. See [ls.md](ls.md) |
+| `filter_dir_archive` leaf-Dir | Non-empty PathFilter keeps an explicit Dir when `allows(path)` (empty-dirs leaf), plus ancestor Dirs; empty filter ≡ identity ≡ 1.15. Shared by ls/filter/mount/diff path. **≠** prune **≠** `gc --path` **≠** write mount **≠** pack. See [filter.md](filter.md) / [dir-format.md](dir-format.md) |
+| `store get` | One local chunk hex id → plaintext `-o` (`--store`; optional `--verify`; text/json `{ok,id,bytes}`). **≠** scrub **≠** cat **≠** extract **≠** recompress **≠** remove. See [store.md](store.md) |
 | `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 | `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
 | `push` local / `file://` `--dest` | Single Store as `ChunkSink` (open or create **none**); **≠** `--fallback` / multi-dest; HTTP knobs with local dest → non-zero |
@@ -312,7 +346,7 @@ Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
 `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` /
 `store stats` / **`store create`** / **`make`** / **`cat`** / **`filter`**
-(Phase24) / **`ls`** (Phase25)).
+(Phase24) / **`ls`** (Phase25) / **`store get`** (Phase26; `{ok,id,bytes}`)).
 Default remains **text**. **Field rename → breaking** (same policy as above).
 Path filter on extract/pull/push does **not** rename fields (`unique_chunks` =
 filtered set). Prior command field names stay stable; **store stats** (1.4)
@@ -347,4 +381,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 1_12).
 **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25;
 gates `ls` / `cat --path` + 1.15 flags; calls 1_13).
+**`check_compat_1_15.sh` is not in tree for Phase26-M4** (M5 adds it; M4 demo
+is note-only and must not fail when the script is absent).
 No absolute perf SLA.

@@ -95,6 +95,13 @@ now.
 > checklist condition 1 stays unmet on local stub evidence; pack stays
 > deferred. Existing loose-HTTP baseline remains
 > [`scripts/bench_loose_http.sh`](../scripts/bench_loose_http.sh).
+>
+> **Phase26 / 1.16.0 still does not implement pack**. `filter_dir_archive`
+> leaf-Dir keep is listing metadata only (≠ pack ≠ prune ≠ gc-path).
+> `store get` reads one existing loose `.cnk` as plaintext (≠ pack ≠ scrub
+> ≠ cat ≠ extract ≠ recompress). Promotion checklist condition 1 stays
+> unmet on local stub evidence; pack stays deferred. Workspace version
+> remains **1.15.0** until the Phase26 closeout bump.
 
 ## What we measure
 

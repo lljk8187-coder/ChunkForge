@@ -1,8 +1,9 @@
 # `chunkforge store`
 
-Local CAS store subcommands. This page covers **`store create`** (Phase 19) and
-**`store list`** (Phase 21 / P1). See also [doctor-gc.md](doctor-gc.md) for
-**`store scrub`** / **`store stats`** / **`du`**, and [ops-json.md](ops-json.md)
+Local CAS store subcommands. This page covers **`store create`** (Phase 19),
+**`store list`** (Phase 21 / P1), and **`store get`** (Phase26, toward
+**1.16.0**; workspace still **1.15.0**). See also [doctor-gc.md](doctor-gc.md)
+for **`store scrub`** / **`store stats`** / **`du`**, and [ops-json.md](ops-json.md)
 for JSON field rows.
 
 ## `store create` (Phase 19 / 1.9.0 opt-in)
@@ -84,4 +85,57 @@ chunkforge make --store ./s -o out.cfidx ./hello.txt
 chunkforge store list --store ./s              # sorted hex ids, one per line
 chunkforge store list --store ./s --format json
 ```
+
+## `store get` (Phase26; toward 1.16.0)
+
+Fetch **one** chunk's plaintext from a local store (`Store::get_verify`) and
+write it to **`-o`**. Single hex id. Not a tree export.
+
+```bash
+chunkforge store get --store <DIR> <HEX_ID> -o <FILE> [--verify] [--format text|json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--store` | Local CAS directory (required) |
+| `<HEX_ID>` | Chunk id, 64 lowercase hex characters (same positional as `store has`) |
+| `-o` / `--output` | Plaintext output file (**required**) |
+| `--verify` | Opt-in re-hash (`get_verify(id, true)`). **Omit ≡ trust on-disk encoding** (`get_verify(id, false)`; no BLAKE3 re-hash) |
+| `--format` | `text` (default) or `json` |
+
+### Behaviour
+
+| Rule | Detail |
+|---|---|
+| Success (text) | Writes `-o`; stderr `store get: ok id=<hex> bytes=N` |
+| Success (json) | Writes `-o`; one stdout object **`{ok,id,bytes}`** (`ok` true, `id` hex, `bytes` plaintext length). No text dual-write. Exit format-independent |
+| Missing / bad id | Clear non-zero (`store get: missing …` / `store get: bad chunk id: …`). Corrupt under `--verify` → non-zero |
+| Local only | Opens `Store` at `--store`. No HTTP source, no multi-id batch |
+
+### Responsibility nail (CRITICAL)
+
+**`store get` ≠ scrub ≠ cat ≠ extract ≠ recompress ≠ remove.**
+
+| This | Is | Is **not** |
+|---|---|---|
+| `store get` | Read **one** loose chunk's plaintext to `-o` | Walking the store; rewriting `.cnk` |
+| `store scrub` | Rehash every loose chunk (or a listing's refs); no payload file | Single-id byte fetch |
+| `cat` | Reassemble a listing (`.cfidx` blob or `.cfdir --path` File) | Raw chunk-id fetch without a listing |
+| `extract` | Materialize a tree under `-o` | One chunk file |
+| `store recompress` | (non-goal) migrate none↔zstd in place | `store get` never rewrites store encoding |
+| `store remove` / trim | (non-goal) delete or evict chunks | `store get` is read-only |
+
+Also **≠** pack **≠** write mount **≠** `gc --path` **≠** prune. Loose `.cnk` layout unchanged.
+
+### Examples
+
+```bash
+ID=$(chunkforge store list --store ./s | head -1)
+chunkforge store get --store ./s "$ID" -o /tmp/c.bin
+chunkforge store get --store ./s --verify "$ID" -o /tmp/c2.bin --format json
+# → {"ok":true,"id":"<hex>","bytes":N}
+```
+
+Smoke: [`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).
+`check_compat_1_15.sh` is **M5** (not required by the Phase26-M4 demo).
 

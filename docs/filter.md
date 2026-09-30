@@ -1,7 +1,11 @@
 # `chunkforge filter`
 
 Persist a **path-scoped subset** of an existing `.cfdir` listing to a new
-`.cfdir`. Phase24 / **1.14.0** closeout.
+`.cfdir`. Phase24 / **1.14.0** closeout. Phase26 (toward **1.16.0**;
+workspace still **1.15.0** until M7) extends shared `filter_dir_archive`:
+a **non-empty** PathFilter also **keeps an explicit Dir** when
+`PathFilter::allows(path)` (leaf empty Dir from `archive --empty-dirs`).
+Empty filter stays **identity**.
 
 Consumes library [`filter_dir_archive`](../crates/chunkforge-index/src/filter_dir.rs)
 (same PathFilter as `archive` / `extract` / `mount` / `diff` / `doctor` /
@@ -11,7 +15,11 @@ rewrite the input listing in place.
 
 See also [dir-format.md](dir-format.md), [stability.md](stability.md),
 [ops-json.md](ops-json.md), [perf.md](perf.md), [diff.md](diff.md),
-[mount.md](mount.md). Smoke: [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
+[mount.md](mount.md), [ls.md](ls.md), [store.md](store.md). Smoke:
+[`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh) (Phase24)
+and
+[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh)
+(Phase26 leaf-Dir + `store get`).
 
 ## Usage
 
@@ -32,9 +40,9 @@ chunkforge filter \
 |---|---|
 | Input | **`.cfdir` only**. `.cfidx` / wrong magic → clear non-zero |
 | Output | **`-o` required**. Without `--force`, existing `-o` → clear non-zero (no silent overwrite). With `--force`, atomic replace (temp sibling + rename) |
-| Empty path 四件套 | ≡ **identity** (library contract): same File+Symlink leaf set as input; encode may normalize / recompute `format_version` from retained entries |
+| Empty path 四件套 | ≡ **identity** (library contract): clone of the input listing, including every explicit **Dir** (not only the File+Symlink leaf set) ≡ 1.15 full listing; encode may normalize / recompute `format_version` from retained entries |
 | Path 四件套 | `--path` / `--path-from` / `--exclude` / `--exclude-from` — same semantics as archive/extract/mount/diff (OR includes; excludes after; illegal middle `*` / `**` → clear error) |
-| Kept entries | Matching **File** and **Symlink** leaves + ancestor **Dir** entries. Non-matching leaves omitted. Symlinks are **not** followed |
+| Kept entries | Matching **File** and **Symlink** leaves + **ancestor Dir** entries **and**, when the filter is non-empty, explicit **Dir** entries whose path `PathFilter::allows` (leaf empty Dir). Unrelated empty Dirs drop. **Do not** synthesize a Dir that was not in the input. Symlinks are **not** followed. **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`** |
 | Store / chunks | **Never** opens a store; **never** get/put. Pure listing transform |
 | Encode version | `DirArchive::encode` recomputes write version from retained entries: ≥1 Symlink ⇒ **v2**; no Symlink ⇒ **v1** |
 | `--dry-run` | Compute filtered listing + counts; **do not** write `-o` (still takes `-o` as the planned path). Orthogonal to `--format` |
@@ -52,6 +60,10 @@ chunkforge diff full.cfdir copy.cfdir   # expect identical / exit 0
 
 # Plan-only
 chunkforge filter --path pkgs/foo --dry-run -o foo.cfdir full.cfdir --format json
+
+# Leaf empty Dir kept (Phase26; shared filter_dir_archive — not prune)
+chunkforge filter --path empty_leaf -o empty.cfdir full.cfdir
+chunkforge ls empty.cfdir    # dir\tempty_leaf  (listing non-empty)
 ```
 
 ## JSON fields (`--format json`)
@@ -66,9 +78,9 @@ rename prior command fields):
 | `input` | string | Input `.cfdir` path (display) |
 | `output` | string | Planned / written `-o` path (display) |
 | `files` | number | Retained File entry count |
-| `dirs` | number | Retained Dir entry count (ancestors kept for matching leaves) |
+| `dirs` | number | Retained Dir entry count (ancestors of kept leaves **plus** path-matched explicit / leaf Dirs) |
 | `symlinks` | number | Retained Symlink entry count |
-| `excluded` | number | Input File+Symlink leaves that failed PathFilter (Dirs that drop as non-ancestors are not counted — same leaf accounting as archive) |
+| `excluded` | number | Input File+Symlink leaves that failed PathFilter (Dirs that are neither ancestors nor path-matched are not counted — same leaf accounting as archive) |
 
 Exit codes are **format-independent**. See [ops-json.md](ops-json.md).
 
@@ -76,12 +88,18 @@ Exit codes are **format-independent**. See [ops-json.md](ops-json.md).
 
 **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`.**
 
+**`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`.** Keeping a
+path-matched explicit Dir (empty leaf from `--empty-dirs`) is a **listing
+keep** on an entry that already exists. It does not delete destination-tree
+files and it does not add `gc --path`.
+
 | This | Is | Is **not** |
 |---|---|---|
 | `filter` | Pure listing transform: existing `.cfdir` → new scoped `.cfdir` | Walking a source tree; rewriting input in place |
+| leaf-Dir keep | Non-empty PathFilter retains an explicit Dir when `allows(path)` (shared with `ls` / `mount` / path-scoped `diff`) | prune; `gc --path`; synthesizing a ghost Dir |
 | `archive --path` | Walk + chunk a **source tree** with PathFilter | Transforming an existing listing without the tree |
 | prune / `--delete` | (non-goal) delete dest extras | filter never deletes tree files |
-| `gc --path` | (**hard ban**) shrink GC keep-set via path flags | filter does **not** add `gc --path` |
+| `gc --path` | (**hard ban**) shrink GC keep-set via path flags | filter does **not** add `gc --path`; leaf-Dir keep is **not** gc-path |
 | sync / watch | (non-goal) bidirectional / conflict | filter is one-shot listing I/O |
 | write mount | (non-goal) writable FUSE | filter writes a **file**, not a mount |
 | pack | (non-goal; [perf.md](perf.md)) multi-chunk objects | filter never changes `.cnk` layout |
@@ -100,14 +118,14 @@ risk — and **still provide no `gc --path` flag** (hard ban). Prefer passing th
 |---|---|
 | Input has Symlink; filter **keeps** ≥1 Symlink | Output writes **`format_version=2`** (encode recomputes) |
 | Filter drops **all** Symlinks (File/Dir only remain) | Output writes **`format_version=1`** via encode |
-| Empty filter on a v2 listing | Identity leaf set; still v2 if Symlinks remain |
+| Empty filter on a v2 listing | Identity (all entries, including explicit Dirs); still v2 if Symlinks remain |
 
 Symlink entries contribute **0** chunks (same as archive `--symlinks record`).
 
 ## Non-goals (Phase24 filter surface)
 
-- prune / `--delete` / rewrite input in place
-- `gc --path`
+- prune / `--delete` / rewrite input in place (leaf-Dir keep is **not** prune)
+- `gc --path` (leaf-Dir keep is **not** gc-path)
 - write mount / bidirectional sync
 - pack / remote scrub / aws-sdk
 - opening a store / rechunking / source-tree walk
@@ -115,8 +133,12 @@ Symlink entries contribute **0** chunks (same as archive `--symlinks record`).
 - default record symlink / follow / fifo·xattr / offline bundle
 
 Pack stance: [perf.md](perf.md) — **Phase24 / 1.14.0 still does not
-implement pack**.
+implement pack**. **Phase26 / 1.16.0 still does not implement pack**
+(leaf-Dir is listing metadata only).
 
 Compat gate **`check_compat_1_13.sh`** (Phase24-M5/M7) asserts `filter` help +
 thin Symlink-keep subset; calls `check_compat_1_12`. Smoke:
 [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
+Phase26-M4 smoke:
+[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh)
+(note-only on `check_compat_1_15.sh` — that gate is **M5**, not required here).

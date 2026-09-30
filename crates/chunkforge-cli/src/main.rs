@@ -6641,7 +6641,7 @@ fn cmd_store_get(
             eprintln!("store get: ok id={id} bytes={bytes}");
         }
         CliFormat::Json => {
-            // ops-json field names for `store get` (pinned; full docs may wait):
+            // ops-json field names for `store get` (pinned in docs/ops-json.md):
             // ok / id / bytes
             let obj = serde_json::json!({
                 "ok": true,

@@ -94,6 +94,7 @@ constants `DIR_FORMAT_VERSION_V1=1`, `DIR_FORMAT_VERSION_V2=2`,
   `Dir` entries **omitted** ≡ 1.14). Opt-in **`archive --empty-dirs`** records
   truly empty leaf directories as `DirEntryKind::Dir` (mode from metadata;
   relative path; same PathFilter as files). **≠** prune **≠** write mount.
+
 - **Default `--symlinks skip`** (≡ **1.11.0**): symlinks are skipped with a
   stderr warning (not followed, not recorded); listing stays **`format_version=1`**.
 - **Opt-in `--symlinks record`**: write `DirEntryKind::Symlink` (target as-is;
@@ -103,6 +104,23 @@ constants `DIR_FORMAT_VERSION_V1=1`, `DIR_FORMAT_VERSION_V2=2`,
 - **fifo / socket / device**: still skipped with a stderr warning.
 - Narrative: **`archive --symlinks record` ≠ write mount ≠ follow dir symlink
   ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default record**.
+
+## Empty Dir + path filter (Phase26)
+
+Shared helper `filter_dir_archive` (`ls --path`, `filter`, `mount` path,
+path-scoped `diff`) decides which explicit Dir rows survive a PathFilter.
+Archive bytes are unchanged; this is a **read/filter keep** rule only.
+
+| Filter | Explicit Dir |
+|---|---|
+| Empty path 四件套 | **Identity** — every Dir already in the listing is kept (≡ 1.15 full listing) |
+| Non-empty | Keep the Dir if it is an **ancestor** of a kept File or Symlink **or** `PathFilter::allows(dir path)` (path-matched **leaf** empty Dir from `--empty-dirs`) |
+| Unrelated empty Dir | Dropped (fails `allows` and is not an ancestor) |
+| Parent missing as an entry | **Not** synthesized (DirFs may still imply parents from File path prefixes) |
+
+So `archive --empty-dirs` then `ls --path <empty_leaf>` / `filter --path <empty_leaf>` keeps that leaf Dir (`dir\t…`; filtered listing non-empty). Default archive **without** `--empty-dirs` still writes no empty Dir rows, so path scope on those listings stays ≡ 1.15.
+
+**`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`.** Keeping the Dir does not delete destination files and does not add a path flag to `gc`. It lines listing consumers up with extract, which already materializes a Dir when `allows` is true. **≠** write mount **≠** pack.
 
 ## Extract / verify / mount notes (Phase5-M3 + Phase22)
 

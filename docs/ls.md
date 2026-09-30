@@ -1,7 +1,9 @@
 # `chunkforge ls` (+ `cat --path`)
 
 List paths in a `.cfidx` / `.cfdir` listing (**inventory only**). Phase25 /
-**1.15.0** closeout.
+**1.15.0** closeout. Phase26 (toward **1.16.0**; workspace still **1.15.0**)
+makes `.cfdir --path` see an **empty-dirs leaf Dir** through the same
+`filter_dir_archive` keep rule as `filter` / `mount` / path-scoped `diff`.
 
 Consumes public [`DirArchive::decode`](../crates/chunkforge-index/src/dir.rs) /
 [`Index::decode`](../crates/chunkforge-index/src/index.rs) (magic-dispatch like
@@ -15,8 +17,10 @@ Companion: **`cat --path`** reassembles **one File** from a `.cfdir` to `-o`
 (reuses the existing chunk-fetch pipeline). See also [filter.md](filter.md),
 [dir-format.md](dir-format.md), [stability.md](stability.md),
 [ops-json.md](ops-json.md), [perf.md](perf.md), [mount.md](mount.md),
-[extract.md](extract.md). Smoke:
-[`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
+[extract.md](extract.md), [store.md](store.md). Smoke:
+[`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh) (Phase25).
+Phase26 leaf-Dir path smoke:
+[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).
 
 ## Usage (`ls`)
 
@@ -35,7 +39,7 @@ chunkforge ls \
 |---|---|
 | Input | **`.cfidx` or `.cfdir`** (magic dispatch) |
 | `.cfidx` | One logical file path (stem without `.cfidx`, same naming as mount). **Any** path/exclude flag → clear non-zero |
-| `.cfdir` | Every **File** / **Dir** / **Symlink** entry present after PathFilter (empty 四件套 ≡ full listing). Dir rows appear only when the listing explicitly stores Dir entries (default `archive` omits empty dirs ≡ 1.14 → usually 0 Dir rows; **`archive --empty-dirs`** records empty leaf dirs → `dir\t…` rows) |
+| `.cfdir` | Every **File** / **Dir** / **Symlink** entry present after shared `filter_dir_archive` (empty 四件套 ≡ full listing / **identity**). Dir rows appear when the listing explicitly stores Dir entries (default `archive` omits empty dirs ≡ 1.14 → usually 0 Dir rows; **`archive --empty-dirs`** records empty leaf dirs → `dir\t…` rows). **`--path` now keeps that leaf Dir** when `PathFilter::allows` the Dir path (not only ancestor Dirs). Unrelated empty Dirs drop. **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`** |
 | Sort | Path lexicographic (stable) |
 | Store / chunks | **Never** opens a store; **never** get/put. Pure listing decode. **≠** verify |
 | `--format text` | Default. One line per entry on stdout (tab-separated columns) |
@@ -62,8 +66,11 @@ chunkforge ls \
 # Full tree inventory
 chunkforge ls tree.cfdir
 
-# Path-scoped (same PathFilter as filter/mount)
+# Path-scoped (same PathFilter / filter_dir_archive as filter/mount)
 chunkforge ls --path pkgs/foo --format json tree.cfdir
+
+# Empty-dirs leaf Dir is visible under --path (Phase26)
+chunkforge ls --path empty_leaf tree.cfdir    # dir\tempty_leaf
 
 # After filter: human / script confirmation of retained set
 chunkforge filter --path pkgs/foo -o foo.cfdir tree.cfdir
@@ -121,6 +128,10 @@ Cross-link nail: **`cat --path` ≠ extract ≠ prune ≠ sync**.
 
 **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter.**
 
+**`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`.** `ls --path` printing
+`dir\t<empty_leaf>` is inventory of an explicit Dir the filter allows. It does
+not prune a dest tree and it does not scope `gc`.
+
 | This | Is | Is **not** |
 |---|---|---|
 | `ls` | Read-only inventory of listing paths (File/Dir/Symlink) | FUSE session; tree materialize; hash fetch; new listing write |
@@ -142,8 +153,9 @@ Cross-link nail: **`cat --path` ≠ extract ≠ prune ≠ sync**.
 - default record symlink / follow / fifo·xattr / offline bundle
 
 Pack stance: [perf.md](perf.md) — **Phase25 / 1.15.0 still does not
-implement pack**.
+implement pack**. **Phase26 / 1.16.0 still does not implement pack**.
 
 Compat gate **`check_compat_1_14.sh`** (Phase25; calls 1_13; no absolute
 perf SLA). Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
+Phase26-M4 does **not** require `check_compat_1_15.sh` (that gate is M5).

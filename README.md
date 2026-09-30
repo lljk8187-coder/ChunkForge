@@ -31,6 +31,7 @@
 | **Phase 23** | **1.13.0** | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12; **record** → ephemeral Symlink; clap requires `--tree`) + docs + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh) + **`check_compat_1_12`** + P1 extract dry-run **`would_symlinks`** (`would_write` still includes symlink ≡ 1.12); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 | **Phase 24** | **1.14.0** | **`chunkforge filter`** persist path-scoped subset `.cfdir` + docs + [`demo_filter_listing`](scripts/demo_filter_listing.sh) + **`check_compat_1_13`** + P1 **`make --seed`** / mount help File+Symlink honesty; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 | **Phase 25** | **1.15.0** | **`chunkforge ls`** listing inventory (`.cfidx`/`.cfdir`; path 四件套; text/json; `--chunks`; File+Symlink+Dir; **no store**) + **`cat --path`** single File from `.cfdir` + docs + [`demo_ls_cat_path`](scripts/demo_ls_cat_path.sh) + **`check_compat_1_14`** + P1 **`archive --empty-dirs`** + `chunk-id`/`store has --format json`; **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**; **`cat --path` ≠ extract ≠ prune ≠ sync**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
+| **Phase 26** | **toward 1.16.0** (workspace still **1.15.0**) | **`filter_dir_archive` leaf-Dir** (PathFilter `allows` explicit Dir; empty filter ≡ identity; empty-dirs ↔ `ls`/`filter`/`mount`/diff path) + **`store get`** (`--store`, hex id, `-o`, optional `--verify`, text\|json `{ok,id,bytes}`) + docs + [`demo_empty_dir_path_store_get`](scripts/demo_empty_dir_path_store_get.sh); **`check_compat_1_15` note-only until M5**; **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`**; **`store get` ≠ scrub ≠ cat ≠ extract ≠ recompress**; **not** pack / write mount |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -64,6 +65,7 @@ Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount
 **Phase 23 closed at 1.13.0**: `diff --tree --symlinks skip|record` (default skip ≡ 1.12) + docs + `demo_diff_tree_symlink` + `check_compat_1_12` + P1 extract dry-run `would_symlinks` — see [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
 **Phase 24 closed at 1.14.0**: first-class **`chunkforge filter`** + docs + `demo_filter_listing` + **`check_compat_1_13`** + P1 **`make --seed <prior.cfidx>`** / mount help File+Symlink honesty — see [docs/filter.md](docs/filter.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/stability.md](docs/stability.md); **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
 **Phase 25 closed at 1.15.0**: first-class **`chunkforge ls`** (listing inventory; path 四件套; text/json; `--chunks`; no store) + **`cat --path`** (`.cfdir` single File) + docs + `demo_ls_cat_path` + **`check_compat_1_14`** + P1 **`archive --empty-dirs`** / thin `chunk-id`/`store has --format json` — see [docs/ls.md](docs/ls.md) / [docs/stability.md](docs/stability.md); **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**; **`cat --path` ≠ extract ≠ prune ≠ sync**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
+**Phase 26 (toward 1.16.0; version still 1.15.0)**: shared **`filter_dir_archive` leaf-Dir** keep (empty-dirs path scope on `ls` / `filter` / `mount` / diff) + **`store get`** + docs + `demo_empty_dir_path_store_get` — see [docs/filter.md](docs/filter.md) / [docs/store.md](docs/store.md) / [docs/stability.md](docs/stability.md); **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`**; **`store get` ≠ scrub ≠ cat ≠ extract ≠ recompress**; **not** pack / write mount. **`check_compat_1_15.sh` is M5** (M4 demo is note-only). Defaults ≡ **1.15**.
 
 ## Quick start (local CAS)
 
@@ -1414,6 +1416,61 @@ bash scripts/check_compat_1_14.sh
 Details: [docs/ls.md](docs/ls.md), [docs/stability.md](docs/stability.md),
 [docs/ops-json.md](docs/ops-json.md), [docs/perf.md](docs/perf.md),
 [docs/filter.md](docs/filter.md), [docs/dir-format.md](docs/dir-format.md).
+
+## Phase 26 / toward 1.16.0: leaf-Dir + `store get` (docs + demo; version still 1.15.0)
+
+Phase 26 closes the post-1.15 gap where `archive --empty-dirs` wrote an
+explicit leaf Dir that **extract `--path`** could materialize, but shared
+`filter_dir_archive` dropped it — so `ls --path` / `filter --path` / mount
+path / path-scoped `diff` did not see that Dir. The library keep rule now
+retains an explicit Dir when a **non-empty** PathFilter `allows` that path
+(ancestor Dirs unchanged; **empty filter ≡ identity** ≡ 1.15). It also
+productizes library `Store::get` / `get_verify` as **`chunkforge store get`**.
+
+Workspace / CLI version **stays 1.15.0** until M7. This section is the M4
+docs + demo slice, not the 1.16.0 closeout.
+
+**Responsibility:** **`filter_dir_archive` leaf-Dir ≠ prune ≠ `gc --path`**
+(listing keep of a Dir that already exists; no dest delete; no path-scoped
+GC). **`store get` ≠ scrub ≠ cat ≠ extract ≠ recompress ≠ remove** (one
+local chunk id → plaintext `-o`). **Not** pack. **Not** write mount.
+
+**Delivered so far (M1–M4):**
+
+- `filter_dir_archive` leaf-Dir keep + library tests (M1).
+- `ls` / `filter --path` see the empty leaf; `store get` writes `-o` (M2).
+- Correctness matrix: mount/diff path, `--verify`, bad id, no-empty-dirs regression (M3).
+- Docs + smoke: [`scripts/demo_empty_dir_path_store_get.sh`](scripts/demo_empty_dir_path_store_get.sh) (M4).
+
+**Not in M4 (later milestones):** `check_compat_1_15.sh` (**M5**; the demo
+must not fail if that script is absent), P1 help polish beyond these docs
+(**M6**), version bump to **1.16.0** (**M7**).
+
+**Non-goals (unchanged):** packfile; write mount / COW; bidirectional sync;
+extract prune / `--delete`; **`gc --path`**; remote scrub; full aws-sdk;
+cache LRU; **default** zstd; `store recompress`; `push --fallback`; mount
+`--progress`; **default record symlink**; follow; fifo/xattr; offline bundle.
+Pack stance: [docs/perf.md](docs/perf.md) — **Phase26 / 1.16.0 still does not
+implement pack**.
+
+```bash
+# Phase 26 leaf-Dir + store get smoke (~minutes; local only)
+cargo build -p chunkforge-cli
+bash scripts/demo_empty_dir_path_store_get.sh
+# archive --empty-dirs → listing has empty leaf Dir
+# ls --path <empty_leaf> prints dir<TAB>…
+# filter --path <empty_leaf> keeps Dir; ls of subset is non-empty
+# store get <hex> -o bytes match the source chunk
+# help nails: ≠ prune / ≠ scrub / ≠ cat / ≠ pack / ≠ write mount / ≠ gc-path
+# version still 1.15.0; compat_1_14 required; compat_1_15 note-only
+
+./target/debug/chunkforge --version   # → chunkforge 1.15.0
+```
+
+Details: [docs/filter.md](docs/filter.md), [docs/ls.md](docs/ls.md),
+[docs/dir-format.md](docs/dir-format.md), [docs/store.md](docs/store.md),
+[docs/stability.md](docs/stability.md), [docs/ops-json.md](docs/ops-json.md),
+[docs/perf.md](docs/perf.md).
 
 ## Incremental dedup demo
 
