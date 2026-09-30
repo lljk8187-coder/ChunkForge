@@ -306,6 +306,11 @@ enum Commands {
         /// Actually delete unreferenced `.cnk` files (default is dry-run)
         #[arg(long)]
         apply: bool,
+        /// Max concurrent deletes on `--apply` (default 1 = serial ≡ 1.1.0).
+        /// Dry-run path listing stays ordered/serial; `--jobs` primarily
+        /// speeds `--apply` (symmetric to `store scrub --jobs`).
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are retained
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -705,8 +710,12 @@ fn run() -> Result<()> {
         Commands::Gc {
             store,
             apply,
+            jobs,
             indexes,
-        } => cmd_gc(&store, &indexes, apply),
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_gc(&store, &indexes, apply, jobs)
+        }
         Commands::Push {
             store,
             dest,
@@ -2795,7 +2804,7 @@ fn cmd_doctor(
     }
 }
 
-fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()> {
+fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool, jobs: usize) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
 
@@ -2823,16 +2832,23 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool) -> Result<()>
         return Ok(());
     }
 
+    // Ordered stdout paths (serial) so dry-run output stays stable across --jobs.
     for id in &unreferenced {
         let path = store.chunk_path(id);
         println!("{}", path.display());
     }
 
     if apply {
-        for id in &unreferenced {
+        // Per-id .cnk files are independent; parallel::map_indexed with jobs=1
+        // stays on the calling thread (≡ 1.1.0 serial). Result set is identical
+        // for any jobs >= 1.
+        let outcomes = parallel::map_indexed(&unreferenced, jobs, |_i, id| {
             store
                 .remove(id)
-                .with_context(|| format!("delete unreferenced chunk {id}"))?;
+                .with_context(|| format!("delete unreferenced chunk {id}"))
+        });
+        for r in outcomes {
+            r?;
         }
         eprintln!(
             "gc: deleted {} unreferenced chunk{} ({} listing{}, {} referenced retained)",

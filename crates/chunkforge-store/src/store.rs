@@ -220,7 +220,9 @@ impl Store {
     /// Delete the loose `.cnk` file for `id` if present.
     ///
     /// Returns [`Error::NotFound`] when the file does not exist. Intended for
-    /// local `gc --apply` (serial deletes). Does not touch remote stores.
+    /// local `gc --apply`. Each id maps to an independent `.cnk` file, so
+    /// concurrent removes across distinct ids are safe. Does not touch remote
+    /// stores.
     pub fn remove(&self, id: &ChunkId) -> Result<(), Error> {
         let path = self.chunk_path(id);
         match fs::remove_file(&path) {

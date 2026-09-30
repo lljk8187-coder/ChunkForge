@@ -65,14 +65,18 @@ chunkforge gc --store ./store hello.cfidx release.cfdir
 chunkforge gc --store ./store hello.cfidx release.cfdir --apply
 # → same paths on stdout, then files removed
 # → gc: deleted N unreferenced chunk(s) …
+
+# Parallel deletes on --apply (default --jobs 1 ≡ 1.1.0 serial; symmetric to store scrub)
+chunkforge gc --store ./store --jobs 4 --apply hello.cfidx release.cfdir
 ```
 
 | Rule | Behaviour |
 |---|---|
 | Reference set | Union of chunk ids from all given `.cfidx` / `.cfdir` listings |
 | Scan | Walk local `store/chunks/**/*.cnk` via `Store::list_chunk_ids()` (layout-conforming only) |
-| Dry-run (default) | Print absolute paths of unreferenced `.cnk` files to **stdout**; summary on stderr; **no deletes** |
-| `--apply` | Serial `remove` of those files; referenced chunks retained |
+| Dry-run (default) | Print absolute paths of unreferenced `.cnk` files to **stdout** (ordered/serial); summary on stderr; **no deletes** |
+| `--apply` | `Store::remove` each unreferenced id; referenced chunks retained |
+| `--jobs N` | Bounded concurrency for `--apply` deletes (default **1** = serial ≡ 1.1.0); dry-run path listing stays ordered; result set (which ids) identical for any `N >= 1`; same helper as `store scrub --jobs` |
 | Remote | **Not supported** — `--store` is local only |
 | Exit code | 0 on success (including “nothing to reclaim”); non-zero on I/O / bad listing |
 

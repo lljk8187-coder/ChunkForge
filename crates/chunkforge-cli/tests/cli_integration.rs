@@ -1343,6 +1343,7 @@ fn gc_help_lists_flags() {
     let s = String::from_utf8_lossy(&g.stdout);
     assert!(s.contains("--store"), "{s}");
     assert!(s.contains("--apply"), "{s}");
+    assert!(s.contains("--jobs"), "{s}");
 }
 
 #[test]
@@ -1540,6 +1541,182 @@ fn gc_dry_run_clean_store_prints_nothing() {
         err.contains("nothing to reclaim") || err.contains("gc:"),
         "stderr={err}"
     );
+}
+
+// --- Phase 12 M1: gc --jobs ---
+
+#[test]
+fn gc_jobs_help_and_zero_rejected() {
+    let g = run_ok(&["gc", "--help"]);
+    let s = String::from_utf8_lossy(&g.stdout);
+    assert!(s.contains("--jobs"), "gc --help must list --jobs:\n{s}");
+
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let out = run_fail(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "0",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("jobs") && (err.contains(">= 1") || err.contains("0")),
+        "stderr={err}"
+    );
+}
+
+#[test]
+fn gc_jobs_dry_run_path_set_matches_serial() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("a.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Several orphans so path-set equality is meaningful.
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        for plain in [
+            &b"orphan-gc-jobs-a"[..],
+            &b"orphan-gc-jobs-b"[..],
+            &b"orphan-gc-jobs-c"[..],
+        ] {
+            s.put(plain).unwrap();
+        }
+    }
+
+    let out1 = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "1",
+        idx.to_str().unwrap(),
+    ]);
+    let out4 = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        idx.to_str().unwrap(),
+    ]);
+    // Default (no --jobs) ≡ jobs=1
+    let out_default = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let mut paths1: Vec<String> = String::from_utf8_lossy(&out1.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut paths4: Vec<String> = String::from_utf8_lossy(&out4.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut paths_def: Vec<String> = String::from_utf8_lossy(&out_default.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    paths1.sort();
+    paths4.sort();
+    paths_def.sort();
+    assert_eq!(paths1, paths4, "jobs=1 vs jobs=4 dry-run path sets");
+    assert_eq!(paths1, paths_def, "default (no --jobs) ≡ jobs=1 path set");
+    assert_eq!(paths1.len(), 3, "expected 3 orphan paths; got {paths1:?}");
+
+    // Dry-run must not delete.
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        for plain in [
+            &b"orphan-gc-jobs-a"[..],
+            &b"orphan-gc-jobs-b"[..],
+            &b"orphan-gc-jobs-c"[..],
+        ] {
+            let id = chunkforge_store::ChunkId::hash(plain);
+            assert!(s.has(&id), "orphan {} must remain after dry-run", id);
+        }
+    }
+}
+
+#[test]
+fn gc_apply_jobs_four_deletes_orphan() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("a.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let orphan_plain = b"orphan-gc-apply-jobs-4";
+    let orphan_id = chunkforge_store::ChunkId::hash(orphan_plain);
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(orphan_plain).unwrap();
+        assert!(s.has(&orphan_id));
+    }
+
+    run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--jobs",
+        "4",
+        "--apply",
+        idx.to_str().unwrap(),
+    ]);
+
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        assert!(
+            !s.has(&orphan_id),
+            "orphan must be gone after --apply --jobs 4"
+        );
+    }
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
 }
 
 // --- Phase 4 M3: push (serial) + dry-run ---

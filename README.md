@@ -441,11 +441,12 @@ Workspace / CLI version is **1.1.0**.
 - **`mount --prefetch-chunks N`** (P1 O1): default **1** ≡ 1.0.0; hard cap
   **≤2**; `--no-prefetch` still wins. See [docs/mount.md](docs/mount.md).
 
-**Not delivered / non-goals (carry forward):** `gc --jobs`; full AWS SDK /
+**Not delivered in 1.1.0 / non-goals (carry forward):** full AWS SDK /
 multipart / packfile / write mount / bidirectional sync / extract prune /
 remote scrub / byte-range resume / push listing upload / changing default
 jobs·retries / video analysis. Pack stays measured-only in
-[docs/perf.md](docs/perf.md).
+[docs/perf.md](docs/perf.md). **`gc --jobs N`** (default 1 ≡ serial) lands in
+Unreleased / Phase 12 M1 — see [docs/doctor-gc.md](docs/doctor-gc.md).
 
 ```bash
 # Phase 11 ops smoke (~minutes; local put_stub only)

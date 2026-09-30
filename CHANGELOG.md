@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gc --jobs N`** (Phase 12 M1): default **1** ≡ 1.1.0 serial; rejects
+  `jobs=0` via shared `parse_jobs`. Dry-run path listing stays ordered/serial;
+  `--apply` uses `parallel::map_indexed` for per-id `Store::remove` (result set
+  ≡ jobs=1). Symmetric to `store scrub --jobs`. See `docs/doctor-gc.md`.
+
 ## [1.1.0] — 2026-09-29
 
 Phase 11 closeout — `extract --skip-trust-mtime`; `extract`/`push`/`pull
