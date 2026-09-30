@@ -16350,6 +16350,22 @@ fn filter_help_exists_and_lists_filter() {
         s.contains("-o") || s.contains("--output"),
         "filter --help should list -o/--output:\n{s}"
     );
+    assert!(
+        s.contains("--dry-run"),
+        "filter --help should list --dry-run:\n{s}"
+    );
+    assert!(
+        s.contains("--force"),
+        "filter --help should list --force:\n{s}"
+    );
+    assert!(
+        s.contains("--format"),
+        "filter --help should list --format:\n{s}"
+    );
+    assert!(
+        s.contains("--path-from") && s.contains("--exclude") && s.contains("--exclude-from"),
+        "filter --help should list path 四件套 (--path-from/--exclude/--exclude-from):\n{s}"
+    );
     // Help prose nail: filter ≠ prune ≠ gc-path ≠ sync ≠ write mount ≠ pack ≠ archive --path
     let lower = s.to_lowercase();
     assert!(
@@ -16611,4 +16627,590 @@ fn filter_path_keeps_symlink_under_prefix() {
         !out_tree.join("pkgs/bar").exists(),
         "filter must omit pkgs/bar including its files"
     );
+}
+
+// --- Phase24-M2: filter path 四件套 + dry-run/force/format ---
+
+#[test]
+fn filter_path_from_include_matches_cli_path() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("a")).unwrap();
+    fs::create_dir_all(src.join("b")).unwrap();
+    fs::write(src.join("a").join("f.txt"), b"hello-a\n").unwrap();
+    fs::write(src.join("b").join("g.txt"), b"hello-b\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let via_path = dir.path().join("via_path.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "a",
+        "-o",
+        via_path.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&via_path).unwrap();
+    let arch_path = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths_cli: Vec<_> = arch_path
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(
+        paths_cli,
+        vec!["a/f.txt"],
+        "cli --path; paths={paths_cli:?}"
+    );
+
+    let include = dir.path().join("include.txt");
+    fs::write(&include, "# only a\n\n  a  \n").unwrap();
+    let via_from = dir.path().join("via_from.cfdir");
+    run_ok(&[
+        "filter",
+        "--path-from",
+        include.to_str().unwrap(),
+        "-o",
+        via_from.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&via_from).unwrap();
+    let arch_from = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths_from: Vec<_> = arch_from
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(
+        paths_from, paths_cli,
+        "path-from must match handwritten --path; from={paths_from:?} cli={paths_cli:?}"
+    );
+
+    // Merge: CLI --path OR path-from
+    let include_b = dir.path().join("include_b.txt");
+    fs::write(&include_b, "b\n").unwrap();
+    let merged = dir.path().join("merged.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "a",
+        "--path-from",
+        include_b.to_str().unwrap(),
+        "-o",
+        merged.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&merged).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let mut paths: Vec<_> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.clone())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["a/f.txt".to_string(), "b/g.txt".to_string()],
+        "OR merge paths={paths:?}"
+    );
+}
+
+#[test]
+fn filter_exclude_omit_matching_leaves() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkg")).unwrap();
+    fs::create_dir_all(src.join(".git")).unwrap();
+    fs::create_dir_all(src.join("junk")).unwrap();
+    fs::write(src.join("pkg").join("a.txt"), b"keep-me\n").unwrap();
+    fs::write(src.join(".git").join("config"), b"ign\n").unwrap();
+    fs::write(src.join("junk").join("noise.txt"), b"noise\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("subset.cfdir");
+    let result = run_ok(&[
+        "filter",
+        "--exclude",
+        ".git/",
+        "--exclude",
+        "junk/",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("excluded=") && !err.contains("excluded=0"),
+        "stderr should report excluded≥1; stderr={err}"
+    );
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode .cfdir");
+    let file_paths: Vec<_> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(file_paths, vec!["pkg/a.txt"], "file paths={file_paths:?}");
+    assert!(
+        !arch.entries.iter().any(|e| e.path.starts_with(".git")
+            || e.path.starts_with("junk")
+            || e.path == ".git"
+            || e.path == "junk"),
+        "listing must omit junk; entries={:?}",
+        arch.entries
+            .iter()
+            .map(|e| e.path.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn filter_exclude_from_filters_and_merges_with_cli_exclude() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("drop")).unwrap();
+    fs::create_dir_all(src.join("tmp")).unwrap();
+    fs::write(src.join("keep").join("a.txt"), b"a\n").unwrap();
+    fs::write(src.join("drop").join("b.txt"), b"b\n").unwrap();
+    fs::write(src.join("tmp").join("c.txt"), b"c\n").unwrap();
+    fs::write(src.join("noise.o"), b"obj\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let excl = dir.path().join("excl.txt");
+    fs::write(&excl, "# from file\ndrop/\n*.o\n").unwrap();
+
+    let out = dir.path().join("subset.cfdir");
+    run_ok(&[
+        "filter",
+        "--exclude-from",
+        excl.to_str().unwrap(),
+        "--exclude",
+        "tmp/",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let mut file_paths: Vec<_> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.clone())
+        .collect();
+    file_paths.sort();
+    assert_eq!(
+        file_paths,
+        vec!["keep/a.txt".to_string()],
+        "exclude-from + --exclude merge; paths={file_paths:?}"
+    );
+}
+
+#[test]
+fn filter_path_and_exclude_combined() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"a\n").unwrap();
+    fs::write(src.join("pkgs/foo/skip.o"), b"obj\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"b\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("subset.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "--exclude",
+        "*.o",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let file_paths: Vec<_> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(
+        file_paths,
+        vec!["pkgs/foo/a.txt"],
+        "--path + --exclude; paths={file_paths:?}"
+    );
+    assert!(
+        !arch
+            .entries
+            .iter()
+            .any(|e| e.path.starts_with("pkgs/bar") || e.path.ends_with(".o")),
+        "must omit bar and *.o"
+    );
+}
+
+#[test]
+fn filter_path_from_and_exclude_from_combined() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("drop")).unwrap();
+    fs::create_dir_all(src.join("other")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"a\n").unwrap();
+    fs::write(src.join("keep/noise.o"), b"obj\n").unwrap();
+    fs::write(src.join("drop/b.txt"), b"b\n").unwrap();
+    fs::write(src.join("other/c.txt"), b"c\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let include = dir.path().join("include.txt");
+    fs::write(&include, "keep\ndrop\n").unwrap();
+    let excl = dir.path().join("excl.txt");
+    fs::write(&excl, "drop/\n*.o\n").unwrap();
+
+    let out = dir.path().join("subset.cfdir");
+    run_ok(&[
+        "filter",
+        "--path-from",
+        include.to_str().unwrap(),
+        "--exclude-from",
+        excl.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let file_paths: Vec<_> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(
+        file_paths,
+        vec!["keep/a.txt"],
+        "path-from + exclude-from; paths={file_paths:?}"
+    );
+}
+
+#[test]
+fn filter_dry_run_does_not_write_output() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"a\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"b\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let out = dir.path().join("subset.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let result = run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "--dry-run",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(!out.exists(), "dry-run must not create -o");
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("filter: dry-run:") && err.contains("no .cfdir written"),
+        "dry-run text summary; stderr={err}"
+    );
+    assert!(
+        err.contains("files=1") && err.contains("excluded="),
+        "dry-run should report counts; stderr={err}"
+    );
+
+    // Existing -o is left untouched under dry-run (even without --force).
+    fs::write(&out, b"preexisting").unwrap();
+    let result2 = run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "--dry-run",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        fs::read(&out).unwrap(),
+        b"preexisting",
+        "dry-run must not touch existing -o"
+    );
+    assert!(
+        result2.status.success(),
+        "dry-run with existing -o (no --force) should still succeed"
+    );
+}
+
+#[test]
+fn filter_force_overwrites_existing_output() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"a\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let out = dir.path().join("out.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    fs::write(&out, b"preexisting-junk").unwrap();
+
+    // Without --force: refuse (M1).
+    let fail = run_fail(&[
+        "filter",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("already exists") || err.contains("refusing"),
+        "without --force must refuse; stderr={err}"
+    );
+    assert_eq!(fs::read(&out).unwrap(), b"preexisting-junk");
+
+    // With --force: atomic replace.
+    run_ok(&[
+        "filter",
+        "--force",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(out.is_file(), "force must write -o");
+    let bytes = fs::read(&out).unwrap();
+    assert_ne!(
+        &bytes[..],
+        b"preexisting-junk",
+        "force must replace preexisting bytes"
+    );
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode forced .cfdir");
+    assert!(
+        arch.entries
+            .iter()
+            .any(|e| e.path == "a.txt"
+                && matches!(e.kind, chunkforge_index::DirEntryKind::File { .. })),
+        "forced output must be a valid filtered listing"
+    );
+}
+
+#[test]
+fn filter_format_json_write_and_dry_run() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"a\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"b\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("subset.cfdir");
+
+    // Dry-run JSON: no write; always emit G1 field names.
+    let dry = run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "--dry-run",
+        "--format",
+        "json",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(!out.exists(), "json dry-run must not write -o");
+    let dry_s = String::from_utf8_lossy(&dry.stdout);
+    let dry_v: serde_json::Value = serde_json::from_str(dry_s.trim()).expect("parse dry json");
+    assert_eq!(dry_v["ok"], true);
+    assert_eq!(dry_v["dry_run"], true);
+    assert_eq!(dry_v["input"].as_str().unwrap(), full.to_str().unwrap());
+    assert_eq!(dry_v["output"].as_str().unwrap(), out.to_str().unwrap());
+    assert_eq!(dry_v["files"], 1);
+    // Archive omits empty intermediate Dirs, so dirs is often 0; field must still be present.
+    assert!(dry_v.get("dirs").and_then(|v| v.as_u64()).is_some());
+    assert_eq!(dry_v["symlinks"], 1);
+    assert!(dry_v["excluded"].as_u64().unwrap() >= 1);
+    // No dual-write text summary on stderr for json.
+    let dry_err = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        !dry_err.contains("filter: dry-run:") && !dry_err.contains("filter: wrote"),
+        "json path must not dual-write text summary; stderr={dry_err}"
+    );
+
+    // Write JSON.
+    let wrote = run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "--format",
+        "json",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(out.is_file(), "json write must create -o");
+    let wrote_s = String::from_utf8_lossy(&wrote.stdout);
+    let wrote_v: serde_json::Value =
+        serde_json::from_str(wrote_s.trim()).expect("parse write json");
+    assert_eq!(wrote_v["ok"], true);
+    assert_eq!(wrote_v["dry_run"], false);
+    assert_eq!(wrote_v["files"], 1);
+    assert_eq!(wrote_v["symlinks"], 1);
+    assert_eq!(wrote_v["excluded"], dry_v["excluded"]);
+    assert_eq!(wrote_v["input"].as_str().unwrap(), full.to_str().unwrap());
+    assert_eq!(wrote_v["output"].as_str().unwrap(), out.to_str().unwrap());
+    let wrote_err = String::from_utf8_lossy(&wrote.stderr);
+    assert!(
+        !wrote_err.contains("filter: wrote"),
+        "json write must not dual-write text; stderr={wrote_err}"
+    );
+}
+
+#[test]
+fn filter_format_text_default_and_exit_independent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"a\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let out = dir.path().join("out.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Default text (no --format).
+    let text = run_ok(&[
+        "filter",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&text.stderr);
+    assert!(
+        err.contains("filter: wrote") && err.contains("excluded="),
+        "default text summary; stderr={err}"
+    );
+    assert!(
+        text.stdout.is_empty() || String::from_utf8_lossy(&text.stdout).trim().is_empty(),
+        "text format should not emit JSON on stdout"
+    );
+
+    // Exit independent of format: refuse-existing is non-zero for both formats.
+    let fail_text = run_fail(&[
+        "filter",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let fail_json = run_fail(&[
+        "filter",
+        "--format",
+        "json",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert_ne!(fail_text.status.code(), Some(0));
+    assert_ne!(fail_json.status.code(), Some(0));
 }

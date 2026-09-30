@@ -1060,12 +1060,19 @@ enum Commands {
     /// tree, or rewrite the input listing in place. **≠** prune / **≠**
     /// `gc --path` / **≠** sync / **≠** write mount / **≠** pack / **≠**
     /// `archive --path` (no source-tree walk — input must already be a
-    /// `.cfdir`). `.cfidx` / wrong magic → clear non-zero error. If `-o`
-    /// already exists → clear non-zero error (no silent overwrite; `--force`
-    /// deferred to a later milestone). Atomic write: temp sibling + rename.
-    /// Text-only stderr summary (JSON / `--dry-run` deferred).
+    /// `.cfdir`). `.cfidx` / wrong magic → clear non-zero error.
+    ///
+    /// Without `--force`, if `-o` already exists → clear non-zero (no silent
+    /// overwrite). With `--force`, atomic replace (temp sibling + rename).
+    /// **`--dry-run`**: compute filtered listing + counts; **do not** write
+    /// `-o` (still takes `-o` as the planned path, like archive/make). Default
+    /// **`--format text`**: stderr summary. **`--format json`**: one JSON
+    /// object on stdout (`ok` / `dry_run` / `input` / `output` / `files` /
+    /// `dirs` / `symlinks` / `excluded`); no text dual-write; exit codes are
+    /// format-independent.
     Filter {
-        /// Output `.cfdir` path (must not already exist)
+        /// Output `.cfdir` path (planned path under `--dry-run`; without
+        /// `--force` must not already exist when writing)
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
         /// Include only listing paths under this prefix (repeatable; OR).
@@ -1092,6 +1099,19 @@ enum Commands {
         /// bad UTF-8 → clear non-zero error. Omit all path flags ⇒ identity.
         #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
         path_from: Vec<PathBuf>,
+        /// Plan-only: compute filtered listing + counts; do **not** write `-o`
+        /// (still takes `-o` as the planned path). Orthogonal to `--format`.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Allow overwrite of an existing `-o` via atomic replace. Without
+        /// `--force`, existing `-o` → clear non-zero (≡ M1 refuse). No-op
+        /// under `--dry-run` (never writes).
+        #[arg(long = "force")]
+        force: bool,
+        /// Output format: `text` (default ≡ other ops stderr summary) or `json`
+        /// (one object on stdout; exit codes format-independent)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// Input `.cfdir` (`.cfidx` / wrong magic → clear non-zero)
         input: PathBuf,
     },
@@ -1756,13 +1776,16 @@ fn run() -> Result<()> {
             excludes,
             exclude_from,
             path_from,
+            dry_run,
+            force,
+            format,
             input,
         } => {
             let paths = merged_paths(&paths, &path_from)?;
             let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
-            cmd_filter(&input, &output, &path_filter)
+            cmd_filter(&input, &output, &path_filter, dry_run, force, format)
         }
 
         Commands::Store {
@@ -3109,13 +3132,21 @@ fn load_cfdir_for_filter(path: &Path) -> Result<DirArchive> {
     Ok(arch)
 }
 
-/// Persist `filter_dir_archive` of `input` to `output` (atomic; refuse overwrite).
+/// Persist `filter_dir_archive` of `input` to `output` (atomic; refuse overwrite
+/// unless `force`; skip write under `dry_run`).
 ///
 /// Empty `path_filter` ≡ identity (re-encode). Does **not** open a store /
 /// rechunk / walk a source tree / prune dest trees. **≠** prune / **≠**
 /// `gc --path` / **≠** sync / **≠** write mount / **≠** pack / **≠**
 /// `archive --path`.
-fn cmd_filter(input: &Path, output: &Path, path_filter: &PathFilter) -> Result<()> {
+fn cmd_filter(
+    input: &Path,
+    output: &Path,
+    path_filter: &PathFilter,
+    dry_run: bool,
+    force: bool,
+    format: CliFormat,
+) -> Result<()> {
     let input_arch = load_cfdir_for_filter(input)?;
     let out_arch = filter_dir_archive(&input_arch, path_filter);
 
@@ -3134,10 +3165,53 @@ fn cmd_filter(input: &Path, output: &Path, path_filter: &PathFilter) -> Result<(
         .iter()
         .filter(|e| matches!(e.kind, DirEntryKind::Symlink { .. }))
         .count();
+    // Excluded = input File+Symlink leaves that failed PathFilter (Dirs that
+    // drop as non-ancestors are not counted — same leaf accounting as archive).
+    let input_leaves = input_arch
+        .entries
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                DirEntryKind::File { .. } | DirEntryKind::Symlink { .. }
+            )
+        })
+        .count();
+    let excluded = input_leaves.saturating_sub(file_count + symlink_count);
 
-    if output.exists() {
+    if dry_run {
+        match format {
+            CliFormat::Text => {
+                eprintln!(
+                    "filter: dry-run: would write {} (files={}, dirs={}, symlinks={}; excluded={});                      no .cfdir written (from {})",
+                    output.display(),
+                    file_count,
+                    dir_count,
+                    symlink_count,
+                    excluded,
+                    input.display()
+                );
+            }
+            CliFormat::Json => {
+                let obj = serde_json::json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "input": input.display().to_string(),
+                    "output": output.display().to_string(),
+                    "files": file_count,
+                    "dirs": dir_count,
+                    "symlinks": symlink_count,
+                    "excluded": excluded,
+                });
+                println!("{obj}");
+            }
+        }
+        return Ok(());
+    }
+
+    if output.exists() && !force {
         bail!(
-            "filter output {} already exists (refusing to overwrite; remove it or choose another -o)",
+            "filter output {} already exists (refusing to overwrite; pass --force or choose another -o)",
             output.display()
         );
     }
@@ -3148,14 +3222,32 @@ fn cmd_filter(input: &Path, output: &Path, path_filter: &PathFilter) -> Result<(
 
     write_cfdir_atomic(output, &bytes)?;
 
-    eprintln!(
-        "filter: wrote {} (files={}, dirs={}, symlinks={}) from {}",
-        output.display(),
-        file_count,
-        dir_count,
-        symlink_count,
-        input.display()
-    );
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "filter: wrote {} (files={}, dirs={}, symlinks={}; excluded={}) from {}",
+                output.display(),
+                file_count,
+                dir_count,
+                symlink_count,
+                excluded,
+                input.display()
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "dry_run": false,
+                "input": input.display().to_string(),
+                "output": output.display().to_string(),
+                "files": file_count,
+                "dirs": dir_count,
+                "symlinks": symlink_count,
+                "excluded": excluded,
+            });
+            println!("{obj}");
+        }
+    }
     Ok(())
 }
 
