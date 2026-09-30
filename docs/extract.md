@@ -5,9 +5,10 @@ Materialize a directory tree from a **`.cfdir`** listing plus a chunk source
 on Unix when recorded. Empty `Dir` entries create directories.
 
 Phase 9 adds opt-in **`--skip-unchanged`** and **`--dry-run`**; Phase 11 adds
-opt-in **`--skip-trust-mtime`** (requires `--skip-unchanged`). Without those
-flags, behaviour matches **1.0.0** / **0.8.0** (full write / conflict-fail;
-`--force` overwrites existing regular files). See also [archive.md](archive.md),
+opt-in **`--skip-trust-mtime`** (requires `--skip-unchanged`) and
+**`--format text|json`** (default **text** ≡ 1.0.0). Without those flags,
+behaviour matches **1.0.0** / **0.8.0** (full write / conflict-fail; `--force`
+overwrites existing regular files). See also [archive.md](archive.md),
 [dir-format.md](dir-format.md), [http-retry.md](http-retry.md).
 
 ## Usage
@@ -20,6 +21,7 @@ chunkforge extract \
   [--skip-unchanged] \
   [--skip-trust-mtime] \
   [--dry-run] \
+  [--format text|json] \
   [--jobs N] \
   [--http-retries N] \
   [--cache <dir>] \
@@ -33,16 +35,26 @@ chunkforge extract \
 | `--force` | Overwrite existing **regular files**. Type mismatches (file↔directory) still fail. Default **off** ≡ 0.8.0 conflict-fail |
 | `--skip-unchanged` | Opt-in: if dest exists as a regular file, **size** matches the listing, and **content BLAKE3 ≡ `blob_blake3`**, skip chunk fetch and write (mode/mtime untouched). Default **off** ≡ 0.8.0 / 1.0.0 |
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
-| `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Stderr `would_*` counters |
+| `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Text: stderr `would_*` counters |
+| `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary). Exit codes are format-independent |
 | `--jobs` / `--http-retries` / `--cache` / templates / SigV4 | Same as other read-side commands; skipped files issue **zero** chunk `get` |
 
-### Summaries (stderr)
+### Summaries (`--format text`, stderr ≡ 1.0.0)
 
 | Mode | Line shape |
 |---|---|
-| No `--skip-unchanged` / no `--dry-run` | `extract: wrote <out> (N files, D dirs)` — **0.8.0-compatible** |
+| No `--skip-unchanged` / no `--dry-run` | `extract: wrote <out> (N files, D dirs)` — **0.8.0 / 1.0.0-compatible** |
 | With `--skip-unchanged` (write path) | `extract: <out> skipped=S wrote=W dirs=D` |
 | With `--dry-run` | `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…` |
+
+### `--format json` (stdout; Phase 11 M2)
+
+One JSON **object** on stdout on success. Failures still go through anyhow (non-zero exit; no success JSON). Exit code is **independent** of `--format` (dry-run listing valid → **0** even if `would_fail>0`).
+
+| Mode | Fields |
+|---|---|
+| Write path | `{"ok":true,"dry_run":false,"skipped":S,"wrote":W,"dirs":D}` — always includes `skipped`/`wrote`/`dirs` (`skipped=0` when `--skip-unchanged` is off) |
+| `--dry-run` | `{"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…}` |
 
 ## `--skip-unchanged` / `--force` / `--dry-run` overlap
 
@@ -95,6 +107,13 @@ chunkforge extract --store ./store -o /tmp/out \
 chunkforge extract --store ./store -o /tmp/out \
   --skip-unchanged --dry-run release.cfdir
 # stderr: extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…
+
+# Ops JSON (stdout; no duplicate stderr summary)
+chunkforge extract --store ./store -o /tmp/out --format json release.cfdir
+# → {"ok":true,"dry_run":false,"skipped":0,"wrote":W,"dirs":D}
+chunkforge extract --store ./store -o /tmp/out \
+  --skip-unchanged --dry-run --format json release.cfdir
+# → {"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…}
 
 # HTTP source + retries (skipped files still issue zero GET)
 chunkforge extract --source http://127.0.0.1:8765 \

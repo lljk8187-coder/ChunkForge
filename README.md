@@ -329,6 +329,9 @@ Phase 8. Default extract (no new flags), retries=0, and SigV4 off stay
 - **`extract --skip-trust-mtime`** (Phase 11): requires `--skip-unchanged`;
   size+mtime hit skips content BLAKE3 (default off ≡ 1.0.0; see
   [docs/extract.md](docs/extract.md))
+- **`extract --format text|json`** (Phase 11 M2): default **text** ≡ 1.0.0;
+  JSON one object on stdout (`ok` / `skipped`/`wrote`/`dirs` or dry-run
+  `would_*`)
 - **`extract --dry-run`**: plan only — no target writes; `would_skip` /
   `would_write` / `would_dirs` / `would_fail`
 - Docs: [docs/extract.md](docs/extract.md) (flag overlap; **no prune** of extra

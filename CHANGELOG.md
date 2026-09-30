@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `judge_extract_unchanged_opts` — size+mtime hit skips content BLAKE3
   (symmetric to `archive --seed-trust-mtime`); docs warn about forged /
   clock-drift / `cp -p` mtimes.
+- **Phase11-M2:** `extract --format text|json` (default **text** ≡ 1.0.0
+  stderr summary). JSON: one object on stdout
+  (`ok`/`skipped`/`wrote`/`dirs`, or dry-run `would_*` + `dry_run`); no
+  duplicate stderr summary; exit codes format-independent. Shared
+  `CliFormat`. See `docs/extract.md`.
 
 ## [1.0.0] — 2026-09-29
 

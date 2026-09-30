@@ -107,7 +107,10 @@ enum Commands {
     /// `--dry-run`, no target paths are created
     /// or modified (output root included); stderr reports would_skip /
     /// would_write / would_dirs / would_fail and exit is 0 unless the listing
-    /// is invalid. Empty `Dir` entries create directories; file modes are
+    /// is invalid. Default **`--format text`** (≡ 1.0.0): summaries on stderr.
+    /// **`--format json`**: one JSON object on stdout (`ok` / `skipped` /
+    /// `wrote` / `dirs`, or dry-run `would_*`); exit codes are format-
+    /// independent. Empty `Dir` entries create directories; file modes are
     /// restored on Unix when recorded.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Extract {
@@ -156,11 +159,15 @@ enum Commands {
         /// does not open `--store`/`--source` and counts every listing file as
         /// `would_write` (existing conflicts without `--force` → `would_fail`).
         /// With `--skip-unchanged`, only reads local dests for size+BLAKE3
-        /// judgment. Stderr:
+        /// judgment. Text format stderr:
         /// `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
         /// Exit **0** when the listing is valid (even if `would_fail>0`).
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Output format: `text` (default ≡ 1.0.0 stderr summary) or `json`
+        /// (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -415,8 +422,10 @@ enum StoreCommands {
     },
 }
 
-/// Shared `--format text|json` for `diff` / `verify` / `doctor` (Phase 8 M4 + Phase 10 M6 O1).
-/// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0).
+/// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract`
+/// (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2).
+/// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
+/// `extract` ≡ 1.0.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -537,6 +546,7 @@ fn run() -> Result<()> {
             skip_unchanged,
             skip_trust_mtime,
             dry_run,
+            format,
         } => {
             let jobs = parse_jobs(jobs)?;
             // Dry-run never opens store/source (no chunk get; G2 / §3.2).
@@ -550,6 +560,7 @@ fn run() -> Result<()> {
                     skip_unchanged,
                     skip_trust_mtime,
                     true,
+                    format,
                 )
             } else {
                 let src = open_chunk_source(
@@ -567,6 +578,7 @@ fn run() -> Result<()> {
                     skip_unchanged,
                     skip_trust_mtime,
                     false,
+                    format,
                 )
             }
         }
@@ -2240,6 +2252,7 @@ fn cmd_extract(
     skip_unchanged: bool,
     skip_trust_mtime: bool,
     dry_run: bool,
+    format: CliFormat,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -2255,7 +2268,14 @@ fn cmd_extract(
         .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
 
     if dry_run {
-        return cmd_extract_dry_run(&archive, out_dir, force, skip_unchanged, skip_trust_mtime);
+        return cmd_extract_dry_run(
+            &archive,
+            out_dir,
+            force,
+            skip_unchanged,
+            skip_trust_mtime,
+            format,
+        );
     }
 
     let source = source.expect("non-dry-run extract always opens a chunk source");
@@ -2424,22 +2444,37 @@ fn cmd_extract(
         }
     }
 
-    if skip_unchanged {
-        // G3 / M2: field names skipped= / wrote= / dirs= (nailed).
-        eprintln!(
-            "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
-            out_dir.display(),
-        );
-    } else {
-        // ≡ 0.8.0 summary line when --skip-unchanged is off.
-        eprintln!(
-            "extract: wrote {} ({} file{}, {} dir{})",
-            out_dir.display(),
-            file_count,
-            if file_count == 1 { "" } else { "s" },
-            dir_count,
-            if dir_count == 1 { "" } else { "s" }
-        );
+    match format {
+        CliFormat::Text => {
+            if skip_unchanged {
+                // G3 / M2: field names skipped= / wrote= / dirs= (nailed).
+                eprintln!(
+                    "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
+                    out_dir.display(),
+                );
+            } else {
+                // ≡ 0.8.0 / 1.0.0 summary line when --skip-unchanged is off.
+                eprintln!(
+                    "extract: wrote {} ({} file{}, {} dir{})",
+                    out_dir.display(),
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    dir_count,
+                    if dir_count == 1 { "" } else { "s" }
+                );
+            }
+        }
+        CliFormat::Json => {
+            // Always emit skipped/wrote/dirs for scripts (skipped=0 when flag off).
+            let obj = serde_json::json!({
+                "ok": true,
+                "dry_run": false,
+                "skipped": skipped_count,
+                "wrote": file_count,
+                "dirs": dir_count,
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }
@@ -2456,6 +2491,7 @@ fn cmd_extract_dry_run(
     force: bool,
     skip_unchanged: bool,
     skip_trust_mtime: bool,
+    format: CliFormat,
 ) -> Result<()> {
     // Refuse only when the named output root already exists as a file — same
     // hard gate as real extract; we still create/modify nothing.
@@ -2537,9 +2573,24 @@ fn cmd_extract_dry_run(
     }
 
     // G3 / M3: nailed field names (would_fail included — dry-run conflict path).
-    eprintln!(
-        "extract: dry-run: would_skip={would_skip} would_write={would_write} would_dirs={would_dirs} would_fail={would_fail}"
-    );
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "extract: dry-run: would_skip={would_skip} would_write={would_write} would_dirs={would_dirs} would_fail={would_fail}"
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "dry_run": true,
+                "would_skip": would_skip,
+                "would_write": would_write,
+                "would_dirs": would_dirs,
+                "would_fail": would_fail,
+            });
+            println!("{obj}");
+        }
+    }
     Ok(())
 }
 

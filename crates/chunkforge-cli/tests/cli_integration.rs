@@ -6976,3 +6976,180 @@ fn doctor_format_json_ok_and_missing() {
         "json mode must not print bare missing ids; stdout={fail_stdout}"
     );
 }
+
+// --- Phase 11 M2: extract --format json ---
+
+#[test]
+fn extract_help_lists_format() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--format"),
+        "extract --help should list --format:\n{s}"
+    );
+    assert!(
+        s.contains("text") && s.contains("json"),
+        "extract --help --format should mention text|json:\n{s}"
+    );
+}
+
+#[test]
+fn extract_format_json_write_path_ok() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    let archive = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"hello-extract-json\n").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Default text: stderr summary, stdout empty-ish.
+    let text = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        archive.to_str().unwrap(),
+    ]);
+    let text_err = String::from_utf8_lossy(&text.stderr);
+    assert!(
+        text_err.contains("extract: wrote"),
+        "default text must keep stderr summary; stderr={text_err}"
+    );
+
+    // Fresh out2 with --format json.
+    let out2 = dir.path().join("out2");
+    let json_out = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out2.to_str().unwrap(),
+        "--format",
+        "json",
+        archive.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("extract: wrote") && !stderr.contains("skipped="),
+        "json mode must not duplicate summary on stderr; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("extract json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["skipped"], 0);
+    assert!(v["wrote"].as_u64().unwrap() >= 1, "wrote={v}");
+    assert!(v.get("dirs").is_some(), "dirs missing: {v}");
+    assert_eq!(
+        fs::read(out2.join("a.txt")).unwrap(),
+        b"hello-extract-json\n"
+    );
+}
+
+#[test]
+fn extract_format_json_dry_run() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    let archive = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"dry-run-json\n").unwrap();
+    fs::create_dir_all(src.join("sub")).unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let json_out = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(!out.exists(), "dry-run must not create output root");
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("dry-run:"),
+        "json dry-run must not duplicate summary on stderr; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("extract dry-run json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["would_skip"], 0);
+    assert!(v["would_write"].as_u64().unwrap() >= 1, "would_write={v}");
+    assert!(v.get("would_dirs").is_some(), "would_dirs missing: {v}");
+    assert_eq!(v["would_fail"], 0);
+}
+
+#[test]
+fn extract_format_json_skip_unchanged_counts() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    let archive = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"skip-json-a\n").unwrap();
+    fs::write(src.join("b.txt"), b"skip-json-b\n").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        archive.to_str().unwrap(),
+    ]);
+
+    let json_out = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--format",
+        "json",
+        archive.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("extract skip json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["skipped"], 2);
+    assert_eq!(v["wrote"], 0);
+    assert!(v.get("dirs").is_some(), "dirs missing: {v}");
+}
