@@ -6024,6 +6024,53 @@ fn extract_help_lists_skip_unchanged() {
     );
 }
 
+// --- Phase 11 M1: extract --skip-trust-mtime ---
+
+#[test]
+fn extract_help_lists_skip_trust_mtime_with_warning() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--skip-trust-mtime"),
+        "extract --help should list --skip-trust-mtime:\n{s}"
+    );
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("mtime")
+            && (lower.contains("warn")
+                || lower.contains("forged")
+                || lower.contains("risk")
+                || lower.contains("miss")
+                || lower.contains("clock")),
+        "extract --help --skip-trust-mtime should warn about mtime risk:\n{s}"
+    );
+}
+
+#[test]
+fn extract_skip_trust_mtime_requires_skip_unchanged() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out");
+    let cfdir = dir.path().join("t.cfdir");
+    // Minimal args; clap should fail before needing a real archive.
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-trust-mtime",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("skip-trust-mtime")
+            || err.contains("skip-unchanged")
+            || err.to_lowercase().contains("require"),
+        "without --skip-unchanged, --skip-trust-mtime must error; stderr={err}"
+    );
+}
+
 #[test]
 fn extract_skip_unchanged_second_pass_skips_all_and_zero_gets() {
     use std::sync::{Arc, Mutex};

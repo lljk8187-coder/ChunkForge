@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase11-M1:** `extract --skip-trust-mtime` (requires `--skip-unchanged`;
+  opt-in; default off ≡ 1.0.0 content path). Library
+  `judge_extract_unchanged_opts` — size+mtime hit skips content BLAKE3
+  (symmetric to `archive --seed-trust-mtime`); docs warn about forged /
+  clock-drift / `cp -p` mtimes.
+
 ## [1.0.0] — 2026-09-29
 
 Phase 10 closeout — FUSE sequential prefetch (default **on** / `--no-prefetch`),

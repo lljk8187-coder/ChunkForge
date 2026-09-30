@@ -326,6 +326,9 @@ Phase 8. Default extract (no new flags), retries=0, and SigV4 off stay
 
 - **`extract --skip-unchanged`**: opt-in; skip when dest size + content BLAKE3
   match listing `blob_blake3` (no chunk fetch/write; match beats `--force`)
+- **`extract --skip-trust-mtime`** (Phase 11): requires `--skip-unchanged`;
+  size+mtime hit skips content BLAKE3 (default off ≡ 1.0.0; see
+  [docs/extract.md](docs/extract.md))
 - **`extract --dry-run`**: plan only — no target writes; `would_skip` /
   `would_write` / `would_dirs` / `would_fail`
 - Docs: [docs/extract.md](docs/extract.md) (flag overlap; **no prune** of extra
@@ -379,7 +382,7 @@ analysis — see **Non-goals (Phase 10 / 1.0)** above and `docs/stability.md`.
 | `gc` | Local unreferenced loose chunks |
 | `store scrub` | Local loose BLAKE3 rehash |
 | `diff` | Listing↔listing; **not** sync |
-| `extract --skip-unchanged` / `--dry-run` | Incremental / plan-only; **no** prune |
+| `extract --skip-unchanged` / `--skip-trust-mtime` / `--dry-run` | Incremental / plan-only; **no** prune |
 | `mount` (+ prefetch / `--no-prefetch`) | RO FUSE; sequential prefetch only |
 
 ```bash

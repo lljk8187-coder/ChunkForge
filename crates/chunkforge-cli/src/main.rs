@@ -8,7 +8,7 @@ use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader,
-    judge_extract_unchanged, seed_file_map, validate_archive_path,
+    judge_extract_unchanged_opts, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -102,7 +102,9 @@ enum Commands {
     /// existing regular files; type mismatches still error). With
     /// `--skip-unchanged`, files whose size and content BLAKE3 already match
     /// the listing are left untouched (no chunk fetch / write), even if
-    /// `--force` is also set. With `--dry-run`, no target paths are created
+    /// `--force` is also set. With `--skip-trust-mtime` (requires
+    /// `--skip-unchanged`), size+mtime match skips content BLAKE3. With
+    /// `--dry-run`, no target paths are created
     /// or modified (output root included); stderr reports would_skip /
     /// would_write / would_dirs / would_fail and exit is 0 unless the listing
     /// is invalid. Empty `Dir` entries create directories; file modes are
@@ -142,6 +144,13 @@ enum Commands {
         /// files still require `--force` to overwrite.
         #[arg(long = "skip-unchanged")]
         skip_unchanged: bool,
+        /// With `--skip-unchanged`: if size and mtime_secs both match the
+        /// listing File entry, skip without content BLAKE3. Default off
+        /// (≡ 1.0.0 content path). WARNING: forged or incorrectly preserved
+        /// mtimes (clock drift, `cp -p`, some network FS) can miss content
+        /// changes — prefer content fingerprint unless you accept that risk.
+        #[arg(long = "skip-trust-mtime", requires = "skip_unchanged")]
+        skip_trust_mtime: bool,
         /// Plan only: create/modify **no** paths under `-o` (including the
         /// output root). Never fetches chunks. Without `--skip-unchanged`,
         /// does not open `--store`/`--source` and counts every listing file as
@@ -526,12 +535,22 @@ fn run() -> Result<()> {
             output,
             force,
             skip_unchanged,
+            skip_trust_mtime,
             dry_run,
         } => {
             let jobs = parse_jobs(jobs)?;
             // Dry-run never opens store/source (no chunk get; G2 / §3.2).
             if dry_run {
-                cmd_extract(None, &archive, &output, jobs, force, skip_unchanged, true)
+                cmd_extract(
+                    None,
+                    &archive,
+                    &output,
+                    jobs,
+                    force,
+                    skip_unchanged,
+                    skip_trust_mtime,
+                    true,
+                )
             } else {
                 let src = open_chunk_source(
                     store.as_deref(),
@@ -546,6 +565,7 @@ fn run() -> Result<()> {
                     jobs,
                     force,
                     skip_unchanged,
+                    skip_trust_mtime,
                     false,
                 )
             }
@@ -2210,6 +2230,7 @@ fn cmd_verify_dir(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_extract(
     source: Option<&dyn ChunkSource>,
     archive_path: &Path,
@@ -2217,6 +2238,7 @@ fn cmd_extract(
     jobs: usize,
     force: bool,
     skip_unchanged: bool,
+    skip_trust_mtime: bool,
     dry_run: bool,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
@@ -2233,7 +2255,7 @@ fn cmd_extract(
         .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
 
     if dry_run {
-        return cmd_extract_dry_run(&archive, out_dir, force, skip_unchanged);
+        return cmd_extract_dry_run(&archive, out_dir, force, skip_unchanged, skip_trust_mtime);
     }
 
     let source = source.expect("non-dry-run extract always opens a chunk source");
@@ -2281,14 +2303,20 @@ fn cmd_extract(
             DirEntryKind::File {
                 mode,
                 size,
+                mtime_secs,
                 blob_blake3,
                 chunks,
-                ..
             } => {
-                // Phase 9: optional skip when dest already matches listing content.
+                // Phase 9 / 11: optional skip when dest already matches listing.
                 if skip_unchanged {
-                    let verdict = judge_extract_unchanged(&dest, *size, blob_blake3)
-                        .with_context(|| format!("stat/hash {}", dest.display()))?;
+                    let verdict = judge_extract_unchanged_opts(
+                        &dest,
+                        *size,
+                        blob_blake3,
+                        *mtime_secs,
+                        skip_trust_mtime,
+                    )
+                    .with_context(|| format!("stat/hash {}", dest.display()))?;
                     match verdict {
                         UnchangedVerdict::Unchanged => {
                             // Match takes priority over --force: leave file untouched
@@ -2427,6 +2455,7 @@ fn cmd_extract_dry_run(
     out_dir: &Path,
     force: bool,
     skip_unchanged: bool,
+    skip_trust_mtime: bool,
 ) -> Result<()> {
     // Refuse only when the named output root already exists as a file — same
     // hard gate as real extract; we still create/modify nothing.
@@ -2453,11 +2482,20 @@ fn cmd_extract_dry_run(
                 }
             }
             DirEntryKind::File {
-                size, blob_blake3, ..
+                size,
+                mtime_secs,
+                blob_blake3,
+                ..
             } => {
                 if skip_unchanged {
-                    let verdict = judge_extract_unchanged(&dest, *size, blob_blake3)
-                        .with_context(|| format!("stat/hash {}", dest.display()))?;
+                    let verdict = judge_extract_unchanged_opts(
+                        &dest,
+                        *size,
+                        blob_blake3,
+                        *mtime_secs,
+                        skip_trust_mtime,
+                    )
+                    .with_context(|| format!("stat/hash {}", dest.display()))?;
                     match verdict {
                         UnchangedVerdict::Unchanged => {
                             would_skip += 1;

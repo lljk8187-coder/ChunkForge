@@ -4,9 +4,10 @@ Materialize a directory tree from a **`.cfdir`** listing plus a chunk source
 (`--store` / `--source`). Parents are created as needed; file modes are restored
 on Unix when recorded. Empty `Dir` entries create directories.
 
-Phase 9 adds opt-in **`--skip-unchanged`** and **`--dry-run`**. Without those
-flags, behaviour matches **0.8.0** (full write / conflict-fail; `--force`
-overwrites existing regular files). See also [archive.md](archive.md),
+Phase 9 adds opt-in **`--skip-unchanged`** and **`--dry-run`**; Phase 11 adds
+opt-in **`--skip-trust-mtime`** (requires `--skip-unchanged`). Without those
+flags, behaviour matches **1.0.0** / **0.8.0** (full write / conflict-fail;
+`--force` overwrites existing regular files). See also [archive.md](archive.md),
 [dir-format.md](dir-format.md), [http-retry.md](http-retry.md).
 
 ## Usage
@@ -17,6 +18,7 @@ chunkforge extract \
   -o <out-dir> \
   [--force] \
   [--skip-unchanged] \
+  [--skip-trust-mtime] \
   [--dry-run] \
   [--jobs N] \
   [--http-retries N] \
@@ -29,7 +31,8 @@ chunkforge extract \
 | `--store` / `--source` | Chunk origin (local CAS path, `file://`, or `http(s)://`) — same as `cat` / `verify` |
 | `-o` / `--output` | Output directory (created if missing on a real extract; **not** created under `--dry-run`) |
 | `--force` | Overwrite existing **regular files**. Type mismatches (file↔directory) still fail. Default **off** ≡ 0.8.0 conflict-fail |
-| `--skip-unchanged` | Opt-in: if dest exists as a regular file, **size** matches the listing, and **content BLAKE3 ≡ `blob_blake3`**, skip chunk fetch and write (mode/mtime untouched). Default **off** ≡ 0.8.0 |
+| `--skip-unchanged` | Opt-in: if dest exists as a regular file, **size** matches the listing, and **content BLAKE3 ≡ `blob_blake3`**, skip chunk fetch and write (mode/mtime untouched). Default **off** ≡ 0.8.0 / 1.0.0 |
+| `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
 | `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Stderr `would_*` counters |
 | `--jobs` / `--http-retries` / `--cache` / templates / SigV4 | Same as other read-side commands; skipped files issue **zero** chunk `get` |
 
@@ -51,8 +54,10 @@ chunkforge extract \
 | Type mismatch (file↔dir) | Fail | Fail | Fail (`--force` does not replace types) | `would_fail` |
 | Matching skip path | n/a | **Zero** `ChunkSource::get` for that file's chunks | same | With skip: local stat/hash only; **no** chunk get. Without skip: no store/source open; all files `would_write` |
 
-**Match criteria (P0):** size fast-reject, then streaming content BLAKE3 ≡ listing
-`blob_blake3`. mtime is **not** trusted (no `--skip-trust-mtime` in this release).
+**Match criteria:** size fast-reject; with `--skip-trust-mtime`, size **and**
+mtime_secs hit → **Unchanged** (no content read); otherwise streaming content
+BLAKE3 ≡ listing `blob_blake3` (≡ 1.0.0). Default (no `--skip-trust-mtime`)
+does **not** trust mtime. Symmetrical to `archive --seed-trust-mtime`.
 
 **Dry-run exit:** **0** when the listing is valid (even if `would_fail>0`);
 invalid listing → non-zero.
@@ -81,6 +86,10 @@ chunkforge extract --store ./store -o /tmp/out release.cfdir
 chunkforge extract --store ./store -o /tmp/out \
   --skip-unchanged --force release.cfdir
 # stderr: extract: /tmp/out skipped=S wrote=W dirs=D
+
+# Opt-in mtime fast path (requires --skip-unchanged; WARNING: clock / cp -p risk)
+chunkforge extract --store ./store -o /tmp/out \
+  --skip-unchanged --skip-trust-mtime --force release.cfdir
 
 # Plan only (no writes; with skip → local hash only, no chunk GET)
 chunkforge extract --store ./store -o /tmp/out \
