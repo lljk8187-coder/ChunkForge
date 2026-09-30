@@ -127,8 +127,26 @@ Defaults stay ≡ **1.12.0**. The workspace reports **1.13.0**. Gate
 absolute perf SLA). See [diff.md](diff.md) and
 [`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
 
+**Phase24 / toward 1.14.0** (in progress on `main`; workspace / CLI version
+stays **1.13.0** until M7) adds the first-class **`chunkforge filter`**
+subcommand: persist a path-scoped subset of an existing `.cfdir` via library
+`filter_dir_archive` → `DirArchive::encode` → `-o`. Empty path 四件套 ≡
+**identity**. Path 四件套 + `--dry-run` / `--force` / `--format text|json`
+(fields: `ok` / `dry_run` / `input` / `output` / `files` / `dirs` /
+`symlinks` / `excluded`). Symlink keep → encode **v2**; all Symlinks filtered
+→ encode **v1**. **Does not** open a store, walk a source tree, prune, or
+rewrite the input in place. **Hard ban unchanged:** **`gc --path`**, write
+mount, prune, pack, default zstd, push `--fallback`, mount `--progress`,
+default record. Responsibility nail: **`filter` ≠ prune ≠ `gc --path` ≠ sync
+≠ write mount ≠ pack ≠ `archive --path`** (latter needs a source-tree walk).
+Warning: feeding a filtered listing to `gc` uses **that listing's** refs —
+still **no** `gc --path`. Docs: [filter.md](filter.md); smoke:
+[`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
+Gate **`check_compat_1_13.sh`** lands in **M5** (note-only until then).
+Defaults of existing commands stay ≡ **1.13.0**.
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
-[mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
+[mount.md](mount.md), [filter.md](filter.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
 
 ## Frozen surface (1.0 commitments)
@@ -175,6 +193,9 @@ trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ 
 prune ≠ `gc --path` ≠ default record**.
 **`diff --tree --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠
 prune ≠ `gc --path` ≠ default record**.
+**`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**.
+Phase24 filter is present on `main` as an additive subcommand; version stays
+**1.13.0** until M7 (**1.14.0**).
 
 ## Breaking-change policy
 
@@ -218,7 +239,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.13.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.13.0** and **Phase24 / toward 1.14.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -238,6 +259,7 @@ At 1.0, ChunkForge promises:
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes` / path quartet / Symlink `readlink`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU); Phase21 path flags subset DirFs visibility (default ≡ 1.10 full tree; **≠** write mount **≠** prune **≠** `gc --path`); Phase22 Symlink nodes + `readlink` still **RO** (**record ≠ write mount ≠ follow**) |
 | `archive --symlinks skip\|record` | Default **skip** ≡ 1.11 skip+warn + write v1; **record** → Symlink kind / v2 when ≥1; absolute target → non-zero; **≠** write mount **≠** follow **≠** pack **≠** prune **≠** `gc --path` **≠** default record |
+| `filter` | Persist path-scoped subset of an existing `.cfdir` (`filter_dir_archive` → encode → `-o`); empty 四件套 ≡ identity; path 四件套 + `--dry-run` / `--force` / `--format`; Symlink keep → v2 / all filtered → v1; **≠** prune **≠** `gc --path` **≠** sync **≠** write mount **≠** pack **≠** `archive --path` (no source-tree walk). Warning: filtered listing → `gc` uses that listing's refs — still **no** `gc --path`. See [filter.md](filter.md) |
 | `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 | `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
 | `push` local / `file://` `--dest` | Single Store as `ChunkSink` (open or create **none**); **≠** `--fallback` / multi-dest; HTTP knobs with local dest → non-zero |
@@ -260,7 +282,8 @@ There is **no** remote-scrub first-class command and **no** bidirectional sync.
 Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
 `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` /
-`store stats` / **`store create`** / **`make`** / **`cat`**).
+`store stats` / **`store create`** / **`make`** / **`cat`** / **`filter`**
+(Phase24)).
 Default remains **text**. **Field rename → breaking** (same policy as above).
 Path filter on extract/pull/push does **not** rename fields (`unique_chunks` =
 filtered set). Prior command field names stay stable; **store stats** (1.4)
@@ -291,4 +314,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.12 archive `--symlinks` / demo_symlink; calls 1_10).
 [`scripts/check_compat_1_12.sh`](../scripts/check_compat_1_12.sh)
 (1.13 `diff --symlinks` / demo_diff_tree_symlink; calls 1_11).
+**`check_compat_1_13.sh`** (Phase24-M5; note-only until then — gates `filter`
++ 1.14 flags; calls 1_12).
 No absolute perf SLA.

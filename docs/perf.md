@@ -81,6 +81,12 @@ now.
 > record` is ephemeral metadata compare only (0 chunks; ≠ pack). Extract
 > dry-run `would_symlinks` is plan-only accounting (≠ pack). Promotion
 > checklist condition 1 stays unmet; pack stays deferred.
+>
+> **Phase24 / toward 1.14.0 still does not implement pack**. `chunkforge
+> filter` is a pure listing transform (no store / no chunk I/O / no layout
+> change; ≠ pack). Workspace version stays **1.13.0** until M7. Promotion
+> checklist condition 1 stays unmet on local stub evidence; pack stays
+> deferred.
 
 ## What we measure
 
