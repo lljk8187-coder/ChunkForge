@@ -23,7 +23,7 @@
 | **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
 | **Phase 16** | **1.6.0** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
 | **Phase 17** | **1.7.0** | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress` + **`check_compat_1_6`** (+ P1 CacheSource hit/refuse counters); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
-| **Phase 18** | **1.8.0** (narrative; workspace still **1.7.0** until M7) | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats`; defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
+| **Phase 18** | **1.8.0** (narrative; workspace still **1.7.0** until M7) | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats` + **`check_compat_1_7`** (+ P1 **`doctor --progress`**); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -894,17 +894,18 @@ Gate: [`scripts/check_compat_1_6.sh`](scripts/check_compat_1_6.sh)
 ## Phase 18 / 1.8.0: `pull --verify` + Cache observation + cat/verify `--progress`
 
 Phase 18 closes **push/pull post-verify symmetry**, **CacheSource observation
-productization**, and **read-side reassassemble progress** at **1.8.0**
+productization**, and **read-side reassemble progress** at **1.8.0**
 narrative: opt-in **`pull --verify`** (verify local `--store` after a
 successful pull; dry-run / failed pull skip; default **off** ≡ 1.7),
 **`--cache-stats`** stderr + ops-json additive **`cache_hits` /
 `cache_miss_fills` / `cache_miss_refused`** when `--cache` (observation only;
-**≠** LRU / trim), and **`cat` / `verify --progress`** (default **off** ≡ 1.7;
-reuse `ProgressReporter`; per listing chunk). All additive; **defaults ≡
-1.7.0**. **Workspace / `Cargo.toml` still report `1.7.0` until M7** (version
-bump + `check_compat_1_7` land later).
+**≠** LRU / trim), **`cat` / `verify --progress`** (default **off** ≡ 1.7;
+reuse `ProgressReporter`; per listing chunk), and **`check_compat_1_7`**
+(+ P1 **`doctor --progress`**). All additive; **defaults ≡ 1.7.0**.
+**Workspace / `Cargo.toml` still report `1.7.0` until M7** (version bump +
+annotated tag land later).
 
-**Delivered (through M5):**
+**Delivered (through M6):**
 
 - **`pull --verify`**: after successful fetch, treat `--store` as
   `ChunkSource` and verify each listing (symmetric to `push --verify` on
@@ -912,18 +913,28 @@ bump + `check_compat_1_7` land later).
 - **`--cache-stats`** + ops-json **`cache_*`**: stderr
   `cache: hits=H miss_fills=F miss_refused=R` (requires `--cache`); JSON
   additive fields when `--cache` + `--format json` (omit without `--cache`).
-  See [docs/ops-json.md](docs/ops-json.md).
+  **≠ LRU ≠ sync ≠ fallback**. See [docs/ops-json.md](docs/ops-json.md) /
+  [docs/remote-layout.md](docs/remote-layout.md).
 - **`cat` / `verify --progress`**: stderr
   `progress: op=cat|verify done=N/TOTAL`; orthogonal to `--format json` /
   `--jobs` / `--cache` / `--fallback` / `--cache-stats`. Default off ≡ 1.7.
+- **P1 `doctor --progress`**: stderr `progress: op=doctor done=N/TOTAL` per
+  checked chunk; default off ≡ 1.7; orthogonal to `--format` / `--jobs` /
+  `--cache` / `--fallback` / `--cache-stats`.
 - Docs: [docs/ops-json.md](docs/ops-json.md) (progress orthogonal; `cache_*`;
   pull `--verify` does not reshape JSON); [docs/stability.md](docs/stability.md)
   1.8 opt-in; [docs/pull.md](docs/pull.md) `--verify` semantics;
-  [docs/perf.md](docs/perf.md) «Phase18 / 1.8.0 still does not implement pack».
+  [docs/perf.md](docs/perf.md) «Phase18 / 1.8.0 still does not implement pack»;
+  [docs/remote-layout.md](docs/remote-layout.md) cache-stats ≠ LRU ≠ sync ≠
+  fallback.
 - Smoke: [`scripts/demo_pull_verify_cache_stats.sh`](scripts/demo_pull_verify_cache_stats.sh).
+- Gate: [`scripts/check_compat_1_7.sh`](scripts/check_compat_1_7.sh) (calls
+  [`check_compat_1_6.sh`](scripts/check_compat_1_6.sh)).
 
-**Not yet in this milestone (M6/M7):** `check_compat_1_7.sh`; workspace version
-bump / annotated tag **1.8.0**; P1 `doctor --progress` / `make --jobs`.
+**Not yet (M7):** workspace version bump / annotated tag **1.8.0**.
+
+**Deferred / Unreleased P1:** `make --jobs` (FastCDC streaming chunking is
+inherently serial per file; not forced as fake jobs).
 
 **Not delivered / non-goals:** packfile; write mount / COW; bidirectional
 sync; extract prune / `--delete`; remote scrub; full aws-sdk / multipart /
@@ -943,15 +954,18 @@ bash scripts/demo_pull_verify_cache_stats.sh
 # C: cat --progress / verify --progress → stderr progress: op=…
 # D: default quiet path (no progress/cache/verify noise)
 
+bash scripts/check_compat_1_7.sh
 bash scripts/check_compat_1_6.sh
 ./target/debug/chunkforge --version   # → chunkforge 1.7.0 (until M7)
-./target/debug/chunkforge verify --help | grep -F -- --progress
+./target/debug/chunkforge doctor --help | grep -F -- --progress
+./target/debug/chunkforge make --help | grep -F -- --jobs || true  # still absent
 ```
 
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stability.md),
-[docs/pull.md](docs/pull.md), [docs/perf.md](docs/perf.md).
-Prior gate: [`scripts/check_compat_1_6.sh`](scripts/check_compat_1_6.sh)
-(calls [`check_compat_1_5.sh`](scripts/check_compat_1_5.sh)).
+[docs/pull.md](docs/pull.md), [docs/perf.md](docs/perf.md),
+[docs/remote-layout.md](docs/remote-layout.md).
+Gate: [`scripts/check_compat_1_7.sh`](scripts/check_compat_1_7.sh)
+(calls [`check_compat_1_6.sh`](scripts/check_compat_1_6.sh)).
 
 ## Incremental dedup demo
 

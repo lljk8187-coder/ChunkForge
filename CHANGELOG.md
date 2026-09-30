@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Phase 18 M6 (pre-1.8.0; workspace still 1.7.0)
+
+- **`scripts/check_compat_1_7.sh`** (G6 / M6): calls `check_compat_1_6.sh`, then
+  asserts `pull --help` contains `--verify`, at least one of `cat`/`verify`
+  advertises `--cache-stats`, and both `cat`/`verify --help` contain
+  `--progress`; thin non-goals (no extract `--delete`/prune, no pack, no
+  `--cache-lru` / store trim, no `aws-sdk` in `Cargo.lock`, create compression
+  still opt-in / no default zstd); asserts
+  `demo_pull_verify_cache_stats.sh` present + executable (does not force-run).
+  No absolute perf SLA. Keeps `check_compat_1_0`…`1_6` independently runnable.
+- **P1 `doctor --progress`** (O1): opt-in; default **off** ≡ 1.7.0; stderr
+  `progress: op=doctor done=N/TOTAL` per checked chunk; orthogonal to
+  `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
+- **Docs brush** (O2): `docs/remote-layout.md` Phase 18 table —
+  `--cache-stats` ≠ LRU ≠ sync ≠ fallback; README Phase 18 M6 gate + doctor
+  progress narrative.
+
+### Deferred / still Unreleased
+
+- **`make --jobs`** (O4) — not delivered: FastCDC streaming chunking is
+  inherently serial per file; not forced as fake jobs.
+- Workspace version bump / annotated tag **1.8.0** — M7.
 
 ## [1.7.0] — 2026-09-30
 

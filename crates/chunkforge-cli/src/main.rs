@@ -532,6 +532,11 @@ enum Commands {
         /// Output format: `text` (default ≡ 0.9.0) or `json`
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit progress: op=doctor done=N/TOTAL on stderr per checked chunk
+        /// (TOTAL = referenced chunk ids). Default off ≡ 1.7.0. Orthogonal to
+        /// `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
+        #[arg(long = "progress")]
+        progress: bool,
         /// One or more `.cfidx` / `.cfdir` listings to check
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -1190,6 +1195,7 @@ fn run() -> Result<()> {
             deep,
             no_probe,
             format,
+            progress,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
@@ -1216,6 +1222,7 @@ fn run() -> Result<()> {
                 jobs,
                 http_tmpl.http_retries,
                 format,
+                progress,
                 stats.as_ref(),
             );
             maybe_emit_cache_stats(&stats, cache_stats);
@@ -3718,6 +3725,7 @@ fn cmd_doctor(
     jobs: usize,
     http_retries: u32,
     format: CliFormat,
+    progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
@@ -3741,6 +3749,9 @@ fn cmd_doctor(
         listings_ok += 1;
     }
     let checked = checks.len();
+
+    // Progress is per checked chunk id (TOTAL = referenced chunk ids).
+    let prog = ProgressReporter::new(progress, "doctor", Some(checked));
 
     let mut missing: Vec<ChunkId> = Vec::new();
 
@@ -3771,10 +3782,11 @@ fn cmd_doctor(
             if !present {
                 missing.push(*chunk_id);
             }
+            prog.tick();
         }
     } else {
         let outcomes = parallel::map_indexed(&checks, jobs, |_i, (listing_display, chunk_id)| {
-            if deep {
+            let result = if deep {
                 match source.get(chunk_id) {
                     Ok(_bytes) => Ok(true),
                     Err(chunkforge_store::SourceError::NotFound(_)) => Ok(false),
@@ -3790,7 +3802,10 @@ fn cmd_doctor(
                         "doctor: chunk {chunk_id} presence check error (listing {listing_display});                          retry with --deep to use get instead of has: {e}"
                     )),
                 }
-            }
+            };
+            // Tick after each worker unit completes (like gc/push).
+            prog.tick();
+            result
         });
 
         let mut first_err: Option<String> = None;

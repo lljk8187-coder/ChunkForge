@@ -286,6 +286,17 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
+## Cache observation vs failover vs sync (Phase 18 / 1.8 narrative)
+
+| Flag / layer | Role | Not |
+|---|---|---|
+| **`--cache`** | Optional local fill-on-miss store (outer wrap) | Not sync / not write-back |
+| **`--cache-stats`** | Opt-in stderr / ops-json observation of hits / miss_fills / miss_refused | **≠ LRU ≠ trim ≠ eviction** |
+| **`--fallback`** | Missing-only ordered failover origins | **≠ cache ≠ sync ≠ prune** |
+| Soft `--cache-max-bytes` | Refuse-fill budget | Never evicts |
+
+**`--cache-stats` ≠ LRU ≠ sync ≠ fallback.** Observation only; default quiet ≡ 1.7.
+
 ## Disk zstd ≠ wire compression ≠ pack (Phase 17 / 1.7.0)
 
 | Layer | Contract |
@@ -297,7 +308,7 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 
 `--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 
-## Explicit non-goals (this layout / Phase 3–17 / through 1.7.0)
+## Explicit non-goals (this layout / Phase 3–18 / through 1.7.0 freeze + 1.8 additive)
 
 | Non-goal | Status |
 |---|---|
@@ -328,8 +339,9 @@ let bytes = src.get(&chunk_id)?;
 - `--aws-sigv4` (Phase 8 P1): optional AWS4-HMAC-SHA256; default **off**; see [sigv4.md](sigv4.md)
 - Error classification + push/pull `failed_transient=` / `failed_permanent=` — see [http-retry.md](http-retry.md)
 - `chunkforge push` — per-chunk PUT with optional `--jobs` concurrency; see [push.md](push.md)
-- `chunkforge doctor` — presence check; see [doctor-gc.md](doctor-gc.md)
+- `chunkforge doctor` — presence check; optional `--progress` / `--cache-stats` (Phase 18; default off); see [doctor-gc.md](doctor-gc.md)
 - `chunkforge gc` — **local** dry-run / `--apply` only; see [doctor-gc.md](doctor-gc.md)
+- `--cache-stats` on read paths (Phase 18): observation only — **≠ LRU ≠ sync ≠ fallback**
 
 ## Related docs
 
