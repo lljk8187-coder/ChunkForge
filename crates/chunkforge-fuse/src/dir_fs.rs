@@ -121,6 +121,10 @@ impl<S: ChunkSource> DirFs<S> {
                 } => {
                     fs.insert_file(&entry.path, mode, size, mtime_secs, chunks);
                 }
+                DirEntryKind::Symlink { .. } => {
+                    // Phase22-M4: Symlink / readlink
+                    // M1: skip Symlink entries when building the tree (do not panic).
+                }
             }
         }
         fs

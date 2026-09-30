@@ -2526,7 +2526,9 @@ fn archive_one_file(
             if decision == SeedDecision::Reuse {
                 let prior_chunks = match &prior_entry.kind {
                     DirEntryKind::File { chunks, .. } => chunks.as_slice(),
-                    DirEntryKind::Dir { .. } => unreachable!("seed map is files only"),
+                    DirEntryKind::Dir { .. } | DirEntryKind::Symlink { .. } => {
+                        unreachable!("seed map is files only")
+                    }
                 };
                 let all_present = match store {
                     Some(s) => prior_chunks.iter().all(|e| s.has(&e.chunk_id)),
@@ -3245,7 +3247,7 @@ fn listing_chunk_ids_filtered(path: &Path, filter: &PathFilter) -> Result<Vec<Ch
                     DirEntryKind::File { chunks, .. } => {
                         ids.extend(chunks.iter().map(|c| c.chunk_id));
                     }
-                    DirEntryKind::Dir { .. } => {}
+                    DirEntryKind::Dir { .. } | DirEntryKind::Symlink { .. } => {}
                 }
             }
             Ok(ids)
@@ -3626,6 +3628,10 @@ fn cmd_verify_dir(
             DirEntryKind::Dir { .. } => {
                 // Structure already validated; nothing to fetch.
             }
+            DirEntryKind::Symlink { .. } => {
+                // Phase22-M1: Symlink has 0 chunks; structure/target validated by DirArchive.
+                // Materialization / absolute-target policy is M2+.
+            }
             DirEntryKind::File {
                 size,
                 blob_blake3,
@@ -3808,6 +3814,13 @@ fn cmd_extract(
                 }
                 apply_file_mode(&dest, *mode)?;
                 dir_count += 1;
+            }
+            DirEntryKind::Symlink { .. } => {
+                // Phase22-M3: materialize symlink. M1: skip with clear warning.
+                eprintln!(
+                    "extract: skipping symlink {} (symlink materialization requires Phase22-M3)",
+                    entry.path
+                );
             }
             DirEntryKind::File {
                 mode,
@@ -4023,6 +4036,9 @@ fn cmd_extract_dry_run(
                 } else {
                     would_dirs += 1;
                 }
+            }
+            DirEntryKind::Symlink { .. } => {
+                // Phase22-M3: would materialize symlink. M1: ignore for dry-run counts.
             }
             DirEntryKind::File {
                 size,

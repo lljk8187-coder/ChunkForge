@@ -144,6 +144,9 @@ pub fn decide_seed_for_entry_ex(
         DirEntryKind::Dir { .. } => Err(Error::InvalidStructure(
             "seed decision requires a File prior entry, got Dir".into(),
         )),
+        DirEntryKind::Symlink { .. } => Err(Error::InvalidStructure(
+            "seed decision requires a File prior entry, got Symlink".into(),
+        )),
     }
 }
 

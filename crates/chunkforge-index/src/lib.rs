@@ -1,7 +1,7 @@
 //! ChunkForge index / archive encode / decode.
 //!
 //! - [`.cfidx` v1](Index) — single-blob chunk map (Phase 1; **byte-frozen**)
-//! - [`.cfdir` v1](DirArchive) — multi-file directory listing (Phase 5)
+//! - [`.cfdir`](DirArchive) — multi-file directory listing (Phase 5; Phase22-M1: Symlink + format_version=2)
 //! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse (+ optional mtime trust, Phase 7)
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //! - [extract match](judge_extract_unchanged) — dest vs listing size+blake3 for `--skip-unchanged` (Phase 9); optional mtime trust (Phase 11)
@@ -25,8 +25,8 @@ mod seed;
 
 pub use diff::{DiffReport, diff_dir_archives, diff_dir_archives_with_progress};
 pub use dir::{
-    DIR_FORMAT_VERSION_V1, DIR_HEADER_SIZE, DIR_MAGIC_PREFIX, DIR_MAGIC_V1, DIR_MAJOR_V1,
-    DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE,
+    DIR_FORMAT_VERSION_V1, DIR_FORMAT_VERSION_V2, DIR_HEADER_SIZE, DIR_MAGIC_PREFIX, DIR_MAGIC_V1,
+    DIR_MAJOR_V1, DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE, KIND_SYMLINK,
 };
 pub use error::{Error, IndexError};
 pub use extract_match::{UnchangedVerdict, judge_extract_unchanged, judge_extract_unchanged_opts};

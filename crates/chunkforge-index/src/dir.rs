@@ -1,7 +1,8 @@
-//! `.cfdir` v1 directory archive encode / decode.
+//! `.cfdir` directory archive encode / decode (`format_version` 1 and 2).
 //!
 //! Parallel to [`.cfidx`](crate::Index); does **not** alter `.cfidx` v1 bytes.
-//! See `docs/dir-format.md` and Phase5 §3.1 / §4.2.
+//! Phase22-M1: `DirEntryKind::Symlink` + `format_version=2` when any Symlink is present;
+//! pure File/Dir archives still write `format_version=1`. See `docs/dir-format.md`.
 
 use crate::path::validate_archive_path;
 use crate::{ENTRY_SIZE, Error, IndexEntry, TRAILER_SIZE};
@@ -15,8 +16,10 @@ pub const DIR_MAGIC_V1: [u8; 8] = *b"CFDIR\0\0\x01";
 pub const DIR_MAGIC_PREFIX: [u8; 7] = *b"CFDIR\0\0";
 /// `.cfdir` v1 major version embedded in magic[7].
 pub const DIR_MAJOR_V1: u8 = 1;
-/// `.cfdir` v1 `format_version_u16`.
+/// `.cfdir` v1 `format_version_u16` (File/Dir only).
 pub const DIR_FORMAT_VERSION_V1: u16 = 1;
+/// `.cfdir` v2 `format_version_u16` (may contain [`DirEntryKind::Symlink`]).
+pub const DIR_FORMAT_VERSION_V2: u16 = 2;
 /// Fixed header size (through `entry_count`).
 pub const DIR_HEADER_SIZE: usize = 24;
 
@@ -24,6 +27,8 @@ pub const DIR_HEADER_SIZE: usize = 24;
 pub const KIND_FILE: u8 = 1;
 /// Kind tag: explicit directory.
 pub const KIND_DIR: u8 = 2;
+/// Kind tag: symbolic link (requires `format_version=2`).
+pub const KIND_SYMLINK: u8 = 3;
 
 /// Kind of a directory-archive entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -39,6 +44,9 @@ pub enum DirEntryKind {
     },
     /// Explicit directory (empty dirs); mode only.
     Dir { mode: u32 },
+    /// Symbolic link: target string recorded as-is (not canonicalized); 0 chunks.
+    /// Requires [`DIR_FORMAT_VERSION_V2`]. Target must be non-empty.
+    Symlink { mode: u32, target: String },
 }
 
 /// One path → metadata entry inside a [`DirArchive`].
@@ -49,10 +57,10 @@ pub struct DirEntry {
     pub kind: DirEntryKind,
 }
 
-/// Directory archive listing (`.cfdir` v1). Parallel to single-blob [`crate::Index`].
+/// Directory archive listing (`.cfdir`). Parallel to single-blob [`crate::Index`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirArchive {
-    /// Always `1` for v1 writers/readers of this build.
+    /// `1` for File/Dir-only listings; `2` when any [`DirEntryKind::Symlink`] is present.
     pub format_version: u16,
     pub flags: u16,
     pub entries: Vec<DirEntry>,
@@ -60,14 +68,30 @@ pub struct DirArchive {
 
 impl DirArchive {
     /// Construct and validate a structurally legal archive.
+    ///
+    /// Sets `format_version` to [`DIR_FORMAT_VERSION_V2`] if any entry is a
+    /// [`DirEntryKind::Symlink`], otherwise [`DIR_FORMAT_VERSION_V1`].
     pub fn new(flags: u16, entries: Vec<DirEntry>) -> Result<Self, Error> {
+        let format_version = Self::version_for_entries(&entries);
         let arch = Self {
-            format_version: DIR_FORMAT_VERSION_V1,
+            format_version,
             flags,
             entries,
         };
         arch.validate()?;
         Ok(arch)
+    }
+
+    /// `format_version` implied by entry kinds (Symlink ⇒ v2, else v1).
+    fn version_for_entries(entries: &[DirEntry]) -> u16 {
+        if entries
+            .iter()
+            .any(|e| matches!(e.kind, DirEntryKind::Symlink { .. }))
+        {
+            DIR_FORMAT_VERSION_V2
+        } else {
+            DIR_FORMAT_VERSION_V1
+        }
     }
 
     /// Empty archive (no entries).
@@ -89,22 +113,25 @@ impl DirArchive {
         self.entries.iter().flat_map(|e| {
             match &e.kind {
                 DirEntryKind::File { chunks, .. } => chunks.as_slice(),
-                DirEntryKind::Dir { .. } => &[],
+                DirEntryKind::Dir { .. } | DirEntryKind::Symlink { .. } => &[],
             }
             .iter()
             .map(|c| c.chunk_id)
         })
     }
 
-    /// Validate paths, uniqueness, and per-file chunk tables.
+    /// Validate paths, uniqueness, per-file chunk tables, and format/symlink rules.
     pub fn validate(&self) -> Result<(), Error> {
-        if self.format_version != DIR_FORMAT_VERSION_V1 {
+        if self.format_version != DIR_FORMAT_VERSION_V1
+            && self.format_version != DIR_FORMAT_VERSION_V2
+        {
             return Err(Error::UnsupportedFormatVersion {
                 found: self.format_version,
-                supported: DIR_FORMAT_VERSION_V1,
+                supported: DIR_FORMAT_VERSION_V2,
             });
         }
         let mut seen = HashSet::with_capacity(self.entries.len());
+        let mut has_symlink = false;
         for e in &self.entries {
             validate_archive_path(&e.path)?;
             if !seen.insert(e.path.clone()) {
@@ -116,20 +143,39 @@ impl DirArchive {
             match &e.kind {
                 DirEntryKind::File { size, chunks, .. } => validate_file_chunks(*size, chunks)?,
                 DirEntryKind::Dir { .. } => {}
+                DirEntryKind::Symlink { target, .. } => {
+                    has_symlink = true;
+                    if target.is_empty() {
+                        return Err(Error::InvalidStructure(format!(
+                            "symlink {:?} has empty target",
+                            e.path
+                        )));
+                    }
+                }
             }
+        }
+        if has_symlink && self.format_version == DIR_FORMAT_VERSION_V1 {
+            return Err(Error::InvalidStructure(
+                "format_version=1 must not contain KIND_SYMLINK entries (use format_version=2)"
+                    .into(),
+            ));
         }
         Ok(())
     }
 
-    /// Encode to `.cfdir` v1 bytes (header || body || trailer).
+    /// Encode to `.cfdir` bytes (header || body || trailer).
+    ///
+    /// Writes `format_version=2` iff any entry is a Symlink; otherwise writes `1`
+    /// (default File/Dir path unchanged).
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         self.validate()?;
 
         let n = self.entries.len();
+        let write_version = Self::version_for_entries(&self.entries);
         let mut buf = Vec::with_capacity(DIR_HEADER_SIZE + n * 64 + TRAILER_SIZE);
 
         buf.extend_from_slice(&DIR_MAGIC_V1);
-        buf.extend_from_slice(&DIR_FORMAT_VERSION_V1.to_le_bytes());
+        buf.extend_from_slice(&write_version.to_le_bytes());
         buf.extend_from_slice(&self.flags.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
         buf.extend_from_slice(&(n as u64).to_le_bytes());
@@ -169,6 +215,19 @@ impl DirArchive {
                     buf.push(KIND_DIR);
                     buf.extend_from_slice(&mode.to_le_bytes());
                 }
+                DirEntryKind::Symlink { mode, target } => {
+                    let target_bytes = target.as_bytes();
+                    if target_bytes.len() > u16::MAX as usize {
+                        return Err(Error::InvalidStructure(format!(
+                            "symlink target longer than u16::MAX: {} bytes",
+                            target_bytes.len()
+                        )));
+                    }
+                    buf.push(KIND_SYMLINK);
+                    buf.extend_from_slice(&mode.to_le_bytes());
+                    buf.extend_from_slice(&(target_bytes.len() as u16).to_le_bytes());
+                    buf.extend_from_slice(target_bytes);
+                }
             }
         }
 
@@ -177,7 +236,7 @@ impl DirArchive {
         Ok(buf)
     }
 
-    /// Decode `.cfdir` v1 bytes. Hard-fails on wrong major, truncate, or bad trailer.
+    /// Decode `.cfdir` bytes (`format_version` 1 or 2). Hard-fails on wrong major, truncate, or bad trailer.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < DIR_HEADER_SIZE + TRAILER_SIZE {
             return Err(Error::Truncated(format!(
@@ -200,10 +259,10 @@ impl DirArchive {
         }
 
         let format_version = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
-        if format_version != DIR_FORMAT_VERSION_V1 {
+        if format_version != DIR_FORMAT_VERSION_V1 && format_version != DIR_FORMAT_VERSION_V2 {
             return Err(Error::UnsupportedFormatVersion {
                 found: format_version,
-                supported: DIR_FORMAT_VERSION_V1,
+                supported: DIR_FORMAT_VERSION_V2,
             });
         }
 
@@ -314,6 +373,40 @@ impl DirArchive {
                     off += 4;
                     DirEntryKind::Dir { mode }
                 }
+                KIND_SYMLINK => {
+                    // v1 body must not contain KIND_SYMLINK.
+                    if format_version == DIR_FORMAT_VERSION_V1 {
+                        return Err(Error::InvalidStructure(format!(
+                            "entry[{i}] KIND_SYMLINK is not allowed in format_version=1 (requires 2)"
+                        )));
+                    }
+                    // mode(4) + target_len(2) = 6
+                    if bytes.len() < off + 6 + TRAILER_SIZE {
+                        return Err(Error::Truncated(format!(
+                            "truncated while reading entry[{i}] symlink header"
+                        )));
+                    }
+                    let mode = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+                    off += 4;
+                    let target_len =
+                        u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
+                    off += 2;
+                    if bytes.len() < off + target_len + TRAILER_SIZE {
+                        return Err(Error::Truncated(format!(
+                            "truncated while reading entry[{i}] symlink target ({target_len} bytes)"
+                        )));
+                    }
+                    let target_bytes = &bytes[off..off + target_len];
+                    let target = std::str::from_utf8(target_bytes)
+                        .map_err(|_| {
+                            Error::InvalidStructure(format!(
+                                "entry[{i}] symlink target is not UTF-8"
+                            ))
+                        })?
+                        .to_owned();
+                    off += target_len;
+                    DirEntryKind::Symlink { mode, target }
+                }
                 other => {
                     return Err(Error::InvalidStructure(format!(
                         "entry[{i}] unknown kind tag {other}"
@@ -339,7 +432,13 @@ impl DirArchive {
             return Err(Error::TrailerMismatch);
         }
 
-        Self::new(flags, entries)
+        let arch = Self {
+            format_version,
+            flags,
+            entries,
+        };
+        arch.validate()?;
+        Ok(arch)
     }
 
     /// Write encoded bytes to `w`.
@@ -588,6 +687,197 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidStructure(_)), "{err:?}");
+    }
+
+    #[test]
+    fn v2_symlink_roundtrip_preserves_mode_target_and_version() {
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "readme.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: 0,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(b""),
+                        chunks: vec![],
+                    },
+                },
+                DirEntry {
+                    path: "link.txt".into(),
+                    kind: DirEntryKind::Symlink {
+                        mode: 0o777,
+                        target: "readme.txt".into(),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(arch.format_version, DIR_FORMAT_VERSION_V2);
+        let bytes = arch.encode().unwrap();
+        assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 2);
+        let decoded = DirArchive::decode(&bytes).unwrap();
+        assert_eq!(decoded.format_version, DIR_FORMAT_VERSION_V2);
+        assert_eq!(arch, decoded);
+        match &decoded.entries[1].kind {
+            DirEntryKind::Symlink { mode, target } => {
+                assert_eq!(*mode, 0o777);
+                assert_eq!(target, "readme.txt");
+            }
+            other => panic!("expected Symlink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_file_dir_only_still_emits_format_version_1() {
+        let arch = sample_archive();
+        assert_eq!(arch.format_version, DIR_FORMAT_VERSION_V1);
+        let bytes = arch.encode().unwrap();
+        assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 1);
+        // Re-decode preserves v1.
+        let decoded = DirArchive::decode(&bytes).unwrap();
+        assert_eq!(decoded.format_version, DIR_FORMAT_VERSION_V1);
+    }
+
+    #[test]
+    fn decode_rejects_v1_bytes_embedding_kind_symlink() {
+        // Craft a v1 header+body that embeds KIND_SYMLINK, then attach a valid trailer.
+        let mut body = Vec::new();
+        body.extend_from_slice(&DIR_MAGIC_V1);
+        body.extend_from_slice(&DIR_FORMAT_VERSION_V1.to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes()); // flags
+        body.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        body.extend_from_slice(&1u64.to_le_bytes()); // entry_count
+        let path = b"badlink";
+        body.extend_from_slice(&(path.len() as u16).to_le_bytes());
+        body.extend_from_slice(path);
+        body.push(KIND_SYMLINK);
+        body.extend_from_slice(&0o777u32.to_le_bytes());
+        let target = b"elsewhere";
+        body.extend_from_slice(&(target.len() as u16).to_le_bytes());
+        body.extend_from_slice(target);
+        let digest = blake3::hash(&body);
+        body.extend_from_slice(digest.as_bytes());
+
+        let err = DirArchive::decode(&body).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidStructure(_)),
+            "expected InvalidStructure, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("KIND_SYMLINK")
+                || msg.contains("symlink")
+                || msg.contains("format_version"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_format_version() {
+        let mut bytes = DirArchive::empty().encode().unwrap();
+        bytes[8] = 99;
+        bytes[9] = 0;
+        let err = DirArchive::decode(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedFormatVersion {
+                found: 99,
+                supported: DIR_FORMAT_VERSION_V2
+            }
+        ));
+    }
+
+    #[test]
+    fn all_chunk_ids_ignores_symlink() {
+        let id0 = ChunkId::hash(b"chunk-a");
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "f.bin".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: 10,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(b"blob"),
+                        chunks: vec![IndexEntry {
+                            end_offset: 10,
+                            chunk_id: id0,
+                        }],
+                    },
+                },
+                DirEntry {
+                    path: "link".into(),
+                    kind: DirEntryKind::Symlink {
+                        mode: 0o777,
+                        target: "f.bin".into(),
+                    },
+                },
+                DirEntry {
+                    path: "d".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+            ],
+        )
+        .unwrap();
+        let ids: Vec<_> = arch.all_chunk_ids().collect();
+        assert_eq!(ids, vec![id0]);
+    }
+
+    #[test]
+    fn empty_symlink_target_rejected() {
+        let err = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "link".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: String::new(),
+                },
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidStructure(_)), "{err:?}");
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_format_version_1_with_symlink() {
+        let mut arch = DirArchive::empty();
+        arch.format_version = DIR_FORMAT_VERSION_V1;
+        arch.entries.push(DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "x".into(),
+            },
+        });
+        let err = arch.validate().unwrap_err();
+        assert!(matches!(err, Error::InvalidStructure(_)), "{err:?}");
+    }
+
+    #[test]
+    fn absolute_symlink_target_allowed_in_library() {
+        // CLI absolute-target bail is M2; library must accept absolute targets.
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "link".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "/etc/passwd".into(),
+                },
+            }],
+        )
+        .unwrap();
+        assert_eq!(arch.format_version, DIR_FORMAT_VERSION_V2);
+        let decoded = DirArchive::decode(&arch.encode().unwrap()).unwrap();
+        match &decoded.entries[0].kind {
+            DirEntryKind::Symlink { target, .. } => assert_eq!(target, "/etc/passwd"),
+            other => panic!("expected Symlink, got {other:?}"),
+        }
     }
 
     #[test]

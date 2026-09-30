@@ -126,7 +126,9 @@ fn file_meta(entry: &DirEntry) -> (u32, u64, u64, ChunkId) {
             blob_blake3,
             ..
         } => (*mode, *size, *mtime_secs, *blob_blake3),
-        DirEntryKind::Dir { .. } => unreachable!("file_map only yields File entries"),
+        DirEntryKind::Dir { .. } | DirEntryKind::Symlink { .. } => {
+            unreachable!("file_map only yields File entries")
+        }
     }
 }
 

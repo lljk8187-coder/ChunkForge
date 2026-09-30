@@ -7,10 +7,11 @@
 //!
 //! # Policy (pinned)
 //!
-//! - **File entries** are kept iff [`PathFilter::allows`] is true for their path
-//!   (same include-then-exclude rules as `archive` / `extract` / `push` / `pull`).
+//! - **File** and **Symlink** entries are kept iff [`PathFilter::allows`] is true
+//!   for their path (same include-then-exclude rules as `archive` / `extract` /
+//!   `push` / `pull`). Symlink paths are treated like File paths for filtering.
 //! - **Dir entries** are kept only when they are **ancestors** of at least one
-//!   kept File (`dir` is a proper `/`-separated prefix of the file path). This
+//!   kept File or Symlink (`dir` is a proper `/`-separated prefix of the leaf path). This
 //!   preserves explicit directory modes for traversable parents while dropping
 //!   unrelated empty dirs — matching extract/path “only reach included files”
 //!   mental model. Parent dirs missing as explicit entries are still synthesized
@@ -24,8 +25,8 @@
 use crate::{DirArchive, DirEntryKind, PathFilter};
 use std::collections::HashSet;
 
-/// Return a [`DirArchive`] containing only Files that pass `filter`, plus Dir
-/// entries that are ancestors of those Files.
+/// Return a [`DirArchive`] containing only Files/Symlinks that pass `filter`,
+/// plus Dir entries that are ancestors of those leaves.
 ///
 /// See module docs for the ancestor / empty-filter policy. Does not mutate
 /// `archive`; does not encode or decode `.cfdir` bytes.
@@ -35,10 +36,17 @@ pub fn filter_dir_archive(archive: &DirArchive, filter: &PathFilter) -> DirArchi
         return archive.clone();
     }
 
-    let kept_file_paths: HashSet<&str> = archive
+    // Keep Files and Symlinks that pass PathFilter (Symlink path treated like File).
+    // Ancestor Dirs of any kept leaf are retained.
+    let kept_leaf_paths: HashSet<&str> = archive
         .entries
         .iter()
-        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }) && filter.allows(&e.path))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                DirEntryKind::File { .. } | DirEntryKind::Symlink { .. }
+            ) && filter.allows(&e.path)
+        })
         .map(|e| e.path.as_str())
         .collect();
 
@@ -46,8 +54,10 @@ pub fn filter_dir_archive(archive: &DirArchive, filter: &PathFilter) -> DirArchi
         .entries
         .iter()
         .filter(|e| match &e.kind {
-            DirEntryKind::File { .. } => kept_file_paths.contains(e.path.as_str()),
-            DirEntryKind::Dir { .. } => is_ancestor_of_any(&e.path, &kept_file_paths),
+            DirEntryKind::File { .. } | DirEntryKind::Symlink { .. } => {
+                kept_leaf_paths.contains(e.path.as_str())
+            }
+            DirEntryKind::Dir { .. } => is_ancestor_of_any(&e.path, &kept_leaf_paths),
         })
         .cloned()
         .collect();
