@@ -56,9 +56,10 @@ pub fn read_range_cached(
 
 /// Like [`read_entries`], with sequential prefetch into `cache`.
 ///
-/// After a forward sequential read that consumes into/past a chunk, the **next**
-/// index entry is best-effort prefetched (errors ignored). Cross-file / seek /
-/// backward / non-contiguous `offset` cold-starts the window via `scope`.
+/// After a forward sequential read that consumes into/past a chunk, up to
+/// `cache.max_chunks()` subsequent index entries are best-effort prefetched
+/// (errors ignored; byte cap still applies). Cross-file / seek / backward /
+/// non-contiguous `offset` cold-starts the window via `scope`.
 pub fn read_entries_cached(
     entries: &[IndexEntry],
     total_size: u64,
@@ -139,11 +140,16 @@ fn read_entries_inner(
         let read_end = offset + out.len() as u64;
         c.advance_window(scope, read_end);
 
-        // After satisfying the current request: prefetch the next chunk after the
-        // last one this read consumed into/past (best-effort; errors ignored).
+        // After satisfying the current request: prefetch up to max_chunks
+        // subsequent entries after the last one this read consumed into/past
+        // (best-effort; errors ignored; byte cap still applies).
         if let Some(i) = last_consumed_idx {
-            let next_i = i + 1;
-            if next_i < entries.len() {
+            let depth = c.max_chunks();
+            for k in 1..=depth {
+                let next_i = i + k;
+                if next_i >= entries.len() {
+                    break;
+                }
                 let next_id = entries[next_i].chunk_id;
                 let next_len = entry_length(entries, next_i).unwrap_or(0);
                 c.note_sequential_advance(Some(&next_id), next_len, source);

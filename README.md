@@ -16,7 +16,7 @@
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
-| **Phase 11** | *(in progress → **1.1.0**)* | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json` |
+| **Phase 11** | *(in progress → **1.1.0**)* | `extract --skip-trust-mtime` + ops JSON; P1 `mount --prefetch-chunks N` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -421,7 +421,7 @@ from verify/doctor to **`extract` / `push` / `pull`**. All opt-in; **defaults �
 **1.1.0** version bump is reserved for Phase 11 closeout (M7) — workspace stays
 **1.0.0** until then.
 
-**Delivered (M1–M4):**
+**Delivered (M1–M4 + M6 P1 O1):**
 
 - **`extract --skip-trust-mtime`**: requires `--skip-unchanged`; size +
   `mtime_secs` hit skips content BLAKE3 (default **off** ≡ 1.0.0). Docs warn
@@ -438,6 +438,8 @@ from verify/doctor to **`extract` / `push` / `pull`**. All opt-in; **defaults �
   [docs/push.md](docs/push.md) / [docs/pull.md](docs/pull.md).
 - Smoke: [`scripts/demo_ops_json.sh`](scripts/demo_ops_json.sh) (trust-mtime +
   extract/push/pull JSON via local `put_stub`; no internet).
+- **`mount --prefetch-chunks N`** (P1 O1): default **1** ≡ 1.0.0; hard cap
+  **≤2**; `--no-prefetch` still wins. See [docs/mount.md](docs/mount.md).
 
 **Still not this Phase / non-goals (carry forward):** full AWS SDK / multipart /
 packfile / write mount / bidirectional sync / extract prune / remote scrub /
@@ -455,7 +457,7 @@ bash scripts/demo_ops_json.sh
 ```
 
 Details: [docs/extract.md](docs/extract.md), [docs/push.md](docs/push.md),
-[docs/pull.md](docs/pull.md).
+[docs/pull.md](docs/pull.md), [docs/mount.md](docs/mount.md).
 
 ## Incremental dedup demo
 

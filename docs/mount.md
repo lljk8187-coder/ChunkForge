@@ -33,6 +33,7 @@ chunkforge mount \
   [--cache <local-cache-store>] \
   [--name <filename>] \
   [--no-prefetch] \
+  [--prefetch-chunks N] \
   <listing.cfidx|listing.cfdir> <mountpoint>
 ```
 
@@ -49,24 +50,25 @@ chunkforge mount \
   on miss (never writes the primary source).
 - `--jobs` does **not** apply to mount.
 
-### Sequential prefetch (Phase 10)
+### Sequential prefetch (Phase 10 + Phase 11 P1 O1)
 
 Default: **prefetch on** (conservative). After a forward sequential `read` that
-consumes into/past a chunk, the mount **best-effort** fetches the **next** index
-entry into a process-local cache (at most **1** subsequent chunk **and** total
+consumes into/past a chunk, the mount **best-effort** fetches up to **N**
+subsequent index entries into a process-local cache (depth **N** **and** total
 cached plaintext **≤ 512 KiB**, whichever stricter). Hits skip a synchronous
 `ChunkSource::get` on the following sequential read.
 
 | Behaviour | Detail |
 |---|---|
-| Default | Prefetch **on** — result bytes identical to 0.9.0; may do **fewer** sync gets on sequential streams |
-| `--no-prefetch` | Prefetch **off** ≡ 0.9.0 on-demand get (every chunk fetched when needed) |
+| Default | Prefetch **on**, depth **1** ≡ 1.0.0 — result bytes identical; may do **fewer** sync gets on sequential streams |
+| `--prefetch-chunks N` | Prefetch depth (default **1**; hard cap **≤2**; clap rejects `N` outside 1..=2). Mount only |
+| `--no-prefetch` | Prefetch **off** ≡ 0.9.0 on-demand get; **takes priority** over `--prefetch-chunks` |
 | Invalidation | Seek backward, non-contiguous offset, or cross-file (`DirFs` inode change) → **cold-start** the window (drop cached chunks) |
 | Errors | Prefetch `get` failure **never** fails a read whose current range is already satisfied |
 | vs `--cache` | Prefetch is **process-local / mount-lifetime** and does **not** persist; `--cache` is a disk `CacheSource` layer under `get` |
 
-Library switch: `BlobFs::with_prefetch(bool)` / `DirFs::with_prefetch(bool)`
-(same semantics as the CLI flag).
+Library: `BlobFs`/`DirFs::with_prefetch(bool)` and `with_prefetch_chunks(n)`
+(`PrefetchCache::enabled_with_max_chunks`; values `>2` clamp to 2).
 
 True FUSE mount smoke tests may stay `#[ignore]` (need fuse3 + `/dev/fuse`);
 prefetch algebra is covered by in-process unit tests that count `get` calls.
@@ -92,6 +94,13 @@ Disable prefetch (0.9.0-like on-demand gets):
   --no-prefetch /tmp/cf-mnt-demo/hello.cfidx /tmp/cf-mnt-demo/mnt
 ```
 
+Deeper prefetch (Phase 11; still ≤2 subsequent chunks / ≤512 KiB):
+
+```bash
+./target/debug/chunkforge mount --store /tmp/cf-mnt-demo/store \
+  --prefetch-chunks 2 /tmp/cf-mnt-demo/hello.cfidx /tmp/cf-mnt-demo/mnt
+```
+
 ### Directory-tree (`.cfdir`) mount
 
 ```bash
@@ -106,7 +115,7 @@ fusermount3 -u /tmp/cf-mnt-demo/mnt-tree
 
 Under the mount point, relative paths from the `.cfdir` appear as directories and
 regular files. File content is assembled from `ChunkSource::get`, with sequential
-prefetch of the next chunk when enabled (default).
+prefetch of subsequent chunk(s) when enabled (default depth 1).
 
 ### Smoke scripts
 
@@ -132,6 +141,5 @@ session also tears down the mount when possible.
 ## Out of scope
 
 - Writable mounts / COW write-back
-- Configurable prefetch depth beyond the conservative default (P1 may add
-  `--prefetch-chunks N`; not required for Phase 10 M2)
+- Prefetch depth beyond the hard cap (`N≤2` / ≤512 KiB)
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

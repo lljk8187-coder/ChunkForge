@@ -687,6 +687,10 @@ fn mount_help_lists_source_cache_name() {
         s.contains("--no-prefetch"),
         "mount --help must list --no-prefetch:\n{s}"
     );
+    assert!(
+        s.contains("--prefetch-chunks"),
+        "mount --help must list --prefetch-chunks:\n{s}"
+    );
     assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
 }
 

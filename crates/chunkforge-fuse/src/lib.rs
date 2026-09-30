@@ -4,8 +4,8 @@
 //! - [`DirFs`]: directory-tree mount from a `.cfdir` [`DirArchive`] (Phase 5 M4)
 //!
 //! Kernel mounts are forced [`MountOption::RO`]; write-side FUSE ops return
-//! `EROFS` / `EACCES`. Sequential forward reads prefetch the next chunk into a
-//! process-local [`PrefetchCache`] (default on; distinct from Store `--cache`).
+//! `EROFS` / `EACCES`. Sequential forward reads prefetch subsequent chunk(s) into a
+//! process-local [`PrefetchCache`] (default on, depth 1; distinct from Store `--cache`).
 //!
 //! # Layout (BlobFs)
 //!
@@ -28,7 +28,10 @@ mod read;
 pub use dir_fs::{DirFs, DirFsError};
 pub use fs::{BlobFs, FILE_INO, ROOT_INO};
 pub use mount::{mount_options, mount_ro};
-pub use prefetch::{DEFAULT_MAX_PREFETCH_BYTES, DEFAULT_MAX_PREFETCH_CHUNKS, PrefetchCache};
+pub use prefetch::{
+    DEFAULT_MAX_PREFETCH_BYTES, DEFAULT_MAX_PREFETCH_CHUNKS, MAX_PREFETCH_CHUNKS_HARD_CAP,
+    PrefetchCache,
+};
 pub use read::{read_entries, read_entries_cached, read_range, read_range_cached};
 
 pub use chunkforge_index::{DirArchive, Index};
@@ -543,6 +546,66 @@ mod tests {
             "id2 prefetched after consuming into id1"
         );
         assert_eq!(&r2[..], &data[50..150]);
+    }
+
+    #[test]
+    fn prefetch_chunks_two_prefetches_deeper() {
+        // Four 50-byte chunks; depth 2 → after reading into id0, id1 AND id2 prefetched.
+        let data: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let cuts = [50usize, 100, 150, 200];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        assert_eq!(index.entries.len(), 4);
+        let id0 = index.entries[0].chunk_id;
+        let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
+        let id3 = index.entries[3].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "depth2").with_prefetch_chunks(2);
+
+        let r1 = fs.read_at(0, 25).unwrap();
+        assert_eq!(r1, &data[0..25]);
+        assert_eq!(counting.get_count(&id0), 1);
+        assert_eq!(counting.get_count(&id1), 1, "id1 prefetched at depth 2");
+        assert_eq!(counting.get_count(&id2), 1, "id2 prefetched at depth 2");
+        assert_eq!(counting.get_count(&id3), 0, "id3 beyond depth 2");
+
+        counting.clear_gets();
+        // Sequential continue into id1: hit prefetch for id1; may re-get id0; prefetch id3.
+        let r2 = fs.read_at(25, 50).unwrap();
+        assert_eq!(r2, &data[25..75]);
+        assert_eq!(counting.get_count(&id1), 0, "id1 must hit prefetch");
+        assert_eq!(counting.get_count(&id2), 0, "id2 must still be cached");
+    }
+
+    #[test]
+    fn prefetch_chunks_one_equiv_default() {
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let cuts = [100usize, 200, 300];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        let id1 = index.entries[1].chunk_id;
+        let id2 = index.entries[2].chunk_id;
+
+        let counting = CountingSource::new(src);
+        let fs = BlobFs::new(index, counting.clone(), "depth1").with_prefetch_chunks(1);
+        let _ = fs.read_at(0, 50).unwrap();
+        assert_eq!(counting.get_count(&id1), 1);
+        assert_eq!(
+            counting.get_count(&id2),
+            0,
+            "N=1 must not prefetch beyond next chunk (≡ 1.0.0)"
+        );
+    }
+
+    #[test]
+    fn prefetch_chunks_clamps_above_two() {
+        let data = b"abcdefghij".to_vec();
+        let cuts = [data.len()];
+        let (index, src) = index_from_cuts(&data, &cuts);
+        // Construction must not panic; depth clamped to 2.
+        let fs = BlobFs::new(index, src, "clamp").with_prefetch_chunks(99);
+        let got = fs.read_at(0, 4).unwrap();
+        assert_eq!(got, b"abcd");
     }
 
     #[test]

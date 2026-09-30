@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section (field pointers to `docs/extract.md` / `docs/push.md` /
   `docs/pull.md`; formal 1.1.0 bump reserved for closeout). Defaults remain
   ≡ 1.0.0.
+- **Phase11-M6 P1 O1:** `mount --prefetch-chunks N` — prefetch depth
+  (default **1** ≡ 1.0.0; hard cap **≤2**; clap `1..=2`; library clamp).
+  `--no-prefetch` still wins. `BlobFs`/`DirFs::with_prefetch_chunks`,
+  `PrefetchCache::enabled_with_max_chunks`. Docs: `docs/mount.md`. **Not**
+  delivered this milestone: O2 `gc --jobs`, version **1.1.0** bump (M7).
 
 ## [1.0.0] — 2026-09-29
 

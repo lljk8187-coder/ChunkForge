@@ -135,14 +135,25 @@ impl<S: ChunkSource> DirFs<S> {
 
     /// Enable or disable sequential prefetch.
     ///
-    /// Default is **on**. Disabling cold-starts the window (≡ 0.9.0 on-demand get).
-    /// CLI: `chunkforge mount --no-prefetch`.
+    /// Default is **on** (depth **1** ≡ 1.0.0). Disabling cold-starts the window
+    /// (≡ 0.9.0 on-demand get). CLI: `chunkforge mount --no-prefetch`.
     pub fn with_prefetch(mut self, enabled: bool) -> Self {
         *self.prefetch.get_mut().unwrap_or_else(|e| e.into_inner()) = if enabled {
             PrefetchCache::enabled()
         } else {
             PrefetchCache::disabled()
         };
+        self
+    }
+
+    /// Enable sequential prefetch with depth `n` (clamped to ≤2; `0` ≡ off).
+    ///
+    /// Default depth **1** ≡ [`Self::with_prefetch`]`(true)` / 1.0.0.
+    /// CLI: `chunkforge mount --prefetch-chunks N`. `--no-prefetch` still wins
+    /// when the CLI wires [`Self::with_prefetch`]`(false)` instead.
+    pub fn with_prefetch_chunks(mut self, n: usize) -> Self {
+        *self.prefetch.get_mut().unwrap_or_else(|e| e.into_inner()) =
+            PrefetchCache::enabled_with_max_chunks(n);
         self
     }
 

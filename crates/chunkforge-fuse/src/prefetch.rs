@@ -11,13 +11,19 @@ pub const DEFAULT_MAX_PREFETCH_CHUNKS: usize = 1;
 /// Default hard cap on total cached plaintext bytes: **512 KiB**.
 pub const DEFAULT_MAX_PREFETCH_BYTES: usize = 512 * 1024;
 
+/// Hard upper bound on prefetch depth (`--prefetch-chunks N`). Values above
+/// this are clamped. Combined with [`DEFAULT_MAX_PREFETCH_BYTES`] (whichever
+/// stricter).
+pub const MAX_PREFETCH_CHUNKS_HARD_CAP: usize = 2;
+
 /// Process-local, mount-lifetime chunk prefetch cache (not Store `--cache`).
 ///
 /// # Cap (nailed)
 ///
 /// Default: at most **1** subsequent chunk **AND** total cached bytes **≤ 512 KiB**
-/// (whichever stricter). If the next chunk alone exceeds the byte budget, it is
-/// not prefetched. Cleared on cross-file / seek / backward / non-contiguous read.
+/// (whichever stricter). Depth is configurable up to [`MAX_PREFETCH_CHUNKS_HARD_CAP`]
+/// (2). If a candidate chunk alone exceeds the byte budget, it is not
+/// prefetched. Cleared on cross-file / seek / backward / non-contiguous read.
 #[derive(Debug)]
 pub struct PrefetchCache {
     enabled: bool,
@@ -62,6 +68,38 @@ impl PrefetchCache {
             next_offset: None,
             scope: None,
         }
+    }
+
+    /// Prefetch **on** with depth `n` (clamped to [`MAX_PREFETCH_CHUNKS_HARD_CAP`]).
+    ///
+    /// `n == 0` is treated as disabled. `n > 2` clamps to **2**. Byte budget stays
+    /// [`DEFAULT_MAX_PREFETCH_BYTES`] (≤512 KiB). Default depth **1** ≡
+    /// [`Self::enabled`] / 1.0.0.
+    pub fn enabled_with_max_chunks(n: usize) -> Self {
+        if n == 0 {
+            return Self::disabled();
+        }
+        let mut c = Self::enabled();
+        c.max_chunks = n.min(MAX_PREFETCH_CHUNKS_HARD_CAP);
+        c
+    }
+
+    /// Builder: set prefetch depth (clamped to [`MAX_PREFETCH_CHUNKS_HARD_CAP`]).
+    ///
+    /// Does not change `enabled`. Byte budget remains ≤512 KiB.
+    pub fn with_max_chunks(mut self, n: usize) -> Self {
+        self.max_chunks = n.min(MAX_PREFETCH_CHUNKS_HARD_CAP);
+        self
+    }
+
+    /// Configured max subsequent chunks (after clamp).
+    pub fn max_chunks(&self) -> usize {
+        self.max_chunks
+    }
+
+    /// Configured max cached plaintext bytes.
+    pub fn max_bytes(&self) -> usize {
+        self.max_bytes
     }
 
     /// Whether sequential prefetch is enabled.
@@ -280,5 +318,58 @@ mod tests {
         let got = cache.take_or_get(&id, &src).unwrap();
         assert_eq!(got, b"x");
         assert_eq!(src.gets.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn enabled_with_max_chunks_clamps_above_hard_cap() {
+        let c = PrefetchCache::enabled_with_max_chunks(99);
+        assert!(c.is_enabled());
+        assert_eq!(c.max_chunks(), MAX_PREFETCH_CHUNKS_HARD_CAP);
+        assert_eq!(c.max_bytes(), DEFAULT_MAX_PREFETCH_BYTES);
+        let c1 = PrefetchCache::enabled_with_max_chunks(1);
+        assert_eq!(c1.max_chunks(), 1);
+        let c0 = PrefetchCache::enabled_with_max_chunks(0);
+        assert!(!c0.is_enabled());
+    }
+
+    #[test]
+    fn with_max_chunks_builder_clamps() {
+        let c = PrefetchCache::enabled().with_max_chunks(7);
+        assert_eq!(c.max_chunks(), 2);
+        assert_eq!(PrefetchCache::enabled().with_max_chunks(2).max_chunks(), 2);
+    }
+
+    #[test]
+    fn note_advance_respects_chunk_cap_of_two() {
+        let id1 = ChunkId::hash(b"a");
+        let id2 = ChunkId::hash(b"b");
+        let id3 = ChunkId::hash(b"c");
+        let mut src = Mem::default();
+        src.chunks.insert(id1, b"a".to_vec());
+        src.chunks.insert(id2, b"b".to_vec());
+        src.chunks.insert(id3, b"c".to_vec());
+        let mut cache = PrefetchCache::enabled_with_max_chunks(2);
+        cache.note_sequential_advance(Some(&id1), 1, &src);
+        cache.note_sequential_advance(Some(&id2), 1, &src);
+        assert_eq!(cache.cached_chunks(), 2);
+        // Third subsequent → evict oldest (id1), keep depth ≤ 2.
+        cache.note_sequential_advance(Some(&id3), 1, &src);
+        assert_eq!(cache.cached_chunks(), 2);
+        // id1 was evicted: take_or_get must hit source.
+        src.gets.lock().unwrap().clear();
+        let _ = cache.take_or_get(&id1, &src).unwrap();
+        assert_eq!(
+            src.gets.lock().unwrap().len(),
+            1,
+            "id1 must have been evicted"
+        );
+        // id3 should still be a hit (no extra get).
+        src.gets.lock().unwrap().clear();
+        let got = cache.take_or_get(&id3, &src).unwrap();
+        assert_eq!(got, b"c");
+        assert!(
+            src.gets.lock().unwrap().is_empty(),
+            "id3 must still be cached"
+        );
     }
 }
