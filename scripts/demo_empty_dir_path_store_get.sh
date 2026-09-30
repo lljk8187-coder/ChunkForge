@@ -15,10 +15,9 @@
 #
 # Version gate expects chunkforge 1.15.0 (still, until Phase26-M7).
 #
-# compat_1_15: NOTE-ONLY. M5 will add scripts/check_compat_1_15.sh.
-# If that file is already present, this demo only notes it.
-# Absence must NOT fail. Do not hard-require check_compat_1_15.sh here.
-# check_compat_1_14.sh must exist and be executable (Phase25 pattern).
+# Gate (Phase26-M5): require check_compat_1_15.sh present + executable
+# (same pattern as Phase25-M5 demo_ls_cat_path ↔ compat_1_14).
+# check_compat_1_14.sh must also exist and be executable (Phase25).
 # Do not force-run the long gate here.
 set -euo pipefail
 
@@ -245,7 +244,7 @@ echo "no pack subcommand (≠ pack): OK"
 echo "E: help / narrative nails: OK"
 
 echo
-echo "==> F. version 1.15.0 + compat_1_14 required + compat_1_15 NOTE-ONLY"
+echo "==> F. version 1.15.0 + compat_1_14 + compat_1_15 (Phase26-M5)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
 if ! grep -F '1.15.0' <<<"$VER" >/dev/null; then
@@ -268,16 +267,20 @@ if [[ ! -x "$COMPAT114" ]]; then
 fi
 echo "compat_1_14 present+executable: OK"
 
-# NOTE-ONLY: M5 will add check_compat_1_15.sh. Do not fail if it is absent.
-# Do not create it in this milestone. If a later tree already has it, note
-# that and continue (still do not treat absence as failure).
+# Phase26-M5: compat_1_15 must exist + executable (same pattern as
+# demo_ls_cat_path ↔ compat_1_14 after Phase25-M5). Do not force-run
+# the long gate here.
 COMPAT115="$ROOT/scripts/check_compat_1_15.sh"
-if [[ -e "$COMPAT115" ]]; then
-  echo "note: check_compat_1_15.sh is present; M4 does not require it (M5 owns the gate)"
-else
-  echo "note: check_compat_1_15.sh absent (expected until M5); note-only, not a failure"
+if [[ ! -f "$COMPAT115" ]]; then
+  echo "error: check_compat_1_15.sh must exist" >&2
+  exit 1
 fi
-echo "F: version 1.15.0 / compat_1_14 required / compat_1_15 note-only: OK"
+if [[ ! -x "$COMPAT115" ]]; then
+  echo "error: check_compat_1_15.sh must be executable" >&2
+  exit 1
+fi
+echo "compat_1_15 present+executable: OK"
+echo "F: version 1.15.0 / compat_1_14 + compat_1_15 present+executable: OK"
 
 echo
 echo "demo_empty_dir_path_store_get: ALL OK / PASS"
@@ -286,4 +289,4 @@ echo "        filter --path empty_leaf keeps Dir; filtered ls non-empty;"
 echo "        store get hex -o bytes ≡ source / chunk-id; optional --verify;"
 echo "        filter_dir_archive leaf-Dir ≠ prune ≠ gc-path;"
 echo "        store get ≠ scrub ≠ cat ≠ extract ≠ recompress ≠ remove;"
-echo "        ≠ pack ≠ write mount; version 1.15.0; compat_1_15 note-only"
+echo "        ≠ pack ≠ write mount; version 1.15.0; compat_1_15 hard-required"
