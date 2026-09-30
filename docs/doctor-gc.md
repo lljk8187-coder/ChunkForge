@@ -106,6 +106,10 @@ chunkforge store scrub --store ./store
 # Parallel workers (default --jobs 1 ≡ serial)
 chunkforge store scrub --store ./store --jobs 4
 
+# Machine-readable (Phase 12 M3); default text ≡ 1.1.0
+chunkforge store scrub --store ./store --format json
+chunkforge store scrub --store ./store --jobs 4 --format json
+
 # Empty store → ok=0 corrupt=0 unreadable=0, exit 0
 chunkforge store scrub --store ./empty-store
 
@@ -121,9 +125,10 @@ chunkforge store scrub --store ./empty-store
 | Check | `get_verify(id, true)` — decompress (if any) then plaintext BLAKE3 ≡ id |
 | Outcome | success → `ok++`; hash mismatch / corrupt payload → `corrupt++` + `scrub: corrupt <id>`; I/O / decode / other read failure → `unreadable++` + `scrub: unreadable <id>` |
 | Summary | One line: `scrub: ok=… corrupt=… unreadable=…` |
-| `--jobs N` | Bounded concurrency (default **1** = serial); same helper as other CLI commands |
+| `--jobs N` | Bounded concurrency (default **1** = serial); same helper as other CLI commands; orthogonal to `--format` |
+| `--format text\|json` | Default **text** ≡ 1.1.0 (`scrub: ok=…` summary + per-bad-id lines on stdout). **json**: one object on stdout — `ok` (bool; true iff corrupt+unreadable==0), `checked` (total scanned = ok_count+corrupt+unreadable), `ok_count` (healthy; aligns with text `ok=`), `corrupt` / `unreadable` (counts), `corrupt_ids` / `unreadable_ids` (hex string arrays; bad ids **only** here — no text lines). No duplicate text summary. Exit code is format-independent. |
 | Repair | **None** — report only; do not auto-delete (re-pull / replace bad objects separately) |
-| Exit code | corrupt+unreadable == 0 → **0**; else **non-zero** |
+| Exit code | corrupt+unreadable == 0 → **0**; else **non-zero** (same for text and json) |
 
 ## Presence vs scrub vs GC
 

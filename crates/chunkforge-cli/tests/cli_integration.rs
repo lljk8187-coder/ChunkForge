@@ -5557,6 +5557,10 @@ fn store_scrub_help_lists_flags() {
     let scrub_s = String::from_utf8_lossy(&scrub.stdout);
     assert!(scrub_s.contains("--store"), "{scrub_s}");
     assert!(scrub_s.contains("--jobs"), "{scrub_s}");
+    assert!(
+        scrub_s.contains("--format"),
+        "store scrub --help must list --format:\n{scrub_s}"
+    );
 }
 
 #[test]
@@ -5723,6 +5727,126 @@ fn store_scrub_jobs_flag_accepted() {
             && l.contains("corrupt=0")
             && l.contains("unreadable=0")),
         "jobs=4 healthy scrub; stdout={stdout}"
+    );
+}
+
+// --- Phase 12 M3: store scrub --format text|json ---
+
+#[test]
+fn store_scrub_format_json_healthy_parseable() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("scrub: ok=") && !stdout.contains("scrub: corrupt "),
+        "json must not emit text scrub lines; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("scrub json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["corrupt"].as_u64(), Some(0));
+    assert_eq!(v["unreadable"].as_u64(), Some(0));
+    let ok_count = v["ok_count"].as_u64().expect("ok_count");
+    let checked = v["checked"].as_u64().expect("checked");
+    assert!(ok_count >= 1, "ok_count={ok_count}");
+    assert_eq!(checked, ok_count);
+    assert_eq!(v["corrupt_ids"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(v["unreadable_ids"].as_array().map(|a| a.len()), Some(0));
+}
+
+#[test]
+fn store_scrub_format_json_corrupt_ids_nonzero_exit() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let (cnk_path, hex_id) = first_cnk_id(&store.join("chunks"));
+    let mut bytes = fs::read(&cnk_path).unwrap();
+    bytes[0] ^= 0xff;
+    fs::write(&cnk_path, &bytes).unwrap();
+
+    let fail = run_fail(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--jobs",
+        "2",
+    ]);
+    let stdout = String::from_utf8_lossy(&fail.stdout);
+    assert!(
+        !stdout.contains("scrub: corrupt ") && !stdout.contains("scrub: ok="),
+        "json must not emit text scrub lines; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("scrub corrupt json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["corrupt"].as_u64(), Some(1));
+    assert_eq!(v["unreadable"].as_u64(), Some(0));
+    let ids = v["corrupt_ids"].as_array().expect("corrupt_ids");
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0].as_str(), Some(hex_id.as_str()));
+    assert_eq!(v["unreadable_ids"].as_array().map(|a| a.len()), Some(0));
+    assert!(cnk_path.is_file(), "scrub must not delete corrupt chunk");
+}
+
+#[test]
+fn store_scrub_default_format_is_text_not_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("scrub: ok=")),
+        "default (no --format) must keep text summary; stdout={stdout}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
+        "default (no --format) stdout must not be pure JSON; got {stdout}"
     );
 }
 

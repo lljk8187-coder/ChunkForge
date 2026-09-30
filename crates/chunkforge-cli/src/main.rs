@@ -463,13 +463,16 @@ enum StoreCommands {
         /// Parallel verify workers (default 1 = serial)
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Output format (default text ≡ 1.1.0 scrub lines; json = one object on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3 + Phase 12 M2).
+/// `push` / `pull` / `gc` / `store scrub` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3 + Phase 12 M2–M3).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
-/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` ≡ 1.1.0).
+/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -766,10 +769,15 @@ fn run() -> Result<()> {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
         Commands::Store {
-            command: StoreCommands::Scrub { store, jobs },
+            command:
+                StoreCommands::Scrub {
+                    store,
+                    jobs,
+                    format,
+                },
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_store_scrub(&store, jobs)
+            cmd_store_scrub(&store, jobs, format)
         }
     }
 }
@@ -3376,7 +3384,7 @@ fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
 /// Prints per-bad-chunk lines (`scrub: corrupt <id>` / `scrub: unreadable <id>`)
 /// and a summary `scrub: ok=… corrupt=… unreadable=…`. Never deletes. Exit
 /// non-zero iff corrupt+unreadable > 0 (empty store → all zeros, exit 0).
-fn cmd_store_scrub(store_path: &Path, jobs: usize) -> Result<()> {
+fn cmd_store_scrub(store_path: &Path, jobs: usize, format: CliFormat) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
     let mut ids = store
@@ -3397,24 +3405,55 @@ fn cmd_store_scrub(store_path: &Path, jobs: usize) -> Result<()> {
         Err(_) => ScrubOne::Unreadable,
     });
 
-    let mut ok = 0u64;
+    let mut ok_count = 0u64;
     let mut corrupt = 0u64;
     let mut unreadable = 0u64;
+    let mut corrupt_ids: Vec<String> = Vec::new();
+    let mut unreadable_ids: Vec<String> = Vec::new();
     for (id, outcome) in ids.iter().zip(outcomes.iter()) {
         match outcome {
-            ScrubOne::Ok => ok += 1,
+            ScrubOne::Ok => ok_count += 1,
             ScrubOne::Corrupt => {
                 corrupt += 1;
-                println!("scrub: corrupt {id}");
+                if format == CliFormat::Text {
+                    println!("scrub: corrupt {id}");
+                } else {
+                    corrupt_ids.push(id.to_string());
+                }
             }
             ScrubOne::Unreadable => {
                 unreadable += 1;
-                println!("scrub: unreadable {id}");
+                if format == CliFormat::Text {
+                    println!("scrub: unreadable {id}");
+                } else {
+                    unreadable_ids.push(id.to_string());
+                }
             }
         }
     }
 
-    println!("scrub: ok={ok} corrupt={corrupt} unreadable={unreadable}");
+    let checked = ok_count + corrupt + unreadable;
+    let ok = corrupt + unreadable == 0;
+
+    match format {
+        CliFormat::Text => {
+            println!("scrub: ok={ok_count} corrupt={corrupt} unreadable={unreadable}");
+        }
+        CliFormat::Json => {
+            // Phase12-M3: bad ids only in arrays (no text lines); sole stdout
+            // payload is one JSON object. See docs/doctor-gc.md / Phase12 §3.2.
+            let obj = serde_json::json!({
+                "ok": ok,
+                "checked": checked,
+                "ok_count": ok_count,
+                "corrupt": corrupt,
+                "unreadable": unreadable,
+                "corrupt_ids": corrupt_ids,
+                "unreadable_ids": unreadable_ids,
+            });
+            println!("{obj}");
+        }
+    }
 
     if corrupt + unreadable > 0 {
         bail!(

@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `listings` / `referenced` / `unreferenced` / `deleted`); no path listing and
   no duplicate stderr summary; exit codes format-independent; `--jobs`
   orthogonal. Shared `CliFormat`. See `docs/doctor-gc.md`.
+- **`store scrub --format text|json`** (Phase 12 M3): default **text** ≡ 1.1.0
+  (`scrub: ok=… corrupt=… unreadable=…` + per-bad-id lines). JSON: one object
+  on stdout (`ok` / `checked` / `ok_count` / `corrupt` / `unreadable` /
+  `corrupt_ids` / `unreadable_ids`); bad ids only in arrays (no text lines);
+  exit codes format-independent; `--jobs` orthogonal. Shared `CliFormat`.
+  See `docs/doctor-gc.md`.
 
 ## [1.1.0] — 2026-09-29
 

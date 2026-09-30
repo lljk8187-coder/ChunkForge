@@ -445,9 +445,9 @@ Workspace / CLI version is **1.1.0**.
 multipart / packfile / write mount / bidirectional sync / extract prune /
 remote scrub / byte-range resume / push listing upload / changing default
 jobs·retries / video analysis. Pack stays measured-only in
-[docs/perf.md](docs/perf.md). **`gc --jobs N`** (default 1 ≡ serial) and
-**`gc --format text|json`** land in Unreleased / Phase 12 M1–M2 — see
-[docs/doctor-gc.md](docs/doctor-gc.md).
+[docs/perf.md](docs/perf.md). **`gc --jobs N`** (default 1 ≡ serial),
+**`gc --format text|json`**, and **`store scrub --format text|json`** land in
+Unreleased / Phase 12 M1–M3 — see [docs/doctor-gc.md](docs/doctor-gc.md).
 
 ```bash
 # Phase 11 ops smoke (~minutes; local put_stub only)
