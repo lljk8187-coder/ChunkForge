@@ -2155,7 +2155,10 @@ fn push_file_url_dest_smoke() {
         err.contains("uploaded=") || err.contains("skipped="),
         "push file:// summary missing; stderr={err}"
     );
-    assert!(dest.join("meta.toml").is_file(), "file:// dest store missing");
+    assert!(
+        dest.join("meta.toml").is_file(),
+        "file:// dest store missing"
+    );
     assert!(count_cnk(&dest) >= 1, "file:// dest should have .cnk files");
 }
 

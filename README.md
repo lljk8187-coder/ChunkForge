@@ -25,7 +25,7 @@
 | **Phase 17** | **1.7.0** | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress` + **`check_compat_1_6`** (+ P1 CacheSource hit/refuse counters); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
 | **Phase 18** | **1.8.0** | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats` + **`check_compat_1_7`** (+ P1 **`doctor --progress`**); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
 | **Phase 19** | **1.9.0** | **`store create`** + **`pull --compression`** (create-time; omit ≡ none ≡ 1.8) + **`diff --progress`** (default off) + docs + `demo_store_create_pull_compression` + **`check_compat_1_8`** + P1 honest **`make --jobs`** (post-chunk put only; default 1; **not** parallel FastCDC); defaults ≡ 1.8; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub |
-| **Phase 20** | **1.10.0** (target; workspace still **1.9.0** until M7) | **`--path-from`** (`load_path_file`) on archive/extract/push/pull/diff/doctor/verify + **`doctor`/`verify` path scope** (default ≡ 1.9 full) + docs + `demo_path_from_doctor_verify` + `check_compat_1_9` + P1 **`push` local/`file://` dest** (Store as `ChunkSink`; single dest; create **none**); **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ fallback**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub |
+| **Phase 20** | **1.10.0** | **`--path-from`** (`load_path_file`) on archive/extract/push/pull/diff/doctor/verify + **`doctor`/`verify` path scope** (default ≡ 1.9 full) + docs + `demo_path_from_doctor_verify` + **`check_compat_1_9`** + P1 **`push` local/`file://` dest** (Store as `ChunkSink`; single dest; create **none**); **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ fallback**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -53,7 +53,7 @@
 
 Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 closed at 1.6.0**: `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + `check_compat_1_5` (+ P1 `diff --path`/`--exclude`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub. **Phase 17 closed at 1.7.0**: create-time `--compression none|zstd` + `archive`/`extract`/`make --progress` + `demo_zstd_progress` + `check_compat_1_6` (+ P1 CacheSource hit/refuse counters) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression. **Phase 18 closed at 1.8.0**: `pull --verify` + Cache observation CLI/JSON + `cat`/`verify --progress` + `demo_pull_verify_cache_stats` + `check_compat_1_7` (+ P1 `doctor --progress`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub.
 **Phase 19 closed at 1.9.0**: `store create` + `pull --compression` + `diff --progress` + `demo_store_create_pull_compression` + `check_compat_1_8` + P1 honest `make --jobs` (post-chunk put; FastCDC stays serial) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/store.md](docs/store.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.8; **`store create` ≠ recompress ≠ default zstd ≠ pack**; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub.
-**Phase 20 (toward 1.10.0; workspace still 1.9.0):** `--path-from` + `doctor`/`verify` path scope + `demo_path_from_doctor_verify` + `check_compat_1_9` + P1 **`push` local/`file://` `--dest`** (Store as `ChunkSink`; single dest; create compression **none**) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md) / [docs/push.md](docs/push.md); defaults ≡ 1.9; **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ `--fallback` / multi-dest**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub.
+**Phase 20 closed at 1.10.0**: `--path-from` + `doctor`/`verify` path scope + `demo_path_from_doctor_verify` + `check_compat_1_9` + P1 **`push` local/`file://` `--dest`** (Store as `ChunkSink`; single dest; create compression **none**) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md) / [docs/push.md](docs/push.md); defaults ≡ 1.9; **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ `--fallback` / multi-dest**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub.
 
 ## Quick start (local CAS)
 
@@ -1034,25 +1034,27 @@ Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stabilit
 [docs/store.md](docs/store.md), [docs/pull.md](docs/pull.md),
 [docs/diff.md](docs/diff.md), [docs/perf.md](docs/perf.md).
 
-## Phase 20 / 1.10 (Unreleased): `--path-from` + `doctor`/`verify` path scope
+## Phase 20 / 1.10.0: `--path-from` + `doctor`/`verify` path scope (+ P1 push local dest)
 
 Phase 20 closes the **PathFilter include-file** gap and **doctor/verify path
-symmetry** toward **1.10.0** (workspace / CLI still **1.9.0** until M7 bump):
-repeatable **`--path-from FILE`** (UTF-8; one include prefix per line; blank /
-`#` / trim ≡ `--exclude-from`; library **`load_path_file`**; merged OR with
-`--path`) on **archive / extract / push / pull / diff / doctor / verify**, and
-the full path quartet on **`doctor` / `verify`** (only File entries; Dir never
-contribute chunks; default no flags ≡ **1.9** full set; `.cfidx` + any path
-flag → clear non-zero). JSON field **names** unchanged; filtered counts may
-shrink. All additive; **defaults ≡ 1.9.0**.
+symmetry** at **1.10.0**: repeatable **`--path-from FILE`** (UTF-8; one include
+prefix per line; blank / `#` / trim ≡ `--exclude-from`; library
+**`load_path_file`**; merged OR with `--path`) on **archive / extract / push /
+pull / diff / doctor / verify**, and the full path quartet on **`doctor` /
+`verify`** (only File entries; Dir never contribute chunks; default no flags ≡
+**1.9** full set; `.cfidx` + any path flag → clear non-zero). JSON field
+**names** unchanged; filtered counts may shrink. P1: **`push --dest`** accepts
+local path / `file://` via **`Store` as `ChunkSink`** (single dest; create
+**none**). All additive; **defaults ≡ 1.9.0**. Workspace / CLI version is
+**1.10.0**.
 
 **Responsibility:** **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack** —
 filtering only shrinks what is archived / extracted / pushed / pulled /
 diffed / **checked**. `gc` keeps the **full** listing reference set (**no**
-`--path`). Extract still never deletes extras. Not packfile, not write mount,
-not bidirectional sync.
+`--path`). Extract still never deletes extras. **Push local ≠ `--fallback` /
+multi-dest**. Not packfile, not write mount, not bidirectional sync.
 
-**Delivered (through M4):**
+**Delivered:**
 
 - Library **`load_path_file`** + CLI **`--path-from`** (M1–M2).
 - **`doctor` / `verify`** `--path` / `--exclude` / `--exclude-from` /
@@ -1060,16 +1062,17 @@ not bidirectional sync.
 - Docs + smoke:
   [`scripts/demo_path_from_doctor_verify.sh`](scripts/demo_path_from_doctor_verify.sh)
   (M4).
-- Gate **`check_compat_1_9.sh`**: M5 (not in tree yet at M4).
-- Version **1.10.0** bump: M7.
+- Gate **`check_compat_1_9.sh`** (M5; calls 1_8; requires executable).
+- P1 **`push` local / `file://` dest** (M6).
+- Workspace / CLI **1.10.0** (M7).
 
 **Non-goals:** packfile; write mount / COW; bidirectional sync; extract prune
 / `--delete`; **`gc --path`**; remote scrub; full aws-sdk / multipart / IMDS /
 SSO / ListObjects; byte-range resume; push listing upload; cache LRU; **default**
-zstd; HTTP wire compression; `store recompress`; `push --fallback`; changing
-default jobs·retries·SigV4·progress·create compression; absolute perf SLA in
-CI; video analysis; offline bundle; `.cfdir` v2 symlink. Pack stance:
-[docs/perf.md](docs/perf.md) — **Phase20 / 1.10 still does not implement pack**.
+zstd; HTTP wire compression; `store recompress`; `push --fallback`; multi dest;
+changing default jobs·retries·SigV4·progress·create compression; absolute perf
+SLA in CI; video analysis; offline bundle; `.cfdir` v2 symlink. Pack stance:
+[docs/perf.md](docs/perf.md) — **Phase20 / 1.10.0 still does not implement pack**.
 
 ```bash
 # Phase 20 path-from + doctor/verify path smoke (~minutes; local only)
@@ -1082,9 +1085,10 @@ bash scripts/demo_path_from_doctor_verify.sh
 # E: missing path-from file → non-zero
 # F: .cfidx + path → non-zero
 # G: gc --help has no --path (path-from ≠ gc-path)
-# H: version still 1.9.0; check_compat_1_8 present (compat_1_9 → M5)
+# H: version 1.10.0; check_compat_1_8 + check_compat_1_9 present + executable
 
-./target/debug/chunkforge --version   # → chunkforge 1.9.0 (until M7)
+./target/debug/chunkforge --version   # → chunkforge 1.10.0
+bash scripts/check_compat_1_9.sh
 ```
 
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stability.md),

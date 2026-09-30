@@ -71,18 +71,18 @@ retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
 origin). The workspace reports **1.9.0**. **`check_compat_1_8.sh`** gates
 1.9 flags (calls 1_7).
 
-**1.10.0** (Phase 20; **Unreleased** until M7 — workspace still **1.9.0**)
-adds further **opt-in** only: repeatable **`--path-from FILE`** (UTF-8 one
-include prefix per line; discipline ≡ `--exclude-from`; library
+**1.10.0** adds further **opt-in** only: repeatable **`--path-from FILE`**
+(UTF-8 one include prefix per line; discipline ≡ `--exclude-from`; library
 `load_path_file`; merged OR with `--path`) on **archive / extract / push /
 pull / diff / doctor / verify**, and full path quartet on **`doctor` /
 `verify`** (default no flags ≡ **1.9** full set; `.cfidx` + any path flag →
-non-zero; JSON field names unchanged, counts may shrink). **Hard ban:**
-**`gc --path`** (shrinking the keep-set would mis-delete). Defaults stay ≡
-**1.9.0**. Responsibility: **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
-**`push` local/`file://` dest ≠ `--fallback` / multi-dest** (still single dest;
-create compression **none**).
-Gate **`check_compat_1_9.sh`** is **in-tree** (Phase20-M5; calls 1_8).
+non-zero; JSON field names unchanged, counts may shrink). P1: **`push`
+local/`file://` dest** via Store as `ChunkSink` (single dest; create
+compression **none**). **Hard ban:** **`gc --path`** (shrinking the keep-set
+would mis-delete). Defaults stay ≡ **1.9.0**. Responsibility:
+**`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`push` local/`file://`
+dest ≠ `--fallback` / multi-dest**. The workspace reports **1.10.0**.
+Gate **`check_compat_1_9.sh`** gates 1.10 flags (calls 1_8).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -111,7 +111,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--path-from`, `doctor`/`verify` path scope) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), and **1.10.0** (Phase20; Unreleased until M7) are such
+**1.9.0** (Phase19), and **1.10.0** (Phase20) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
@@ -165,7 +165,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.9.0** / Phase20 **1.10** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.10.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |

@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 20 toward **1.10.0** (workspace / CLI still **1.9.0** until M7). Additive
-opt-in only; defaults ≡ **1.9.0**.
+Nothing yet.
+
+## [1.10.0] — 2026-09-30
+
+Phase 20 closeout — **`--path-from`** (`load_path_file`) on archive / extract /
+push / pull / diff / doctor / verify; **`doctor`/`verify` path scope** (default
+no flags ≡ 1.9 full set; `.cfidx` + any path flag → non-zero); docs +
+`demo_path_from_doctor_verify.sh`; `check_compat_1_9.sh`; P1 **`push` local /
+`file://` `--dest`** (Store as `ChunkSink`; single dest; create compression
+**none**). Defaults remain ≡ **1.9.0**. No pack / write mount / aws-sdk /
+remote scrub / extract prune / bidirectional sync / push listing / LRU / store
+trim / **default** zstd / HTTP wire compression / `store recompress` /
+`push --fallback` / multi dest / **`gc --path`**.
 
 ### Added
 
@@ -29,38 +40,44 @@ opt-in only; defaults ≡ **1.9.0**.
   `.cfidx`+path non-zero, `gc` has no `--path`.
 - **`check_compat_1_9.sh`** (Phase 20 M5): calls `check_compat_1_8` + asserts
   1.10 `--path-from` / doctor·verify `--path` help; no gc `--path`.
-- **`push` local / `file://` `--dest`** (Phase 20 M6 path A): single dest via
-  `Store` as `ChunkSink` (`open` if exists, else create with compression
+- **`push` local / `file://` `--dest`** (Phase 20 M6 path A / P1): single dest
+  via `Store` as `ChunkSink` (`open` if exists, else create with compression
   **none** ≡ 1.9 create default). HTTP template / SigV4 / `--http-retries` with
   a local dest → clear non-zero. **≠** `--fallback` / multi-dest. Help + thin
   docs (`path-from` ≠ gc-path; push local ≠ fallback).
-
-### Pending (later Phase 20 milestones)
-
-- Version bump **1.10.0** (M7).
+- Workspace version **1.10.0** (Phase 20 M7 closeout).
 
 ### Not delivered / deferred (Phase 20)
 
 - **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
 - **Write mount** / COW / writable FUSE — non-goal
 - Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
-- **Remote scrub** / remote GC — deferred
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
 - **Extract prune** / `--delete` — non-goal
 - **`gc --path`** — **hard ban** (mis-delete risk)
 - Bidirectional sync / watch dirs — non-goal
-- Cache LRU / store trim / **default** zstd / HTTP wire compression /
-  `store recompress` / `push --fallback` — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
 
 ### Compatibility
 
 - CLI defaults match **1.9.0**: no `--path-from` / no doctor·verify path flags
   ⇒ full set; create compression **none**; `jobs=1`, `http-retries=0`, SigV4
-  **off**, ops default **text**, progress **off**, mount prefetch depth **1**
+  **off**, ops default **text**, progress **off**, mount prefetch depth **1**;
+  no `diff --progress` ⇒ quiet; `make --jobs` default **1**; no `--verify` on
+  pull ⇒ quiet; no `--cache-stats` ⇒ no cache noise; no `--fallback` ⇒ single
+  origin; no `--cache-max-bytes` ⇒ unbounded cache fill
 - `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
 - Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
 - Additive opt-in only; JSON field names unchanged
 - **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**
 - **`push` local/`file://` dest ≠ `--fallback` / multi-dest** (single dest)
+- Disk zstd orthogonal to HTTP plaintext body; no silent break of 1.9.0
+  behaviour
 
 ## [1.9.0] — 2026-09-30
 
@@ -1143,6 +1160,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.10.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.10.0
 [1.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.9.0
 [1.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.8.0
 [1.7.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.7.0

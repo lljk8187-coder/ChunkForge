@@ -130,13 +130,13 @@ Phase 19 / **1.9.0** adds **`store create`**, **`pull --compression`**
 **`check_compat_1_8.sh`** (calls 1_7; no absolute perf SLA). Workspace
 reports **1.9.0**. Smoke:
 [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh).
-Phase 20 targets **1.10.0** (Unreleased until M7): **`--path-from`** on
+Phase 20 / **1.10.0** adds **`--path-from`** on
 archive/extract/push/pull/diff/doctor/verify + **`doctor`/`verify` path
-scope**. Defaults stay ≡ **1.9.0** (no path flags ⇒ full set). JSON field
-**names** unchanged; filtered counts may shrink. Workspace still reports
-**1.9.0** until the 1.10 bump. Smoke:
+scope** (+ P1 push local/`file://` dest). Defaults stay ≡ **1.9.0** (no path
+flags ⇒ full set). JSON field **names** unchanged; filtered counts may shrink.
+Gated by **`check_compat_1_9.sh`** (calls 1_8; no absolute perf SLA). Workspace
+reports **1.10.0**. Smoke:
 [`scripts/demo_path_from_doctor_verify.sh`](../scripts/demo_path_from_doctor_verify.sh).
-(`check_compat_1_9.sh` arrives in M5.)
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)

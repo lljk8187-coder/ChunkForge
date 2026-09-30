@@ -4344,9 +4344,8 @@ fn open_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn C
         );
     }
 
-    let path = parse_store_location(trimmed).with_context(|| {
-        format!("parse push --dest {trimmed:?} (local path or file:// URL)")
-    })?;
+    let path = parse_store_location(trimmed)
+        .with_context(|| format!("parse push --dest {trimmed:?} (local path or file:// URL)"))?;
     // Existing store: open as recorded. Missing: create with compression none
     // (≡ 1.9 create default). Same open_or_create_store helper as pull/make.
     let store = open_or_create_store(&path, None)?;

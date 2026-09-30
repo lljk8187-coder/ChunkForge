@@ -10,9 +10,9 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P20_DEMO_DIR (default /tmp/cf-p20-path-from-demo)
 #
-# Gate (M5+): require check_compat_1_9.sh present + executable (Phase19-M7b
-# lesson: do not leave a soft "not yet" note that M7 can trip on).
-# Version stays 1.9.0 until M7 bumps to 1.10.0; also require check_compat_1_8.
+# Gate: require check_compat_1_9.sh present + executable (Phase19-M7b
+# lesson: do not leave a soft "not yet" note). Also require check_compat_1_8.
+# Version gate expects chunkforge 1.10.0 (Phase20-M7).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -308,8 +308,8 @@ for cmd in doctor verify; do
 done
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.9.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.9.0 (M7 bumps to 1.10.0); got $VER" >&2
+if ! grep -F '1.10.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.10.0; got $VER" >&2
   exit 1
 fi
 COMPAT18="$ROOT/scripts/check_compat_1_8.sh"
@@ -330,7 +330,7 @@ if [[ ! -x "$COMPAT19" ]]; then
   echo "error: check_compat_1_9.sh must be executable" >&2
   exit 1
 fi
-echo "H: help / version 1.9.0 / compat_1_8 / compat_1_9: OK"
+echo "H: help / version 1.10.0 / compat_1_8 / compat_1_9: OK"
 
 echo
 echo "demo_path_from_doctor_verify: ALL OK"

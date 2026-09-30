@@ -166,7 +166,7 @@ and `#` comments skipped, trim; lines are merged with every `--exclude` into
 the **same** filter. Illegal pattern → same error as `--exclude`. Unreadable
 file → clear non-zero error.
 
-Phase 20 / **1.10** (opt-in; workspace still **1.9.0** until M7) adds
+Phase 20 / **1.10.0** (opt-in) adds
 repeatable **`--path-from FILE`**: UTF-8, one include prefix per line (same
 rules as `--path`); blank / `#` / trim ≡ exclude-from discipline; merged with
 every `--path` (OR) via `load_path_file`. May combine with `--exclude` /
