@@ -15,7 +15,7 @@
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
-| **Phase 10** | *(in progress → **1.0.0**)* | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`) |
+| **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -39,7 +39,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), and **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9). Phase 10 is **in progress toward 1.0.0**: FUSE sequential prefetch + 1.0 stability freeze — see [docs/stability.md](docs/stability.md).
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), and **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9). **Phase 10 is closed at 1.0.0**: FUSE sequential prefetch + 1.0 stability freeze — see [docs/stability.md](docs/stability.md).
 
 ## Quick start (local CAS)
 
@@ -359,16 +359,13 @@ bash scripts/bench_loose_http.sh
 Details: [docs/extract.md](docs/extract.md), [docs/perf.md](docs/perf.md),
 [docs/sigv4.md](docs/sigv4.md).
 
-## Phase 10 / 1.0.0: FUSE prefetch + stability freeze *(in progress)*
+## Phase 10 / 1.0.0: FUSE prefetch + stability freeze
 
 Phase 10 delivers the missing RO mount UX from Phase 9 **O2** — **sequential
 chunk prefetch** on read-only FUSE (default **on**; `--no-prefetch` ≡ 0.9.0
 on-demand `get`) — and freezes the **1.0 contract** in
 [docs/stability.md](docs/stability.md). Details:
-[docs/mount.md](docs/mount.md).
-
-The formal version bump to **1.0.0** is reserved for the Phase 10 closeout
-milestone. The workspace version remains **0.9.0** until then.
+[docs/mount.md](docs/mount.md). Workspace / CLI version is **1.0.0**.
 
 **Non-goals (one line):** no full AWS SDK / multipart / packfile / write mount /
 bidirectional sync / extract prune / remote scrub / byte-range resume / push
@@ -396,7 +393,7 @@ bash scripts/demo_mount_prefetch.sh
 # 1.0 compat gate (no aws-sdk, key flags, demo subset; ~10–15 min; no perf SLA)
 bash scripts/check_compat_1_0.sh
 
-./target/debug/chunkforge --version   # still → chunkforge 0.9.0 until 1.0 closeout
+./target/debug/chunkforge --version   # → chunkforge 1.0.0
 ```
 
 Scripts: [`scripts/check_compat_1_0.sh`](scripts/check_compat_1_0.sh),

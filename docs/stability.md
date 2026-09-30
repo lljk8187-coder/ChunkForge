@@ -2,9 +2,8 @@
 
 Phase 10 freezes the **1.0 commitments** below: what callers and scripts may
 rely on across minor releases, what counts as a breaking change, and what this
-project does **not** promise. Formal version bump to **1.0.0** is a later
-closeout milestone; the workspace may still report **0.9.0** until then.
-Prefetch and freeze narrative land first; the tag waits for the gate.
+project does **not** promise. **ChunkForge 1.0.0** is released (annotated tag
+`v1.0.0`); the workspace reports **1.0.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),

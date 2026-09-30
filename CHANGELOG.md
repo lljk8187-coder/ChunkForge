@@ -7,31 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-29
+
+Phase 10 closeout — FUSE sequential prefetch (default **on** / `--no-prefetch`),
+`docs/stability.md`, `scripts/check_compat_1_0.sh` + `demo_mount_prefetch.sh`,
+P1 O1 `verify`/`doctor --format json`; format/trait/loose layout frozen;
+default jobs=1 / retries=0 / SigV4 off / diff text / extract without flags ≡
+**0.9.0**.
+
 ### Added
 
-- **Phase 10 M2**: `chunkforge mount --no-prefetch` disables sequential chunk
-  prefetch (default remains **on**; ≡ 0.9.0 on-demand `get`). Seek / cross-file /
-  backward / non-contiguous reads cold-start the prefetch window. Docs:
-  `docs/mount.md` prefetch semantics. (M1 delivered `PrefetchCache` +
-  `BlobFs`/`DirFs` wiring.)
-- **Phase 10 M3**: `docs/stability.md` — 1.0 frozen surface (`.cfidx`/`.cfdir` v1
-  bytes, `ChunkSource`/`ChunkSink` signatures, loose CAS + HTTP layout, CLI
-  defaults vs 0.9.0, mount prefetch default), breaking-change policy, promises /
-  non-promises. README: Phase 10 status row, **Non-goals (Phase 10 / 1.0)**,
-  Phase 10 / 1.0.0 section (formal **1.0.0** bump deferred to closeout;
-  workspace remains 0.9.0).
-- **Phase 10 M4**: `scripts/check_compat_1_0.sh` (1.0 compat gate: key CLI flags,
-  no `aws-sdk`, fuse prefetch lib tests, demo subset) and
-  `scripts/demo_mount_prefetch.sh` (get-count unit tests; optional real mount).
-  README Phase 10 section links both scripts plus `docs/stability.md` /
+- **FUSE sequential chunk prefetch** (Phase 10 M1–M2 / Phase 9 O2 make-up):
+  process-local prefetch of the next chunk after a forward sequential `read`
+  (conservative: at most one subsequent chunk / ≤512KiB). Default **on**.
+  `chunkforge mount --no-prefetch` disables prefetch (≡ 0.9.0 on-demand `get`).
+  Seek / cross-file / backward / non-contiguous reads cold-start the window.
+  Still **RO**; does not change `ChunkSource`/`ChunkSink` signatures. Docs:
   `docs/mount.md`.
-- **Phase 10 M6 P1 O1**: `verify` / `doctor` **`--format text|json`** (default
-  **text** ≡ 0.9.0 stderr/stdout behaviour). JSON: one object on stdout
+- **1.0 stability freeze** (Phase 10 M3): `docs/stability.md` — frozen surface
+  (`.cfidx`/`.cfdir` v1 bytes, `ChunkSource`/`ChunkSink` signatures, loose CAS +
+  HTTP layout, CLI defaults vs 0.9.0, mount prefetch default), breaking-change
+  policy, promises / non-promises. README: Phase 10 / **1.0.0** status,
+  **Non-goals (Phase 10 / 1.0)**.
+- **Compat gate + prefetch demo** (Phase 10 M4): `scripts/check_compat_1_0.sh`
+  (key CLI flags, no `aws-sdk`, fuse prefetch lib tests, demo subset) and
+  `scripts/demo_mount_prefetch.sh` (get-count unit tests; optional real mount).
+- **`verify` / `doctor --format text|json`** (Phase 10 M6 / P1 **O1**): default
+  **text** ≡ 0.9.0 stderr/stdout behaviour. JSON: one object on stdout
   (`verify`: `ok`/`kind`/`bytes|files`/`chunks`; `doctor`: `ok`/`listings`/
-  `checked`/`missing`/`deep`/`retries`; missing ids only inside JSON, not
-  duplicated as bare stdout lines). Exit codes format-independent. Shared
-  `CliFormat` (renamed from `DiffFormat`; `diff --format` unchanged). See
-  `docs/doctor-gc.md`.
+  `checked`/`missing`/`deep`/`retries`; missing ids only inside JSON). Exit
+  codes format-independent. Shared `CliFormat` (renamed from `DiffFormat`;
+  `diff --format` unchanged). See `docs/doctor-gc.md`.
+- Workspace version **1.0.0** (Phase 10 M7 closeout).
+
+### Not delivered / deferred (Phase 10)
+
+- **P1 O2** `extract --skip-trust-mtime` — not delivered
+- **P1 O3** `mount --prefetch-chunks N` — not delivered (fixed conservative
+  prefetch; only `--no-prefetch` ship)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+
+### Compatibility
+
+- CLI defaults match **0.9.0**: `jobs=1`, `http-retries=0`, SigV4 **off**,
+  `diff` default **text**, `extract` without `--skip-unchanged` / `--dry-run`
+  ≡ full / conflict semantics of 0.9.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- `--no-prefetch` restores 0.9.0 on-demand mount get behaviour
 
 ## [0.9.0] — 2026-09-29
 
@@ -453,6 +482,10 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.0.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.0.0
+[0.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.9.0
+[0.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.8.0
+[0.7.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.4.0
