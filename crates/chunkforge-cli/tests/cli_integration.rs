@@ -18051,3 +18051,173 @@ fn filter_path_subset_verify_green_narrower_ref_set_no_prune() {
         "gc --help must still have no --path (filter does not add gc --path):\n{gh}"
     );
 }
+
+// --- Phase25-M1: chunkforge ls skeleton + decode ---
+
+#[test]
+fn ls_help_exists_and_lists_ls() {
+    let top = run_ok(&["--help"]);
+    let top_s = String::from_utf8_lossy(&top.stdout);
+    assert!(
+        top_s.contains("ls"),
+        "top-level --help should list ls:\n{top_s}"
+    );
+
+    let help = run_ok(&["ls", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("LISTING")
+            || s.contains("listing")
+            || s.contains(".cfidx")
+            || s.contains(".cfdir"),
+        "ls --help should describe listing input:\n{s}"
+    );
+    assert!(
+        s.contains("--path")
+            && s.contains("--path-from")
+            && s.contains("--exclude")
+            && s.contains("--exclude-from"),
+        "ls --help should list path 四件套:\n{s}"
+    );
+    assert!(
+        s.contains("kind") && s.contains("path"),
+        "ls --help should nail text line format kind\\tpath:\n{s}"
+    );
+    // Help prose nail: ls ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("mount")
+            && lower.contains("extract")
+            && lower.contains("verify")
+            && lower.contains("pack")
+            && lower.contains("filter"),
+        "ls --help must nail ≠ mount / extract / verify / pack / filter:\n{s}"
+    );
+    assert!(
+        lower.contains("does not") && (lower.contains("store") || lower.contains("open a store")),
+        "ls --help should stress no store open:\n{s}"
+    );
+}
+
+#[test]
+fn ls_cfdir_prints_paths() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["ls", listing.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "ls .cfdir must print at least one path line; stdout={stdout}"
+    );
+    for line in &lines {
+        let parts: Vec<&str> = line.split('\t').collect();
+        assert_eq!(
+            parts.len(),
+            2,
+            "each ls line must be kind\\tpath; got {line:?}"
+        );
+        assert!(
+            matches!(parts[0], "file" | "dir" | "symlink"),
+            "kind must be file|dir|symlink; got {line:?}"
+        );
+    }
+    let joined = lines.join("\n");
+    assert!(
+        joined.contains("file\tpkgs/foo/a.txt"),
+        "ls must show pkgs/foo/a.txt; stdout={stdout}"
+    );
+    assert!(
+        joined.contains("file\tpkgs/bar/b.txt"),
+        "ls must show pkgs/bar/b.txt; stdout={stdout}"
+    );
+    assert!(
+        joined.contains("symlink\tpkgs/foo/link.txt"),
+        "ls must show symlink pkgs/foo/link.txt; stdout={stdout}"
+    );
+    // Pure listing: no store arg required / no store open needed.
+    assert!(
+        out.status.success(),
+        "ls .cfdir without --store must succeed"
+    );
+}
+
+#[test]
+fn ls_cfidx_prints_logical_path() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["ls", idx.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "ls .cfidx must print exactly one logical path; stdout={stdout}"
+    );
+    assert_eq!(
+        lines[0], "file\thello",
+        "ls .cfidx should emit file\\t<stem>; stdout={stdout}"
+    );
+}
+
+#[test]
+fn ls_cfidx_rejects_path_flags() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("blob.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&["ls", "--path", "pkgs/foo", idx.to_str().unwrap()]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx") || err.contains("CFIDX"),
+        "ls .cfidx + --path must be clear non-zero; stderr={err}"
+    );
+
+    let fail2 = run_fail(&["ls", "--exclude", "*.o", idx.to_str().unwrap()]);
+    let err2 = String::from_utf8_lossy(&fail2.stderr);
+    assert!(
+        err2.contains("cfidx") || err2.contains(".cfidx") || err2.contains("CFIDX"),
+        "ls .cfidx + --exclude must be clear non-zero; stderr={err2}"
+    );
+}

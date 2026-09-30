@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / store (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / ls / store (+ chunk-id debug).
 
 mod bytesize;
 mod parallel;
@@ -36,7 +36,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / store)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / ls / store)",
     long_about = None
 )]
 struct Cli {
@@ -1140,6 +1140,54 @@ enum Commands {
         input: PathBuf,
     },
 
+    /// List paths in a `.cfidx` / `.cfdir` listing (inventory only)
+    ///
+    /// Magic-dispatches like `mount` / `verify`: `.cfidx` → one logical file path
+    /// (stem without `.cfidx`, same naming as mount); `.cfdir` → every **File** /
+    /// **Dir** / **Symlink** entry present in the listing. Default text inventory:
+    /// one `kind\tpath` line per entry on stdout (`file`, `dir`, or `symlink`).
+    /// Entries are printed in path lexicographic order. **Does not** open a store,
+    /// fetch chunks, mount, extract, verify hashes, or write a new listing.
+    ///
+    /// Optional path 四件套 (`--path` / `--path-from` / `--exclude` /
+    /// `--exclude-from`) scopes a `.cfdir` via the same [`PathFilter`] /
+    /// [`filter_dir_archive`] rules as mount/filter (empty ≡ full listing).
+    /// `.cfidx` + any path/exclude flag → clear non-zero error (same contract as
+    /// mount/verify/filter-on-cfidx). **≠** mount / **≠** extract / **≠** verify /
+    /// **≠** pack / **≠** filter (read-only inventory; does not persist a subset).
+    /// JSON / `--chunks` / richer columns land in a later milestone — M1 is decode
+    /// + path lines only.
+    Ls {
+        /// Include only `.cfdir` paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (full listing).
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude `.cfdir` paths matching this pattern (repeatable): exact,
+        /// trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
+        /// Read include path prefixes from a UTF-8 file (repeatable). One prefix
+        /// per line (same rules as `--path`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--path` (OR) into one `PathFilter`.
+        /// May combine with `--exclude` / `--exclude-from`. Unreadable file or
+        /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
+        #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        path_from: Vec<PathBuf>,
+        /// Input `.cfidx` or `.cfdir`
+        listing: PathBuf,
+    },
+
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -1813,6 +1861,20 @@ fn run() -> Result<()> {
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
             cmd_filter(&input, &output, &path_filter, dry_run, force, format)
+        }
+
+        Commands::Ls {
+            paths,
+            excludes,
+            exclude_from,
+            path_from,
+            listing,
+        } => {
+            let paths = merged_paths(&paths, &path_from)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
+            cmd_ls(&listing, &path_filter)
         }
 
         Commands::Store {
@@ -3537,6 +3599,70 @@ fn write_cfdir_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp_path);
     }
     write_result
+}
+
+/// Default logical blob name for `.cfidx` inventory (strip trailing `.cfidx`).
+/// Same naming as mount's default blob file (without requiring the fuse crate).
+fn ls_blob_name(index_path: &Path) -> String {
+    let file_name = index_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("blob");
+    match file_name.strip_suffix(".cfidx") {
+        Some(stem) if !stem.is_empty() => stem.to_string(),
+        Some(_) => "blob".to_string(), // bare ".cfidx"
+        None if file_name.is_empty() => "blob".to_string(),
+        None => file_name.to_string(),
+    }
+}
+
+/// Inventory a `.cfidx` / `.cfdir` listing (decode only; **never** opens a store).
+///
+/// Text lines: `kind\tpath` (`file` / `dir` / `symlink`). `.cfdir` entries are
+/// path-sorted; `.cfidx` emits one `file\t<stem>` line. Path flags scope `.cfdir`
+/// via [`filter_dir_archive`]; `.cfidx` + any path flag → clear non-zero.
+/// **≠** mount / **≠** extract / **≠** verify / **≠** pack / **≠** filter.
+fn cmd_ls(listing: &Path, path_filter: &PathFilter) -> Result<()> {
+    let filter_active = !path_filter.paths().is_empty() || !path_filter.excludes().is_empty();
+    match peek_listing_kind(listing)? {
+        ListingKind::Index => {
+            if filter_active {
+                bail!(
+                    "--path/--path-from/--exclude applies to `.cfdir` File entries; {} looks like a `.cfidx` (use without path flags for full single-blob inventory)",
+                    listing.display()
+                );
+            }
+            let index = load_index(listing)?;
+            index
+                .validate()
+                .map_err(|e| anyhow::anyhow!("index structure {}: {e}", listing.display()))?;
+            let name = ls_blob_name(listing);
+            println!("file\t{name}");
+            Ok(())
+        }
+        ListingKind::DirArchive => {
+            let arch = load_dir_archive(listing)?;
+            arch.validate()
+                .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", listing.display()))?;
+            // Empty PathFilter ≡ full listing; otherwise same keep rules as mount/filter.
+            let arch = filter_dir_archive(&arch, path_filter);
+            let mut rows: Vec<(String, String)> = Vec::with_capacity(arch.entries.len());
+            for entry in &arch.entries {
+                let kind = match &entry.kind {
+                    DirEntryKind::File { .. } => "file",
+                    DirEntryKind::Dir { .. } => "dir",
+                    DirEntryKind::Symlink { .. } => "symlink",
+                };
+                rows.push((entry.path.clone(), kind.to_string()));
+            }
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut out = std::io::stdout().lock();
+            for (path, kind) in rows {
+                writeln!(out, "{kind}\t{path}")?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Load a `.cfdir` for `diff` (reject `.cfidx` / bad magic).
