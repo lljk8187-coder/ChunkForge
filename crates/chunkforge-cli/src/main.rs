@@ -78,6 +78,12 @@ enum Commands {
             value_parser = parse_cli_compression
         )]
         compression: Option<Compression>,
+        /// Emit `progress: op=make done=N/TOTAL` on stderr.
+        /// Granularity: single input file → TOTAL=1, one tick when the file is
+        /// fully chunked and indexed (default off ≡ 1.6.0). Orthogonal to
+        /// `--format json`.
+        #[arg(long = "progress")]
+        progress: bool,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -275,6 +281,11 @@ enum Commands {
         /// Unreadable file or illegal pattern → clear non-zero error.
         #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
         exclude_from: Vec<PathBuf>,
+        /// Emit `progress: op=extract done=N/TOTAL` on stderr per filtered File
+        /// (PathFilter after; includes skip-unchanged judgments; default off ≡
+        /// 1.6.0). Orthogonal to `--format json` and `--jobs`.
+        #[arg(long = "progress")]
+        progress: bool,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     ///
@@ -861,6 +872,7 @@ fn run() -> Result<()> {
             chunk_size,
             format,
             compression,
+            progress,
         } => cmd_make(
             &store,
             &output,
@@ -868,6 +880,7 @@ fn run() -> Result<()> {
             chunk_size.as_deref(),
             format,
             compression,
+            progress,
         ),
         Commands::Archive {
             store,
@@ -920,6 +933,7 @@ fn run() -> Result<()> {
             paths,
             excludes,
             exclude_from,
+            progress,
         } => {
             let jobs = parse_jobs(jobs)?;
             let excludes = merged_excludes(&excludes, &exclude_from)?;
@@ -938,6 +952,7 @@ fn run() -> Result<()> {
                     true,
                     format,
                     &path_filter,
+                    progress,
                 )
             } else {
                 let src = open_chunk_source(
@@ -959,6 +974,7 @@ fn run() -> Result<()> {
                     false,
                     format,
                     &path_filter,
+                    progress,
                 )
             }
         }
@@ -1466,6 +1482,7 @@ fn cmd_make(
     chunk_size: Option<&str>,
     format: CliFormat,
     compression: Option<Compression>,
+    progress: bool,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
@@ -1473,6 +1490,13 @@ fn cmd_make(
 
     let chunks = chunk_bytes(&data, &params);
     let blob_blake3 = ChunkId::hash(&data);
+
+    // Progress granularity (Phase17-M4 / G4): make always processes exactly one
+    // input file → TOTAL=1 and a single tick after the file is fully chunked,
+    // stored, and indexed. (Per-chunk ticks were considered; 1/1 keeps the
+    // unit aligned with the CLI's single-file contract and avoids empty-file
+    // TOTAL=0 edge cases.)
+    let prog = ProgressReporter::new(progress, "make", Some(1));
 
     let mut entries = Vec::with_capacity(chunks.len());
     let mut new_chunks = 0usize;
@@ -1523,6 +1547,8 @@ fn cmd_make(
         .map_err(|e| anyhow::anyhow!("write index: {e}"))?;
     file.sync_all()
         .with_context(|| format!("fsync index {}", output.display()))?;
+
+    prog.tick();
 
     match format {
         CliFormat::Text => {
@@ -3019,6 +3045,7 @@ fn cmd_extract(
     dry_run: bool,
     format: CliFormat,
     path_filter: &PathFilter,
+    progress: bool,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -3042,6 +3069,7 @@ fn cmd_extract(
             skip_trust_mtime,
             format,
             path_filter,
+            progress,
         );
     }
 
@@ -3063,6 +3091,15 @@ fn cmd_extract(
     let mut file_count = 0usize;
     let mut dir_count = 0usize;
     let mut skipped_count = 0usize;
+
+    // Progress: per filtered File (PathFilter after; includes skip-unchanged
+    // judgments). Dir entries are not counted. TOTAL known up front.
+    let file_total = archive
+        .entries
+        .iter()
+        .filter(|e| path_filter.allows(&e.path) && matches!(e.kind, DirEntryKind::File { .. }))
+        .count();
+    let prog = ProgressReporter::new(progress, "extract", Some(file_total));
 
     // Phase 13 M3: read full listing; only materialize matching File + Dir
     // entries (parents of written files via create_dir_all). Unmatched paths
@@ -3115,6 +3152,7 @@ fn cmd_extract(
                             // Match takes priority over --force: leave file untouched
                             // (no chunk get, no write, no mode change).
                             skipped_count += 1;
+                            prog.tick();
                             continue;
                         }
                         UnchangedVerdict::Missing => {
@@ -3213,6 +3251,7 @@ fn cmd_extract(
                 }
                 apply_file_mode(&dest, *mode)?;
                 file_count += 1;
+                prog.tick();
             }
         }
     }
@@ -3258,6 +3297,7 @@ fn cmd_extract(
 /// presence only (`would_write` vs `would_fail`). With skip: only read local
 /// dests for size+BLAKE3 judgment. Exit **0** when listing is valid (even if
 /// `would_fail > 0`).
+#[allow(clippy::too_many_arguments)]
 fn cmd_extract_dry_run(
     archive: &DirArchive,
     out_dir: &Path,
@@ -3266,6 +3306,7 @@ fn cmd_extract_dry_run(
     skip_trust_mtime: bool,
     format: CliFormat,
     path_filter: &PathFilter,
+    progress: bool,
 ) -> Result<()> {
     // Refuse only when the named output root already exists as a file — same
     // hard gate as real extract; we still create/modify nothing.
@@ -3280,6 +3321,14 @@ fn cmd_extract_dry_run(
     let mut would_write = 0usize;
     let mut would_dirs = 0usize;
     let mut would_fail = 0usize;
+
+    // Same File-unit progress as real extract (PathFilter after; Dir not counted).
+    let file_total = archive
+        .entries
+        .iter()
+        .filter(|e| path_filter.allows(&e.path) && matches!(e.kind, DirEntryKind::File { .. }))
+        .count();
+    let prog = ProgressReporter::new(progress, "extract", Some(file_total));
 
     for entry in &archive.entries {
         if !path_filter.allows(&entry.path) {
@@ -3345,6 +3394,7 @@ fn cmd_extract_dry_run(
                 } else {
                     would_write += 1;
                 }
+                prog.tick();
             }
         }
     }

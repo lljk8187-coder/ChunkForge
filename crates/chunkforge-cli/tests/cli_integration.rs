@@ -11393,3 +11393,310 @@ fn archive_progress_counts_filtered_files_only() {
         "excluded file must not inflate TOTAL; stderr={err}"
     );
 }
+
+// --- Phase 17 M4: extract / make --progress ---
+
+#[test]
+fn extract_and_make_help_list_progress() {
+    for cmd in ["extract", "make"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--progress"),
+            "{cmd} --help must list --progress:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn make_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("blob.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"make progress payload bytes").unwrap();
+
+    let with = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--progress",
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=make done=")),
+        "make --progress stderr must contain progress: op=make; stderr={err}"
+    );
+    // Granularity: single input file → TOTAL=1
+    assert!(
+        err.contains("done=1/1"),
+        "make progress should be 1/1 (single-file unit); stderr={err}"
+    );
+    assert!(
+        err.contains("make: wrote"),
+        "text summary still on stderr; stderr={err}"
+    );
+
+    let store2 = dir.path().join("store2");
+    let idx2 = dir.path().join("blob2.cfidx");
+    let without = run_ok(&[
+        "make",
+        "--store",
+        store2.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "make without --progress must not emit progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn make_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("blob.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"make json progress").unwrap();
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--progress",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("make json");
+    assert_eq!(v["ok"].as_bool(), Some(true), "{v}");
+    assert!(
+        !stdout.contains("progress:"),
+        "progress must not land on stdout with --format json; stdout={stdout}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("progress: op=make done=")),
+        "progress on stderr with json; stderr={stderr}"
+    );
+}
+
+#[test]
+fn extract_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    let out = dir.path().join("out");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"extract progress a").unwrap();
+    fs::write(src.join("sub/b.txt"), b"extract progress b").unwrap();
+    fs::write(src.join("c.txt"), b"extract progress c").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--progress",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=extract done=")),
+        "extract --progress stderr must contain progress: op=extract; stderr={err}"
+    );
+    assert!(
+        err.contains("done=3/3") || err.lines().any(|l| l.contains("done=") && l.contains("/3")),
+        "extract progress TOTAL should be filtered File count (3); stderr={err}"
+    );
+
+    let out2 = dir.path().join("out2");
+    let without = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out2.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "extract without --progress must not emit progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn extract_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"json extract a").unwrap();
+    fs::write(src.join("b.txt"), b"json extract b").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--progress",
+        "--format",
+        "json",
+        cfdir.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("extract json");
+    assert_eq!(v["ok"].as_bool(), Some(true), "{v}");
+    assert!(
+        !stdout.contains("progress:"),
+        "progress must not land on stdout with --format json; stdout={stdout}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("progress: op=extract done=")),
+        "progress on stderr with json; stderr={stderr}"
+    );
+}
+
+#[test]
+fn extract_progress_counts_filtered_files_only() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"keep a").unwrap();
+    fs::write(src.join("keep/b.txt"), b"keep b").unwrap();
+    fs::write(src.join("skip/c.txt"), b"skip c").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        dir.path().join("out").to_str().unwrap(),
+        "--progress",
+        "--path",
+        "keep",
+        "--dry-run",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=extract done=")),
+        "dry-run --progress should still tick; stderr={err}"
+    );
+    assert!(
+        err.contains("/2"),
+        "TOTAL should be PathFilter-kept Files (2), not 3; stderr={err}"
+    );
+    assert!(
+        !err.contains("/3"),
+        "excluded file must not inflate TOTAL; stderr={err}"
+    );
+}
+
+#[test]
+fn extract_progress_ticks_skip_unchanged() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"skip-unchanged a").unwrap();
+    fs::write(src.join("b.txt"), b"skip-unchanged b").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    // First extract materializes.
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    // Second with --skip-unchanged should still tick per File judgment.
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--skip-unchanged",
+        "--progress",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=extract done=")),
+        "skip-unchanged judgments must tick; stderr={err}"
+    );
+    assert!(
+        err.contains("done=2/2") || err.lines().any(|l| l.contains("done=") && l.contains("/2")),
+        "TOTAL=2 for two Files; stderr={err}"
+    );
+    assert!(
+        err.contains("skipped=2"),
+        "both files should skip; stderr={err}"
+    );
+}
