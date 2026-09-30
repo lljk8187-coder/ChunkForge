@@ -244,7 +244,7 @@ With `--force`:
 
 
 
-## Disk zstd / `--progress` (Phase 17 / 1.7)
+## Disk zstd / `--progress` (Phase 17 / 1.7.0)
 
 Opt-in **`--compression none|zstd`** on `archive` (and `make`) applies only when
 **creating** a new `--store` (`meta.toml` absent). Omit ≡ **`none`** ≡ 1.6.

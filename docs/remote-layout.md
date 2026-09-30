@@ -31,7 +31,7 @@ chunks/<H[0..2]>/<H[2..]>.cnk
 ```
 
 Hash is always over **plaintext**. With `Compression::None`, the `.cnk` file bytes
-are the plaintext. With create-time **`--compression zstd`** (Phase 17 / 1.7
+are the plaintext. With create-time **`--compression zstd`** (Phase 17 / 1.7.0
 opt-in; default **none** ≡ 1.6), local `.cnk` files may hold zstd-encoded
 payloads, but **`Store::get` / `ChunkSource::get` still return plaintext**, and
 HTTP GET/PUT bodies remain **plaintext** (push decodes before PUT). Disk zstd
@@ -286,7 +286,7 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
-## Disk zstd ≠ wire compression ≠ pack (Phase 17 / 1.7)
+## Disk zstd ≠ wire compression ≠ pack (Phase 17 / 1.7.0)
 
 | Layer | Contract |
 |---|---|
@@ -297,7 +297,7 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 
 `--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 
-## Explicit non-goals (this layout / Phase 3–17 / through 1.7)
+## Explicit non-goals (this layout / Phase 3–17 / through 1.7.0)
 
 | Non-goal | Status |
 |---|---|

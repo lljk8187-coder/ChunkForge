@@ -7,33 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 17 in progress toward **1.7.0** (workspace / CLI still **1.6.0** until
-M7). Delivered through M6: create-time `--compression none|zstd` (default
+Nothing yet.
+
+## [1.7.0] — 2026-09-30
+
+Phase 17 closeout — CLI create-time `--compression none|zstd` (default
 **none** ≡ 1.6); `archive` / `extract` / `make --progress` (default off);
-docs + `demo_zstd_progress.sh`; **`check_compat_1_6.sh`**; P1 CacheSource
+docs + `demo_zstd_progress.sh`; `check_compat_1_6.sh`; P1 CacheSource
 observation counters (`hits` / `miss_fills` / `miss_refused` — **≠** LRU).
-**Unreleased / deferred:** `cat` / `verify --progress`; version bump + tag
-**1.7.0** (M7). No pack / write mount / aws-sdk / prune / LRU / default zstd /
-wire compression.
+Defaults remain ≡ **1.6.0**. No pack / write mount / aws-sdk / remote scrub /
+extract prune / bidirectional sync / push listing / LRU / store trim /
+**default** zstd / HTTP wire compression. P1 `cat`/`verify --progress` not
+delivered.
 
 ### Added
 
-- **`scripts/check_compat_1_6.sh`** (Phase 17 M6 / G6): calls
-  `check_compat_1_5.sh`, then asserts `make`/`archive --help` contain
-  `--compression` and `archive`/`extract`/`make --help` contain `--progress`;
-  re-asserts thin non-goals (no `--delete` / pack / LRU / aws-sdk); asserts
-  `demo_zstd_progress.sh` present + executable. Does **not** treat absolute
-  perf as CI SLA; does **not** force-run the long demo. Keeps
-  `check_compat_1_0`…`1_5` / `demo_*` independently runnable.
-- **CacheSource observation counters** (Phase 17 M6 P1 / O1): atomic
-  `hits` / `miss_fills` / `miss_refused` on `get` path; exposed via
-  `hits()` / `miss_fills()` / `miss_refused()` getters. Soft budget remains
-  refuse-fill — counters are **not** LRU / trim.
+- **CLI create-time `--compression none|zstd`** (Phase 17 M1–M2): on `make` /
+  `archive`; omit ≡ **`none`** ≡ 1.6 create. Applied when `meta.toml` is
+  absent; existing stores open by meta (explicit conflict → clear non-zero).
+  `chunkforge-cli` enables the store `zstd` feature. Disk encoding is **not**
+  HTTP Content-Encoding / wire compression and **not** pack — `get` / HTTP PUT
+  bodies stay **plaintext**.
+- **`archive` / `extract` / `make --progress`** (Phase 17 M3–M4): reuse
+  `ProgressReporter`; stderr `progress: op=archive|extract|make done=N/TOTAL`;
+  orthogonal to `--format json` (JSON → stdout). Default **off** ≡ 1.6.
+- **Docs + `demo_zstd_progress.sh`** (Phase 17 M5): ops-json / stability /
+  perf / remote-layout / archive / extract; smoke for zstd create +
+  archive/extract/make `--progress` + default-none path.
+- **`check_compat_1_6.sh` + 1.6 regression gate** (Phase 17 M6 / G6): runs
+  `check_compat_1_5.sh` (keeps 1_0…1_5 independently runnable), then asserts
+  `make`/`archive --help` contain `--compression` and
+  `archive`/`extract`/`make --help` contain `--progress`; thin non-goals: no
+  `--delete`/prune, no pack, no `--cache-lru` / `store trim`, no `aws-sdk` in
+  `Cargo.lock`. Asserts `demo_zstd_progress.sh` present + executable (does
+  not force-run). No absolute perf SLA.
+- **P1 CacheSource observation counters** (Phase 17 M6 / O1): atomic `hits` /
+  `miss_fills` / `miss_refused` on `get` path; exposed via getters. Soft
+  budget remains refuse-fill — counters are **not** LRU / trim.
+- Workspace version **1.7.0** (Phase 17 M7 closeout).
 
-### Not delivered (still Unreleased)
+### Not delivered / deferred (Phase 17)
 
-- **`cat` / `verify --progress`** — P1 O3 deferred (schedule).
-- Workspace / CLI version bump + annotated tag **1.7.0** — M7.
+- **`cat` / `verify --progress`** — P1 O3 **not** delivered (schedule)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.6.0**: create compression **none**; no `--progress`
+  ⇒ quiet stderr on archive/extract/make; no `--fallback` ⇒ single origin; no
+  `--cache-max-bytes` ⇒ unbounded cache fill; plain integer cache-max still
+  accepted; no `--decode` ⇒ zstd stats stay cheap; no diff path flags ⇒ full
+  listing; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  mount prefetch depth **1** ≡ 1.6.0 / 1.5.0 / …
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged; disk zstd orthogonal to
+  HTTP plaintext body; no silent break of 1.6.0 behaviour
 
 ## [1.6.0] — 2026-09-29
 
@@ -913,6 +952,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.7.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.7.0
 [1.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.6.0
 [1.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.5.0
 [1.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.4.0

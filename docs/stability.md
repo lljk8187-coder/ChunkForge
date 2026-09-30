@@ -35,15 +35,14 @@ integers still accepted ≡ 1.5), **`store stats` `bytes_plaintext`** (+ opt-in
 force full-store `get`; no diff path flags ⇒ full listing). The workspace
 reports **1.6.0**.
 
-**1.7.0** (Phase 17) adds further **opt-in** only: create-time
+**1.7.0** adds further **opt-in** only: create-time
 **`--compression none|zstd`** on `make` / `archive` (default **omit ≡ `none`**
 ≡ 1.6 create), and **`archive` / `extract` / `make --progress`** (default
 **off** ≡ 1.6). Disk zstd is orthogonal to HTTP **plaintext** PUT/GET bodies
 and is **not** pack / wire Content-Encoding / LRU. Defaults stay ≡ **1.6.0**
 (no compression flag ⇒ create `none`; no `--progress` ⇒ quiet stderr; jobs=1,
 retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
-origin). Workspace / CLI version remains **1.6.0** until the Phase 17 closeout
-bump (M7); narrative target is **1.7.0**.
+origin). The workspace reports **1.7.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -115,7 +114,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **Phase17 / 1.7.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |

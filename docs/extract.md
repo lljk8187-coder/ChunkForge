@@ -158,7 +158,7 @@ chunkforge extract --store ./store -o /tmp/out \
 
 
 
-## `--progress` / disk zstd note (Phase 17 / 1.7)
+## `--progress` / disk zstd note (Phase 17 / 1.7.0)
 
 `extract --progress` (default **off** ≡ 1.6) writes
 `progress: op=extract …` to **stderr** only; JSON field shapes in

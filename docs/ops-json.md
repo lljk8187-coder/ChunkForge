@@ -111,8 +111,13 @@ Phase 16 / **1.6.0** adds `--fallback`, human byte suffixes on
 opt-in; defaults ≡ 1.5). Gated by **`check_compat_1_5.sh`** (calls 1_4; no
 absolute perf SLA). Workspace reports **1.6.0**. Smoke:
 [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
+Phase 17 / **1.7.0** adds create-time `--compression` and
+`archive`/`extract`/`make --progress` (all opt-in; defaults ≡ 1.6; see
+sections below). Gated by **`check_compat_1_6.sh`** (calls 1_5; no absolute
+perf SLA). Workspace reports **1.7.0**. Smoke:
+[`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 
-## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7)
+## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7.0)
 
 Opt-in **`--progress`** (default **off** ≡ 1.6) on long ops emits
 `progress: op=… done=N/TOTAL` lines on **stderr** only. It does **not** add,
@@ -123,7 +128,7 @@ stderr. Exit codes remain format-independent.
 Coverage today: `push` / `pull` / `store scrub` / `gc --apply` (Phase 12+) plus
 **`archive` / `extract` / `make`** (Phase 17). Default off ≡ prior minor.
 
-## Store compression narrative (Phase 17 / 1.7)
+## Store compression narrative (Phase 17 / 1.7.0)
 
 CLI **`--compression none|zstd`** (on **`make`** / **`archive`**) applies only
 when **creating** a new local store (`meta.toml` absent). Omit ≡ **`none`**
