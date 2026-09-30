@@ -21,7 +21,7 @@ mod path;
 mod path_filter;
 mod seed;
 
-pub use diff::{DiffReport, diff_dir_archives};
+pub use diff::{DiffReport, diff_dir_archives, diff_dir_archives_with_progress};
 pub use dir::{
     DIR_FORMAT_VERSION_V1, DIR_HEADER_SIZE, DIR_MAGIC_PREFIX, DIR_MAGIC_V1, DIR_MAJOR_V1,
     DirArchive, DirEntry, DirEntryKind, KIND_DIR, KIND_FILE,

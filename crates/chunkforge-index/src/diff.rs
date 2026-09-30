@@ -39,7 +39,21 @@ pub struct DiffReport {
 /// - Chunk stats: unique chunk ids from all File entries on each side.
 ///
 /// Path vectors are sorted for determinism.
+///
+/// Equivalent to [`diff_dir_archives_with_progress`] with a no-op progress hook.
 pub fn diff_dir_archives(left: &DirArchive, right: &DirArchive) -> DiffReport {
+    diff_dir_archives_with_progress(left, right, || {})
+}
+
+/// Like [`diff_dir_archives`], but invokes `on_path` once per filtered **File**
+/// path in the union of both sides (Dir-only entries are ignored, matching
+/// [`file_map`]). Tick count equals `|left∪right|` File paths — never a
+/// post-hoc empty spin over TOTAL.
+pub fn diff_dir_archives_with_progress(
+    left: &DirArchive,
+    right: &DirArchive,
+    mut on_path: impl FnMut(),
+) -> DiffReport {
     let left_files = file_map(left);
     let right_files = file_map(right);
 
@@ -48,30 +62,28 @@ pub fn diff_dir_archives(left: &DirArchive, right: &DirArchive) -> DiffReport {
     let mut changed = Vec::new();
     let mut meta_changed = Vec::new();
 
-    for path in left_files.keys() {
-        if !right_files.contains_key(path) {
-            removed.push((*path).to_owned());
-        }
-    }
-    for path in right_files.keys() {
-        if !left_files.contains_key(path) {
-            added.push((*path).to_owned());
-        }
-    }
+    // Union of File paths (Dir-only already excluded by file_map).
+    let mut union: HashSet<&str> = left_files.keys().copied().collect();
+    union.extend(right_files.keys().copied());
 
-    for (path, left_entry) in &left_files {
-        let Some(right_entry) = right_files.get(path) else {
-            continue;
-        };
-        let (l_mode, l_size, l_mtime, l_blake3) = file_meta(left_entry);
-        let (r_mode, r_size, r_mtime, r_blake3) = file_meta(right_entry);
+    for path in &union {
+        on_path();
+        match (left_files.get(path), right_files.get(path)) {
+            (Some(_), None) => removed.push((*path).to_owned()),
+            (None, Some(_)) => added.push((*path).to_owned()),
+            (Some(left_entry), Some(right_entry)) => {
+                let (l_mode, l_size, l_mtime, l_blake3) = file_meta(left_entry);
+                let (r_mode, r_size, r_mtime, r_blake3) = file_meta(right_entry);
 
-        if l_blake3 != r_blake3 || l_size != r_size {
-            // Content differs (blake3 and/or size). Size mismatch without blake3
-            // change is still treated as content change per Phase7 §3.1.
-            changed.push((*path).to_owned());
-        } else if l_mode != r_mode || l_mtime != r_mtime {
-            meta_changed.push((*path).to_owned());
+                if l_blake3 != r_blake3 || l_size != r_size {
+                    // Content differs (blake3 and/or size). Size mismatch without blake3
+                    // change is still treated as content change per Phase7 §3.1.
+                    changed.push((*path).to_owned());
+                } else if l_mode != r_mode || l_mtime != r_mtime {
+                    meta_changed.push((*path).to_owned());
+                }
+            }
+            (None, None) => unreachable!("union path must exist on at least one side"),
         }
     }
 
@@ -339,5 +351,64 @@ mod tests {
                 "z.txt".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn with_progress_ticks_once_per_union_file_path() {
+        let left = base_archive(); // a.txt, sub/b.txt, c.txt (+ Dir "sub" ignored)
+        let right = DirArchive::new(
+            0,
+            vec![
+                single_chunk_file("a.txt", 0o644, 1_700_000_000, b"hello-v1"),
+                DirEntry {
+                    path: "sub".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                single_chunk_file("sub/b.txt", 0o644, 1_700_000_001, b"beta"),
+                // c.txt removed; new.txt added
+                single_chunk_file("new.txt", 0o644, 1, b"fresh"),
+            ],
+        )
+        .unwrap();
+
+        let mut ticks = 0usize;
+        let report = diff_dir_archives_with_progress(&left, &right, || ticks += 1);
+        // Union File paths: a.txt, sub/b.txt, c.txt, new.txt → 4
+        assert_eq!(ticks, 4, "tick once per File path in left∪right");
+        assert_eq!(report.removed, vec!["c.txt".to_string()]);
+        assert_eq!(report.added, vec!["new.txt".to_string()]);
+
+        // Empty hook must match plain diff_dir_archives.
+        let plain = diff_dir_archives(&left, &right);
+        assert_eq!(report, plain);
+    }
+
+    #[test]
+    fn with_progress_ignores_dir_only_in_total() {
+        let left = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "emptydir".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                single_chunk_file("f.txt", 0o644, 1, b"x"),
+            ],
+        )
+        .unwrap();
+        let right = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "otherdir".into(),
+                    kind: DirEntryKind::Dir { mode: 0o700 },
+                },
+                single_chunk_file("f.txt", 0o644, 1, b"x"),
+            ],
+        )
+        .unwrap();
+        let mut ticks = 0usize;
+        let _ = diff_dir_archives_with_progress(&left, &right, || ticks += 1);
+        assert_eq!(ticks, 1, "Dir-only paths must not contribute to TOTAL");
     }
 }

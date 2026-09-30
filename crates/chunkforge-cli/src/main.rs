@@ -9,7 +9,8 @@ use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
-    UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader,
+    UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives_with_progress, entry_length,
+    hash_reader,
     judge_extract_unchanged_opts, load_exclude_file, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{
@@ -804,6 +805,12 @@ enum Commands {
         /// Unreadable file or illegal pattern → clear non-zero error.
         #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
         exclude_from: Vec<PathBuf>,
+        /// Emit `progress: op=diff done=N/TOTAL` on stderr per filtered File path
+        /// in the union of both sides (TOTAL = |left∪right| File paths after
+        /// `--path`/`--exclude`). Default **off** (≡ 1.8.0 quiet). Orthogonal to
+        /// `--format json` (progress→stderr, JSON→stdout) and path filters.
+        #[arg(long = "progress")]
+        progress: bool,
         /// Left `.cfdir` (listing↔listing), or the listing `.cfdir` when `--tree` is set
         left: PathBuf,
         /// Right `.cfdir` (listing↔listing only). Must be omitted with `--tree`.
@@ -1354,6 +1361,7 @@ fn run() -> Result<()> {
             paths,
             excludes,
             exclude_from,
+            progress,
             left,
             right,
         } => {
@@ -1367,6 +1375,7 @@ fn run() -> Result<()> {
                 max_paths,
                 format,
                 &path_filter,
+                progress,
             )
         }
         Commands::Store {
@@ -2629,6 +2638,7 @@ fn cmd_diff_dispatch(
     max_paths: Option<usize>,
     format: CliFormat,
     path_filter: &PathFilter,
+    progress: bool,
 ) -> Result<()> {
     match tree {
         Some(src_dir) => {
@@ -2638,7 +2648,7 @@ fn cmd_diff_dispatch(
                     extra.display()
                 );
             }
-            cmd_diff_tree(src_dir, left, max_paths, format, path_filter)
+            cmd_diff_tree(src_dir, left, max_paths, format, path_filter, progress)
         }
         None => {
             let Some(right) = right else {
@@ -2652,9 +2662,26 @@ fn cmd_diff_dispatch(
                     "diff without --tree expects two `.cfdir` files; got a directory.                      Use: chunkforge diff --tree <src-dir> <listing.cfdir>"
                 );
             }
-            cmd_diff_listings(left, right, max_paths, format, path_filter)
+            cmd_diff_listings(left, right, max_paths, format, path_filter, progress)
         }
     }
+}
+
+/// `|left∪right|` File paths after filtering (Dir-only excluded; matches
+/// [`diff_dir_archives_with_progress`] TOTAL / tick count).
+fn diff_file_path_union_len(left: &DirArchive, right: &DirArchive) -> usize {
+    let mut paths: HashSet<&str> = left
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    for e in &right.entries {
+        if matches!(e.kind, DirEntryKind::File { .. }) {
+            paths.insert(e.path.as_str());
+        }
+    }
+    paths.len()
 }
 
 /// Narrow a listing with [`PathFilter`] before compare (empty filter ≡ identity).
@@ -2680,10 +2707,13 @@ fn cmd_diff_listings(
     max_paths: Option<usize>,
     format: CliFormat,
     path_filter: &PathFilter,
+    progress: bool,
 ) -> Result<()> {
     let left_arch = filter_dir_archive_entries(&load_cfdir_for_diff(left)?, path_filter);
     let right_arch = filter_dir_archive_entries(&load_cfdir_for_diff(right)?, path_filter);
-    let report = diff_dir_archives(&left_arch, &right_arch);
+    let total = diff_file_path_union_len(&left_arch, &right_arch);
+    let prog = ProgressReporter::new(progress, "diff", Some(total));
+    let report = diff_dir_archives_with_progress(&left_arch, &right_arch, || prog.tick());
     emit_diff_report(&report, max_paths, format)
 }
 
@@ -2694,6 +2724,7 @@ fn cmd_diff_tree(
     max_paths: Option<usize>,
     format: CliFormat,
     path_filter: &PathFilter,
+    progress: bool,
 ) -> Result<()> {
     if !src_dir.is_dir() {
         bail!(
@@ -2714,7 +2745,9 @@ fn cmd_diff_tree(
     let listing_arch = filter_dir_archive_entries(&listing_full, path_filter);
     let tree_arch = filter_dir_archive_entries(&tree_full, path_filter);
     // Documented orientation: left=tree, right=listing.
-    let report = diff_dir_archives(&tree_arch, &listing_arch);
+    let total = diff_file_path_union_len(&tree_arch, &listing_arch);
+    let prog = ProgressReporter::new(progress, "diff", Some(total));
+    let report = diff_dir_archives_with_progress(&tree_arch, &listing_arch, || prog.tick());
     emit_diff_report(&report, max_paths, format)
 }
 

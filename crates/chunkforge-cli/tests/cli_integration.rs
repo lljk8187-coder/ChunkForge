@@ -12985,3 +12985,172 @@ fn pull_dry_run_with_compression_does_not_create_store() {
         "dry-run must not create store layout"
     );
 }
+
+// --- Phase 19 M3: diff --progress ---
+
+#[test]
+fn diff_help_lists_progress() {
+    let help = run_ok(&["diff", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--progress"),
+        "diff --help must list --progress:\n{s}"
+    );
+}
+
+#[test]
+fn diff_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"diff-progress-a").unwrap();
+    fs::write(src.join("sub/b.txt"), b"diff-progress-b").unwrap();
+    fs::write(src.join("c.txt"), b"diff-progress-c").unwrap();
+
+    let left = dir.path().join("left.cfdir");
+    let right = dir.path().join("right.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        left.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        right.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "diff",
+        "--progress",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    let out = String::from_utf8_lossy(&with.stdout);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=diff done=")),
+        "diff --progress stderr must contain progress: op=diff; stderr={err}"
+    );
+    // 3 File paths in union (Dir "sub" ignored) → TOTAL=3
+    assert!(
+        err.contains("done=3/3") || err.lines().any(|l| l.contains("done=") && l.contains("/3")),
+        "diff progress TOTAL should be File path union (3); stderr={err}"
+    );
+    assert!(
+        !out.contains("progress:"),
+        "progress must not pollute stdout; stdout={out}"
+    );
+    assert!(
+        out.contains("diff:"),
+        "text summary still on stdout; stdout={out}"
+    );
+
+    let without = run_ok(&[
+        "diff",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "diff without --progress must not emit progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn diff_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"json-diff-a").unwrap();
+    fs::write(src.join("b.txt"), b"json-diff-b").unwrap();
+
+    let left = dir.path().join("left.cfdir");
+    let right = dir.path().join("right.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        left.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        right.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "diff",
+        "--format",
+        "json",
+        "--progress",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("progress: op=diff"),
+        "progress on stderr with json; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("progress:"),
+        "json stdout must not contain progress:; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("diff json invalid with --progress: {e}; stdout={stdout}"));
+    assert!(v.get("added").is_some(), "json must keep added; stdout={stdout}");
+    assert!(
+        v.get("chunks_shared").is_some(),
+        "json must keep chunks_shared; stdout={stdout}"
+    );
+}
+
+#[test]
+fn diff_tree_progress_emits_stderr() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"tree-progress-a").unwrap();
+    fs::write(src.join("b.txt"), b"tree-progress-b").unwrap();
+
+    let listing = dir.path().join("listing.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "diff",
+        "--tree",
+        src.to_str().unwrap(),
+        "--progress",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=diff done=")),
+        "diff --tree --progress stderr must contain progress: op=diff; stderr={err}"
+    );
+}
