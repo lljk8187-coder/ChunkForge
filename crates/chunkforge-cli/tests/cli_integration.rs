@@ -13291,3 +13291,218 @@ fn make_jobs_one_matches_default_and_jobs_four_cfidx() {
         out4.to_str().unwrap(),
     ]);
 }
+
+// --- Phase 20 M2: --path-from on archive/extract/push/pull/diff ---
+
+#[test]
+fn path_from_help_on_archive_extract_push_pull_diff() {
+    for cmd in ["archive", "extract", "push", "pull", "diff"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--path-from"),
+            "{cmd} --help should list --path-from:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn archive_path_from_include_matches_cli_path() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("a")).unwrap();
+    fs::create_dir_all(src.join("b")).unwrap();
+    fs::write(src.join("a").join("f.txt"), b"hello-a\n").unwrap();
+    fs::write(src.join("b").join("g.txt"), b"hello-b\n").unwrap();
+
+    let store = dir.path().join("store");
+    let via_path = dir.path().join("via_path.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        via_path.to_str().unwrap(),
+        "--path",
+        "a",
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&via_path).unwrap();
+    let arch_path = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths_cli: Vec<_> = arch_path
+        .entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(paths_cli, vec!["a/f.txt"], "cli --path; paths={paths_cli:?}");
+
+    let include = dir.path().join("include.txt");
+    fs::write(&include, "# only a\n\n  a  \n").unwrap();
+    let via_from = dir.path().join("via_from.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        via_from.to_str().unwrap(),
+        "--path-from",
+        include.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&via_from).unwrap();
+    let arch_from = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths_from: Vec<_> = arch_from
+        .entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(
+        paths_from, paths_cli,
+        "path-from must match handwritten --path; from={paths_from:?} cli={paths_cli:?}"
+    );
+
+    // Merge: CLI --path OR path-from
+    let include_b = dir.path().join("include_b.txt");
+    fs::write(&include_b, "b\n").unwrap();
+    let merged = dir.path().join("merged.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        merged.to_str().unwrap(),
+        "--path",
+        "a",
+        "--path-from",
+        include_b.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&merged).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let mut paths: Vec<_> = arch.entries.iter().map(|e| e.path.clone()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["a/f.txt".to_string(), "b/g.txt".to_string()],
+        "OR merge paths={paths:?}"
+    );
+}
+
+#[test]
+fn archive_path_from_missing_file_nonzero() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("app.cfdir");
+    let missing = dir.path().join("no-such-paths.txt");
+
+    let fail = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--path-from",
+        missing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("path file") || err.contains("cannot read") || err.contains("PathFile"),
+        "missing path-from file should be a clear non-zero error; stderr={err}"
+    );
+    assert!(!out.exists(), "must not write .cfdir on path-from error");
+}
+
+#[test]
+fn extract_push_pull_diff_path_from_missing_file_nonzero() {
+    let dir = tempdir().unwrap();
+    let missing = dir.path().join("missing-paths.txt");
+    let listing = dir.path().join("nope.cfdir");
+    let store = dir.path().join("store");
+
+    for args in [
+        vec![
+            "extract".to_string(),
+            "--store".into(),
+            store.display().to_string(),
+            "-o".into(),
+            dir.path().join("out").display().to_string(),
+            "--path-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+        vec![
+            "pull".to_string(),
+            "--store".into(),
+            store.display().to_string(),
+            "--source".into(),
+            store.display().to_string(),
+            "--path-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+        vec![
+            "push".to_string(),
+            "--store".into(),
+            store.display().to_string(),
+            "--dest".into(),
+            "http://127.0.0.1:9".into(),
+            "--path-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+        vec![
+            "diff".to_string(),
+            "--path-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+            listing.display().to_string(),
+        ],
+    ] {
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let fail = run_fail(&args_ref);
+        let err = String::from_utf8_lossy(&fail.stderr);
+        assert!(
+            err.contains("path file") || err.contains("cannot read") || err.contains("PathFile"),
+            "cmd {:?} missing path-from should fail clearly; stderr={err}",
+            args[0]
+        );
+    }
+}
+
+#[test]
+fn push_cfidx_with_path_from_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let include = dir.path().join("inc.txt");
+    fs::write(&include, "a\n").unwrap();
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        "http://127.0.0.1:9",
+        "--path-from",
+        include.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path") || err.contains("looks like a `.cfidx`") || err.contains("cfidx"),
+        "stderr should explain cfidx+path-from is invalid; stderr={err}"
+    );
+}
