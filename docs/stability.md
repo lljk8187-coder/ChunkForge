@@ -12,12 +12,12 @@ reports **1.2.0**. **1.3.0** adds further opt-in only
 (`archive`/`extract`/`pull --path`/`--exclude`, `archive --format json`,
 `check_compat_1_2`); defaults stay ≡ **1.2.0** (no path flags ⇒ full tree;
 archive format default **text**). The workspace reports **1.3.0**. **1.4.0**
-(Unreleased / Phase 14) adds further opt-in only: `store stats`/`du`
-`--format json`, `push --path`/`--exclude`/`--exclude-from`, and
-`--exclude-from` on archive/extract/pull; defaults stay ≡ **1.3.0** (no new
-flags ⇒ full reference set; jobs=1, retries=0, text, progress off). See
-[ops-json.md](ops-json.md) for the expanded matrix (incl. **archive** /
-**store stats**).
+adds further opt-in only: `store stats`/`du` `--format json`,
+`push --path`/`--exclude`/`--exclude-from`, `--exclude-from` on
+archive/extract/pull, `check_compat_1_3`; defaults stay ≡ **1.3.0** (no new
+flags ⇒ full reference set; jobs=1, retries=0, text, progress off). The
+workspace reports **1.4.0**. See [ops-json.md](ops-json.md) for the expanded
+matrix (incl. **archive** / **store stats**).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -40,8 +40,8 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--progress`, `--path` / `--exclude` / `--exclude-from`, `archive --format json`,
 `store stats`/`du`, `push --path`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, and **1.4.0** (Unreleased) are such minors: all new flags default
-off / text / jobs=1 / depth 1 / no path filter ≡ prior release.
+**1.3.0**, and **1.4.0** are such minors: all new flags default off / text /
+jobs=1 / depth 1 / no path filter ≡ prior release.
 
 ## Breaking-change policy
 
@@ -119,7 +119,8 @@ additive only.
 
 Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.0 defaults), [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
-(1.1/1.2 additive flags; calls 1_0), and
+(1.1/1.2 additive flags; calls 1_0),
 [`scripts/check_compat_1_2.sh`](../scripts/check_compat_1_2.sh)
-(1.3 path/archive flags; calls 1_1). Phase 14 gate
-`check_compat_1_3.sh` is pending (M6). No absolute perf SLA.
+(1.3 path/archive flags; calls 1_1), and
+[`scripts/check_compat_1_3.sh`](../scripts/check_compat_1_3.sh)
+(1.4 push path / store stats / exclude-from; calls 1_2). No absolute perf SLA.

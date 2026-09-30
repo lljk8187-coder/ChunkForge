@@ -5854,7 +5854,6 @@ fn store_scrub_default_format_is_text_not_json() {
     );
 }
 
-
 // --- Phase 14 M2: store stats / du + --format json ---
 
 #[test]
@@ -9312,8 +9311,7 @@ fn push_path_subset_puts_only_filtered_chunks() {
     let mirror_full = dir.path().join("mirror_full");
     fs::create_dir_all(&mirror_full).unwrap();
     let put_full = Arc::new(AtomicUsize::new(0));
-    let (base_full, _h1) =
-        spawn_put_get_store_server(mirror_full.clone(), Arc::clone(&put_full));
+    let (base_full, _h1) = spawn_put_get_store_server(mirror_full.clone(), Arc::clone(&put_full));
     let full_json = run_ok(&[
         "push",
         "--store",
@@ -9510,8 +9508,16 @@ fn push_path_dry_run_json_unique_chunks_filtered() {
     let src = dir.path().join("src");
     fs::create_dir_all(src.join("packages").join("foo")).unwrap();
     fs::create_dir_all(src.join("packages").join("bar")).unwrap();
-    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-dry-p\n").unwrap();
-    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-dry-p\n").unwrap();
+    fs::write(
+        src.join("packages").join("foo").join("a.txt"),
+        b"foo-dry-p\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("packages").join("bar").join("b.txt"),
+        b"bar-dry-p\n",
+    )
+    .unwrap();
 
     let store = dir.path().join("store");
     let listing = dir.path().join("app.cfdir");
@@ -9683,7 +9689,10 @@ fn archive_exclude_from_filters_and_merges_with_cli_exclude() {
     let bytes = fs::read(&full).unwrap();
     let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
     let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
-    assert!(paths.contains(&"skip.o"), "no flags ≡ full tree; paths={paths:?}");
+    assert!(
+        paths.contains(&"skip.o"),
+        "no flags ≡ full tree; paths={paths:?}"
+    );
     assert!(paths.contains(&"junk/noise.txt"), "paths={paths:?}");
     assert!(paths.contains(&"secret.txt"), "paths={paths:?}");
 
@@ -9714,8 +9723,16 @@ fn archive_exclude_from_filters_and_merges_with_cli_exclude() {
     );
     let bytes = fs::read(&filtered).unwrap();
     let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
-    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
-    assert_eq!(paths, vec!["a.txt".to_string()], "merged filter paths={paths:?}");
+    let paths: Vec<_> = arch
+        .entries
+        .iter()
+        .map(|e| e.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec!["a.txt".to_string()],
+        "merged filter paths={paths:?}"
+    );
 }
 
 #[test]

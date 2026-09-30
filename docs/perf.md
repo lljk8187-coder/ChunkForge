@@ -19,8 +19,8 @@ now.
 > (`scripts/bench_loose_http.sh`, 64×64KiB, jobs=1) remains near-zero RTT
 > evidence — promotion checklist condition 1 (high RTT dominant) still unmet.
 >
-> **Phase 14 / 1.4 (Unreleased) still does not implement pack.** `push --path`
-> / `store stats` / `--exclude-from` keep the loose `.cnk` layout and do not
+> **1.4.0 / Phase 14 still does not implement pack.** `push --path` /
+> `store stats` / `--exclude-from` keep the loose `.cnk` layout and do not
 > change product defaults (`jobs=1`, `retries=0`). Promotion checklist
 > condition 1 remains unmet on local stub evidence; pack stays deferred.
 

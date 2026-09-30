@@ -19,6 +19,7 @@
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
 | **Phase 13** | **1.3.0** | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2`; path **≠** prune **≠** sync; **not** pack / write mount |
+| **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -42,7 +43,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 is closed at 1.3.0**: `PathFilter` + `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + `check_compat_1_2` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
 
 ## Quick start (local CAS)
 
@@ -597,14 +598,16 @@ Details: [docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md),
 [docs/remote-layout.md](docs/remote-layout.md). Gate:
 [`scripts/check_compat_1_2.sh`](scripts/check_compat_1_2.sh).
 
-## Phase 14 / 1.4 (Unreleased): push path + store stats + exclude-from
+## Phase 14 / 1.4: push path + store stats + exclude-from
 
-Phase 14 lands **publish symmetry** and **local CAS observability** as a
-compatible **1.4.0** (not tagged yet — workspace stays **1.3.0** until M7).
-All additive / opt-in; **defaults ≡ 1.3.0** (no path/exclude/exclude-from ⇒
-full reference set; jobs=1, retries=0, text, progress off).
+Phase 14 closes **publish symmetry** and **local CAS observability** at
+**1.4.0**: opt-in **`push --path` / `--exclude`**, **`store stats`/`du`**,
+**`--exclude-from`** on archive/extract/pull/push, ops-json expand,
+`demo_push_path_store_stats`, and **`check_compat_1_3`**. All additive;
+**defaults ≡ 1.3.0** (no path/exclude/exclude-from ⇒ full reference set;
+jobs=1, retries=0, text, progress off). Workspace / CLI version is **1.4.0**.
 
-**Landed (capability surface — Unreleased):**
+**Delivered:**
 
 - **`store stats`** (alias **`du`**) + `--format text|json`: local chunk count
   + on-disk `.cnk` bytes via `Store::stats` (no plaintext decode; not GC /
@@ -619,14 +622,11 @@ full reference set; jobs=1, retries=0, text, progress off).
 - Smoke: [`scripts/demo_push_path_store_stats.sh`](scripts/demo_push_path_store_stats.sh)
   (full-tree archive → store stats json → push `--path` PUT count < full →
   `--exclude-from`; local `put_stub` only).
-
 - **Compat gate**: [`scripts/check_compat_1_3.sh`](scripts/check_compat_1_3.sh)
   — runs `check_compat_1_2.sh`, then asserts 1.4 help flags (`push --path`/
   `--exclude`, `store stats`/`du --format`, archive/extract/pull/push
   `--exclude-from`); thin no-pack / no-`--delete`; asserts
   `demo_push_path_store_stats.sh` present. No absolute perf SLA.
-
-**Still pending before 1.4.0 tag:** version bump to **1.4.0** (M7).
 
 **`path` ≠ listing upload ≠ sync / prune:**
 
@@ -636,12 +636,12 @@ full reference set; jobs=1, retries=0, text, progress off).
 | `store stats` / `du` | Observe local CAS size; **not** trim / LRU |
 | `extract --path` | Write fewer dest paths; **never** deletes extras |
 
-**Non-goals (Phase 14 / 1.4):** packfile; write mount / COW; bidirectional
-sync; extract prune / `--delete`; remote scrub; full aws-sdk / multipart /
-IMDS / SSO / ListObjects; byte-range resume; push listing upload; cache LRU;
-changing default jobs·retries·SigV4·progress; absolute perf SLA in CI; video
-analysis. Pack stance: [docs/perf.md](docs/perf.md) — **Phase 14 still does
-not implement pack**.
+**Not delivered / non-goals (carry forward):** `make`/`cat --format json`
+(P1); packfile; write mount / COW; bidirectional sync; extract prune /
+`--delete`; remote scrub; full aws-sdk / multipart / IMDS / SSO / ListObjects;
+byte-range resume; push listing upload; cache LRU; changing default
+jobs·retries·SigV4·progress; absolute perf SLA in CI; video analysis. Pack
+stance: [docs/perf.md](docs/perf.md) — **1.4.0 still does not implement pack**.
 
 ```bash
 # Phase 14 push-path + store-stats smoke (~minutes; local put_stub only)
@@ -652,12 +652,13 @@ bash scripts/demo_push_path_store_stats.sh
 # C: push --exclude-from (subset)
 
 bash scripts/check_compat_1_3.sh   # includes 1_2 → 1_1 → 1_0 + 1.4 flags
-./target/debug/chunkforge --version   # still chunkforge 1.3.0 until M7
+./target/debug/chunkforge --version   # → chunkforge 1.4.0
 ```
 
 Details: [docs/push.md](docs/push.md), [docs/ops-json.md](docs/ops-json.md),
 [docs/doctor-gc.md](docs/doctor-gc.md), [docs/stability.md](docs/stability.md),
-[docs/perf.md](docs/perf.md).
+[docs/perf.md](docs/perf.md). Gate:
+[`scripts/check_compat_1_3.sh`](scripts/check_compat_1_3.sh).
 
 ## Incremental dedup demo
 

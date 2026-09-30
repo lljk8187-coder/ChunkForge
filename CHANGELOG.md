@@ -7,18 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-29
+
+Phase 14 closeout — `Store::stats` / `store stats` (alias `du`) + json;
+`push --path`/`--exclude`; `--exclude-from` (archive/extract/pull/push);
+ops-json store-stats + push path notes; `demo_push_path_store_stats.sh`;
+`check_compat_1_3.sh`; defaults remain ≡ **1.3.0**. No pack / write mount /
+aws-sdk / remote scrub / extract prune / bidirectional sync / push listing
+upload. P1 `make`/`cat --format json` not delivered.
+
 ### Added
 
-- **Phase14-M1** (`chunkforge-store`): `Store::stats` → `StoreStats { chunks, bytes_on_disk, compression }` — aggregates via `list_chunk_ids` + per-`.cnk` `metadata().len()` (no plaintext decode).
-- **Phase14-M2** (`chunkforge-cli`): `store stats` (visible alias **`du`**) + `--format text|json` — wires `Store::open` + `stats()`. Default **text**: one stdout line `store stats: chunks=N bytes_on_disk=M compression=none|zstd`. **json**: `{ok, chunks, bytes_on_disk, compression}` on stdout; no text dual-write; exit format-independent. Read-only (no `--apply` / delete / trim / LRU). Ops matrix row in `docs/ops-json.md`; short section in `docs/doctor-gc.md`.
-- **Phase14-M3** (`chunkforge-cli`): `push --path` / `--exclude` — symmetric to pull; only matching `.cfdir` **File** entry chunk ids are uploaded (Dir never contributes; listing **not** uploaded). Default (no flags) ≡ **1.3.0** full reference set. `.cfidx` + any path/exclude → clear non-zero error (no silent full upload). Orthogonal to `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 / `--verify`. JSON field names unchanged; `unique_chunks` = filtered unique id count. See `docs/push.md`.
-- **Phase14-M4** (`chunkforge-index` + `chunkforge-cli`): `--exclude-from <file>` (repeatable) on **archive / extract / pull / push**. UTF-8, one `ExcludePat` per line; blank and `#` lines skipped; trim. File lines ∪ CLI `--exclude` → one `PathFilter` (no `ignore`/`globset`; no `--path-from`). Illegal pattern → same `invalid exclude pattern` error as `--exclude`. Unreadable / non-UTF-8 file → clear non-zero. No flags ≡ **1.3.0**.
-- **Phase14-M5** (docs + demo): `docs/ops-json.md` matrix confirms **`store stats`** (`ok`/`chunks`/`bytes_on_disk`/`compression`) + push path-filter notes (`unique_chunks`=filtered; path ≠ listing upload ≠ sync/prune; nine prior JSON field names unchanged). New smoke [`scripts/demo_push_path_store_stats.sh`](scripts/demo_push_path_store_stats.sh) (full-tree archive → store stats json → push `--path` PUT < full → `--exclude-from`; local put_stub). README **Phase 14 / 1.4** Unreleased draft; `docs/push.md` / `docs/doctor-gc.md` / `docs/stability.md` (1.4 opt-in) / `docs/perf.md` (Phase14 still no pack). Still pending: `check_compat_1_3` (M6), **1.4.0** bump (M7).
-- **Phase14-M6** (`scripts/check_compat_1_3.sh`): runs `check_compat_1_2.sh` (keeps 1_0 / 1_1 / 1_2 independently runnable), then asserts 1.4 help flags — `push --path|--exclude`; `store stats`/`du --help` + `--format`; `archive`/`extract`/`pull`/`push --exclude-from`; thin non-goals: no `--delete`/prune on extract, no pack / `--pack*` (aws-sdk covered by 1_0). Asserts `demo_push_path_store_stats.sh` exists + executable (does **not** re-run the full HTTP stub demo; 1_2 already runs `demo_path_filter`). **No** absolute perf / bench SLA. Still pending: **1.4.0** bump (M7).
+- **`Store::stats`** (Phase 14 M1): `chunkforge-store` →
+  `StoreStats { chunks, bytes_on_disk, compression }` — aggregates via
+  `list_chunk_ids` + per-`.cnk` `metadata().len()` (no plaintext decode).
+- **`store stats` / `du` + `--format text|json`** (Phase 14 M2): default
+  **text** one stdout line `store stats: chunks=N bytes_on_disk=M
+  compression=none|zstd`; **json** `{ok, chunks, bytes_on_disk, compression}`;
+  no text dual-write; exit format-independent; read-only (no `--apply` /
+  delete / trim / LRU). See `docs/ops-json.md` / `docs/doctor-gc.md`.
+- **`push --path` / `--exclude`** (Phase 14 M3): symmetric to pull; only
+  matching `.cfdir` **File** entry chunk ids uploaded (Dir never contributes;
+  listing **not** uploaded). Default (no flags) ≡ **1.3.0** full reference
+  set. `.cfidx` + any path/exclude → clear non-zero error. Orthogonal to
+  `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 /
+  `--verify`. JSON field names unchanged; `unique_chunks` = filtered unique
+  id count. See `docs/push.md`.
+- **`--exclude-from <file>`** (Phase 14 M4): repeatable on **archive /
+  extract / pull / push**. UTF-8, one `ExcludePat` per line; blank and `#`
+  lines skipped; trim. File lines ∪ CLI `--exclude` → one `PathFilter` (no
+  `ignore`/`globset`; no `--path-from`). Illegal pattern → same error as
+  `--exclude`. No flags ≡ **1.3.0**.
+- **Ops-json + `demo_push_path_store_stats`** (Phase 14 M5): `docs/ops-json.md`
+  confirms **`store stats`** row + push path-filter notes (`unique_chunks`=
+  filtered; path ≠ listing upload ≠ sync/prune). Smoke
+  `scripts/demo_push_path_store_stats.sh` (full-tree archive → store stats
+  json → push `--path` PUT < full → `--exclude-from`; local put_stub).
+  README Phase 14 / **1.4.0**; `docs/perf.md` notes **1.4.0** still does not
+  implement pack.
+- **`check_compat_1_3.sh` + 1.3 regression gate** (Phase 14 M6): runs
+  `check_compat_1_2.sh` (keeps 1_0 / 1_1 / 1_2 independently runnable), then
+  asserts 1.4 help flags (`push --path`/`--exclude`; `store stats`/`du
+  --format`; archive/extract/pull/push `--exclude-from`); thin non-goals: no
+  `--delete`/prune on extract, no pack / `--pack*`. Asserts
+  `demo_push_path_store_stats.sh` present + executable (does not re-run full
+  HTTP stub demo). No absolute perf SLA.
+- Workspace version **1.4.0** (Phase 14 M7 closeout).
 
-### Not delivered this milestone (Phase14-M6 P1)
+### Not delivered / deferred (Phase 14)
 
-- **`make --format text|json`** / **`cat --format text|json`** (P1) — **not delivered** this milestone (ops-json matrix still marks make/cat Out of scope for 1.4 P0; deferred / optional for later).
+- **`make --format text|json`** / **`cat --format text|json`** (P1) — not
+  delivered
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.3.0**: no `--path`/`--exclude`/`--exclude-from` ⇒
+  full tree / full reference set; `archive --format` default **text**;
+  `jobs=1`, `http-retries=0`, SigV4 **off**, ops commands default **text**,
+  `--progress` **off**, mount prefetch default depth **1** ≡ 1.3.0 / 1.2.0 /
+  1.1.0 / 1.0.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; push path ≠ listing upload ≠ sync; store stats ≠
+  trim; no silent break of 1.3.0 behaviour
 
 ## [1.3.0] — 2026-09-29
 
@@ -687,6 +746,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.4.0
 [1.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.3.0
 [1.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.1.0

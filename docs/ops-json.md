@@ -78,5 +78,5 @@ Flag presence for ops JSON / 1.1+ CLIs is gated by
 [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh) (calls
 `check_compat_1_0.sh`; no absolute perf SLA). Phase 13 path / `archive --format`
 flags are gated by **`check_compat_1_2.sh`** (calls 1_1; no absolute perf SLA).
-Phase 14 (`store stats`, `push --path`/`--exclude`/`--exclude-from`) will be
-gated by **`check_compat_1_3.sh`** (M6; not yet required). No absolute perf SLA.
+Phase 14 (`store stats`, `push --path`/`--exclude`/`--exclude-from`) is gated
+by **`check_compat_1_3.sh`** (calls 1_2; no absolute perf SLA).
