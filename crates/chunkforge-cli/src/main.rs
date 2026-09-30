@@ -1027,6 +1027,7 @@ fn run() -> Result<()> {
                     format,
                     &path_filter,
                     progress,
+                    None,
                 );
                 maybe_emit_cache_stats(&None, cache_stats);
                 result
@@ -1051,6 +1052,7 @@ fn run() -> Result<()> {
                     format,
                     &path_filter,
                     progress,
+                    stats.as_ref(),
                 );
                 maybe_emit_cache_stats(&stats, cache_stats);
                 result
@@ -1079,7 +1081,7 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_cat(src.as_ref(), &index, &output, jobs, format);
+            let result = cmd_cat(src.as_ref(), &index, &output, jobs, format, stats.as_ref());
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
@@ -1105,7 +1107,7 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_verify(src.as_ref(), &index, jobs, format);
+            let result = cmd_verify(src.as_ref(), &index, jobs, format, stats.as_ref());
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
@@ -1184,6 +1186,7 @@ fn run() -> Result<()> {
                 jobs,
                 http_tmpl.http_retries,
                 format,
+                stats.as_ref(),
             );
             maybe_emit_cache_stats(&stats, cache_stats);
             result
@@ -1442,6 +1445,31 @@ fn require_cache_for_stats(cache: Option<&Path>, cache_stats: bool) -> Result<()
         bail!("--cache-stats requires --cache <DIR>");
     }
     Ok(())
+}
+
+/// Additive ops-json fields from [`CacheStatsRef`] (Phase18-M3 / G3).
+///
+/// When `stats` is `Some` (`--cache` opened a [`CacheSource`]), insert
+/// `cache_hits` / `cache_miss_fills` / `cache_miss_refused`. When `None`
+/// (no `--cache`), **omit** the keys so the object shape stays the 1.7
+/// baseline. Orthogonal to `--cache-stats` (stderr) and `--progress`.
+/// Observation only — **≠** LRU / trim / eviction.
+fn apply_cache_ops_json(obj: &mut serde_json::Value, stats: Option<&CacheStatsRef>) {
+    let Some(s) = stats else {
+        return;
+    };
+    let map = obj
+        .as_object_mut()
+        .expect("ops-json summary must be a JSON object");
+    map.insert("cache_hits".to_string(), serde_json::json!(s.hits()));
+    map.insert(
+        "cache_miss_fills".to_string(),
+        serde_json::json!(s.miss_fills()),
+    );
+    map.insert(
+        "cache_miss_refused".to_string(),
+        serde_json::json!(s.miss_refused()),
+    );
 }
 
 /// Emit the one-line cache summary when `--cache-stats` was requested.
@@ -2884,6 +2912,7 @@ fn cmd_cat(
     output: &Path,
     jobs: usize,
     format: CliFormat,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let index = load_index(index_path)?;
 
@@ -2924,10 +2953,11 @@ fn cmd_cat(
             // ≡ 1.4.0: almost no stderr summary on success.
         }
         CliFormat::Json => {
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "ok": true,
                 "bytes": index.total_size,
             });
+            apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
         }
     }
@@ -3016,10 +3046,11 @@ fn cmd_verify(
     listing_path: &Path,
     jobs: usize,
     format: CliFormat,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     match peek_listing_kind(listing_path)? {
-        ListingKind::Index => cmd_verify_index(source, listing_path, jobs, format),
-        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs, format),
+        ListingKind::Index => cmd_verify_index(source, listing_path, jobs, format, cache_stats),
+        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs, format, cache_stats),
     }
 }
 
@@ -3028,6 +3059,7 @@ fn cmd_verify_index(
     index_path: &Path,
     jobs: usize,
     format: CliFormat,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let index = load_index(index_path)?;
     index
@@ -3103,11 +3135,14 @@ fn cmd_verify_index(
             );
         }
         CliFormat::Json => {
-            println!(
-                "{{\"ok\":true,\"kind\":\"cfidx\",\"bytes\":{},\"chunks\":{}}}",
-                index.total_size,
-                index.chunk_count()
-            );
+            let mut obj = serde_json::json!({
+                "ok": true,
+                "kind": "cfidx",
+                "bytes": index.total_size,
+                "chunks": index.chunk_count(),
+            });
+            apply_cache_ops_json(&mut obj, cache_stats);
+            println!("{obj}");
         }
     }
     Ok(())
@@ -3118,6 +3153,7 @@ fn cmd_verify_dir(
     archive_path: &Path,
     jobs: usize,
     format: CliFormat,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let archive = load_dir_archive(archive_path)?;
     archive
@@ -3204,10 +3240,14 @@ fn cmd_verify_dir(
             );
         }
         CliFormat::Json => {
-            println!(
-                "{{\"ok\":true,\"kind\":\"cfdir\",\"files\":{},\"chunks\":{}}}",
-                file_count, total_chunks
-            );
+            let mut obj = serde_json::json!({
+                "ok": true,
+                "kind": "cfdir",
+                "files": file_count,
+                "chunks": total_chunks,
+            });
+            apply_cache_ops_json(&mut obj, cache_stats);
+            println!("{obj}");
         }
     }
     Ok(())
@@ -3226,6 +3266,7 @@ fn cmd_extract(
     format: CliFormat,
     path_filter: &PathFilter,
     progress: bool,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -3250,6 +3291,7 @@ fn cmd_extract(
             format,
             path_filter,
             progress,
+            cache_stats,
         );
     }
 
@@ -3458,13 +3500,14 @@ fn cmd_extract(
         }
         CliFormat::Json => {
             // Always emit skipped/wrote/dirs for scripts (skipped=0 when flag off).
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "ok": true,
                 "dry_run": false,
                 "skipped": skipped_count,
                 "wrote": file_count,
                 "dirs": dir_count,
             });
+            apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
         }
     }
@@ -3487,6 +3530,7 @@ fn cmd_extract_dry_run(
     format: CliFormat,
     path_filter: &PathFilter,
     progress: bool,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     // Refuse only when the named output root already exists as a file — same
     // hard gate as real extract; we still create/modify nothing.
@@ -3587,7 +3631,7 @@ fn cmd_extract_dry_run(
             );
         }
         CliFormat::Json => {
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "ok": true,
                 "dry_run": true,
                 "would_skip": would_skip,
@@ -3595,6 +3639,7 @@ fn cmd_extract_dry_run(
                 "would_dirs": would_dirs,
                 "would_fail": would_fail,
             });
+            apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
         }
     }
@@ -3611,6 +3656,7 @@ fn cmd_doctor(
     jobs: usize,
     http_retries: u32,
     format: CliFormat,
+    cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
     maybe_print_local_store_meta(origin_spec);
@@ -3719,7 +3765,7 @@ fn cmd_doctor(
                 );
             }
             CliFormat::Json => {
-                let obj = serde_json::json!({
+                let mut obj = serde_json::json!({
                     "ok": true,
                     "listings": listings_ok,
                     "checked": checked,
@@ -3727,6 +3773,7 @@ fn cmd_doctor(
                     "deep": deep,
                     "retries": http_retries,
                 });
+                apply_cache_ops_json(&mut obj, cache_stats);
                 println!("{obj}");
             }
         }
@@ -3740,7 +3787,7 @@ fn cmd_doctor(
             }
             CliFormat::Json => {
                 let missing_ids: Vec<String> = missing.iter().map(|id| id.to_string()).collect();
-                let obj = serde_json::json!({
+                let mut obj = serde_json::json!({
                     "ok": false,
                     "listings": listings_ok,
                     "checked": checked,
@@ -3748,6 +3795,7 @@ fn cmd_doctor(
                     "deep": deep,
                     "retries": http_retries,
                 });
+                apply_cache_ops_json(&mut obj, cache_stats);
                 println!("{obj}");
             }
         }
@@ -4077,7 +4125,7 @@ fn cmd_push(
         let source = open_primary_source(dest, http_tmpl)
             .context("build HTTP chunk source from --dest for push --verify")?;
         for path in index_paths {
-            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text).with_context(|| {
+            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text, None).with_context(|| {
                 format!(
                     "push --verify failed for {} (remote missing/corrupt chunk or hash mismatch)",
                     path.display()
@@ -4235,7 +4283,7 @@ fn cmd_pull(
             );
         }
         CliFormat::Json => {
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "ok": ok,
                 "skipped": skipped,
                 "fetched": fetched,
@@ -4247,6 +4295,7 @@ fn cmd_pull(
                 "listings": listings_ok,
                 "dry_run": dry_run,
             });
+            apply_cache_ops_json(&mut obj, stats.as_ref());
             println!("{obj}");
         }
     }
@@ -4283,7 +4332,7 @@ fn cmd_pull(
             if listings_ok == 1 { "" } else { "s" },
         );
         for path in index_paths {
-            cmd_verify(store, path, jobs, CliFormat::Text).with_context(|| {
+            cmd_verify(store, path, jobs, CliFormat::Text, None).with_context(|| {
                 format!(
                     "pull --verify failed for {} (local store missing/corrupt chunk or hash mismatch)",
                     path.display()

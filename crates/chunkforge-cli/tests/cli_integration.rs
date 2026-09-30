@@ -8115,6 +8115,12 @@ fn verify_format_json_cfidx_ok() {
     assert_eq!(v["kind"], "cfidx");
     assert!(v["bytes"].as_u64().unwrap() > 0, "bytes={v}");
     assert!(v["chunks"].as_u64().unwrap() >= 1, "chunks={v}");
+    assert!(
+        v.get("cache_hits").is_none()
+            && v.get("cache_miss_fills").is_none()
+            && v.get("cache_miss_refused").is_none(),
+        "verify without --cache must omit cache_*; got {v}"
+    );
 }
 
 #[test]
@@ -8281,6 +8287,12 @@ fn extract_format_json_write_path_ok() {
     assert_eq!(v["skipped"], 0);
     assert!(v["wrote"].as_u64().unwrap() >= 1, "wrote={v}");
     assert!(v.get("dirs").is_some(), "dirs missing: {v}");
+    assert!(
+        v.get("cache_hits").is_none()
+            && v.get("cache_miss_fills").is_none()
+            && v.get("cache_miss_refused").is_none(),
+        "extract without --cache must omit cache_*; got {v}"
+    );
     assert_eq!(
         fs::read(out2.join("a.txt")).unwrap(),
         b"hello-extract-json\n"
@@ -8657,6 +8669,12 @@ fn pull_format_json_ok_fields() {
     assert!(
         v.get("uploaded").is_none(),
         "pull must use fetched not uploaded: {v}"
+    );
+    assert!(
+        v.get("cache_hits").is_none()
+            && v.get("cache_miss_fills").is_none()
+            && v.get("cache_miss_refused").is_none(),
+        "pull without --cache must omit cache_*; got {v}"
     );
 
     run_ok(&[
@@ -10989,6 +11007,12 @@ fn cat_format_json_parses_and_has_fields() {
         .unwrap_or_else(|e| panic!("cat json invalid: {e}; stdout={stdout}"));
     assert_eq!(v["ok"], true);
     assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    assert!(
+        v.get("cache_hits").is_none()
+            && v.get("cache_miss_fills").is_none()
+            && v.get("cache_miss_refused").is_none(),
+        "without --cache, cache_* keys must be omitted; got {v}"
+    );
     assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
     assert_eq!(
         fs::metadata(&out_path).unwrap().len(),
@@ -11035,6 +11059,12 @@ fn cat_format_json_with_cache_max_bytes_smoke() {
         .unwrap_or_else(|e| panic!("cat json+cache-max invalid: {e}; stdout={stdout}"));
     assert_eq!(v["ok"], true);
     assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    assert!(
+        v.get("cache_hits").is_some()
+            && v.get("cache_miss_fills").is_some()
+            && v.get("cache_miss_refused").is_some(),
+        "--cache + --format json must add cache_* fields; got {v}"
+    );
     assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
 }
 
@@ -12131,4 +12161,249 @@ fn parse_cache_hits(line: &str) -> u64 {
     hits_str
         .parse::<u64>()
         .unwrap_or_else(|_| panic!("bad hits in {line}"))
+}
+
+// --- Phase 18 M3: ops-json additive cache_* fields ---
+
+fn assert_cache_ops_json_present(v: &serde_json::Value) {
+    assert!(
+        v.get("cache_hits").and_then(|x| x.as_u64()).is_some(),
+        "missing numeric cache_hits: {v}"
+    );
+    assert!(
+        v.get("cache_miss_fills").and_then(|x| x.as_u64()).is_some(),
+        "missing numeric cache_miss_fills: {v}"
+    );
+    assert!(
+        v.get("cache_miss_refused")
+            .and_then(|x| x.as_u64())
+            .is_some(),
+        "missing numeric cache_miss_refused: {v}"
+    );
+}
+
+fn assert_cache_ops_json_absent(v: &serde_json::Value) {
+    assert!(
+        v.get("cache_hits").is_none()
+            && v.get("cache_miss_fills").is_none()
+            && v.get("cache_miss_refused").is_none(),
+        "cache_* keys must be omitted without --cache; got {v}"
+    );
+}
+
+#[test]
+fn cat_cache_format_json_fields_and_baseline_omit() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out_base = dir.path().join("out_base.bin");
+    let out_cached = dir.path().join("out_cached.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let base = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        "-o",
+        out_base.to_str().unwrap(),
+    ]);
+    let v_base: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&base.stdout).trim()).unwrap();
+    assert_eq!(v_base["ok"], true);
+    assert!(v_base.get("bytes").is_some());
+    assert_cache_ops_json_absent(&v_base);
+
+    // --cache + --format json → three fields; without --cache-stats (stderr quiet).
+    let cached = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        "-o",
+        out_cached.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&cached.stderr);
+    assert!(
+        !err.lines().any(|l| l.starts_with("cache:")),
+        "JSON cache_* must not require --cache-stats noise; stderr={err}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&cached.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(v.get("bytes").is_some(), "old field bytes must remain: {v}");
+    assert_cache_ops_json_present(&v);
+    // First fill: expect miss_fills > 0 typically.
+    assert!(
+        v["cache_miss_fills"].as_u64().unwrap() > 0 || v["cache_hits"].as_u64().unwrap() > 0,
+        "expected some cache activity; got {v}"
+    );
+}
+
+#[test]
+fn verify_cache_format_json_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["kind"], "cfidx");
+    assert!(v.get("bytes").is_some() && v.get("chunks").is_some());
+    assert_cache_ops_json_present(&v);
+}
+
+#[test]
+fn extract_cache_format_json_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let src = dir.path().join("src");
+    let archive = dir.path().join("tree.cfdir");
+    let out = dir.path().join("out");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"extract-cache-json\n").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let json_out = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--format",
+        "json",
+        archive.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&json_out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], false);
+    assert!(v.get("wrote").is_some() && v.get("skipped").is_some() && v.get("dirs").is_some());
+    assert_cache_ops_json_present(&v);
+}
+
+#[test]
+fn pull_cache_format_json_fields() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let json_out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&json_out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(v.get("fetched").is_some() && v.get("unique_chunks").is_some());
+    assert_cache_ops_json_present(&v);
+    assert!(
+        v.get("uploaded").is_none(),
+        "must not rename/break pull fields: {v}"
+    );
+}
+
+#[test]
+fn doctor_cache_format_json_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // --deep so CacheSource get-path counters move.
+    let json_out = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--deep",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&json_out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(v.get("listings").is_some() && v.get("checked").is_some());
+    assert_cache_ops_json_present(&v);
 }
