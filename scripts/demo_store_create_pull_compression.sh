@@ -225,8 +225,8 @@ if ! "$BIN" diff --help | grep -F -- '--progress' >/dev/null; then
 fi
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! echo "$VER" | grep -F '1.8.0' >/dev/null; then
-  echo "error: expected chunkforge 1.8.0 (not bumped yet); got $VER" >&2
+if ! echo "$VER" | grep -F '1.9.0' >/dev/null; then
+  echo "error: expected chunkforge 1.9.0; got $VER" >&2
   exit 1
 fi
 if [[ -f "$ROOT/scripts/check_compat_1_8.sh" ]]; then

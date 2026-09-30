@@ -124,10 +124,11 @@ Phase 18 / **1.8.0** adds `pull --verify`, `--cache-stats` / ops-json
 sections below). Gated by **`check_compat_1_7.sh`** (calls 1_6; no absolute
 perf SLA). Workspace reports **1.8.0**. Smoke:
 [`scripts/demo_pull_verify_cache_stats.sh`](../scripts/demo_pull_verify_cache_stats.sh).
-Phase 19 / **1.9.0** (target) adds **`store create`**, **`pull --compression`**
-(create-time only; omit ≡ none ≡ 1.8), and **`diff --progress`** (all opt-in;
-defaults ≡ 1.8; see sections below). **`check_compat_1_8.sh` is not yet in
-tree** (M5). Workspace still reports **1.8.0** until M7. Smoke:
+Phase 19 / **1.9.0** adds **`store create`**, **`pull --compression`**
+(create-time only; omit ≡ none ≡ 1.8), **`diff --progress`**, and P1 honest
+**`make --jobs`** (all opt-in; defaults ≡ 1.8; see sections below). Gated by
+**`check_compat_1_8.sh`** (calls 1_7; no absolute perf SLA). Workspace
+reports **1.9.0**. Smoke:
 [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh).
 
 

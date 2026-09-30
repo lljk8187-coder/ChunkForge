@@ -1784,6 +1784,7 @@ fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<d
     Ok(Box::new(src))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_make(
     store_path: &Path,
     output: &Path,

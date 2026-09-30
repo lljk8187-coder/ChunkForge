@@ -24,7 +24,7 @@
 | **Phase 16** | **1.6.0** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
 | **Phase 17** | **1.7.0** | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress` + **`check_compat_1_6`** (+ P1 CacheSource hit/refuse counters); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
 | **Phase 18** | **1.8.0** | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats` + **`check_compat_1_7`** (+ P1 **`doctor --progress`**); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
-| **Phase 19** | **1.9.0** (target; workspace **still 1.8.0 until M7**) | **`store create`** + **`pull --compression`** (create-time; omit ≡ none ≡ 1.8) + **`diff --progress`** (default off) + docs + `demo_store_create_pull_compression` + **`check_compat_1_8`** + P1 honest **`make --jobs`** (post-chunk put only; default 1; **not** parallel FastCDC); defaults ≡ 1.8; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub |
+| **Phase 19** | **1.9.0** | **`store create`** + **`pull --compression`** (create-time; omit ≡ none ≡ 1.8) + **`diff --progress`** (default off) + docs + `demo_store_create_pull_compression` + **`check_compat_1_8`** + P1 honest **`make --jobs`** (post-chunk put only; default 1; **not** parallel FastCDC); defaults ≡ 1.8; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -50,7 +50,7 @@
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
 Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 closed at 1.6.0**: `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + `check_compat_1_5` (+ P1 `diff --path`/`--exclude`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub. **Phase 17 closed at 1.7.0**: create-time `--compression none|zstd` + `archive`/`extract`/`make --progress` + `demo_zstd_progress` + `check_compat_1_6` (+ P1 CacheSource hit/refuse counters) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression. **Phase 18 closed at 1.8.0**: `pull --verify` + Cache observation CLI/JSON + `cat`/`verify --progress` + `demo_pull_verify_cache_stats` + `check_compat_1_7` (+ P1 `doctor --progress`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub.
-**Phase 19 targets 1.9.0** (workspace **still reports 1.8.0 until M7**): `store create` + `pull --compression` + `diff --progress` + `demo_store_create_pull_compression` + `check_compat_1_8` + P1 honest `make --jobs` (post-chunk put; FastCDC stays serial) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/store.md](docs/store.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.8; **`store create` ≠ recompress ≠ default zstd ≠ pack**; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub.
+**Phase 19 closed at 1.9.0**: `store create` + `pull --compression` + `diff --progress` + `demo_store_create_pull_compression` + `check_compat_1_8` + P1 honest `make --jobs` (post-chunk put; FastCDC stays serial) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/store.md](docs/store.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.8; **`store create` ≠ recompress ≠ default zstd ≠ pack**; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / recompress / push `--fallback` / remote scrub.
 
 ## Quick start (local CAS)
 
@@ -965,10 +965,10 @@ Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stabilit
 Gate: [`scripts/check_compat_1_7.sh`](scripts/check_compat_1_7.sh)
 (calls [`check_compat_1_6.sh`](scripts/check_compat_1_6.sh)).
 
-## Phase 19 / 1.9.0 (in progress): `store create` + `pull --compression` + `diff --progress` (+ P1 `make --jobs`)
+## Phase 19 / 1.9.0: `store create` + `pull --compression` + `diff --progress` (+ P1 `make --jobs`)
 
-Phase 19 productizes **store lifecycle**, **pull create-time compression
-symmetry**, and **diff progress** toward **1.9.0**: **`chunkforge store create
+Phase 19 closes **store lifecycle**, **pull create-time compression
+symmetry**, and **diff progress** at **1.9.0**: **`chunkforge store create
 --store … [--compression none|zstd] [--format text|json]`** (calls
 `Store::create`; existing → non-zero; omit ≡ **none** ≡ 1.8),
 **`pull --compression`** (same create semantics as make/archive/`store create`;
@@ -978,14 +978,13 @@ creates), and **`diff --progress`** (default **off** ≡ 1.8; stderr
 to `--format json`). P1: honest **`make --jobs`** (default **1** ≡ 1.8;
 FastCDC cut-points stay serial; only post-chunk store put / on-disk zstd
 encoding is concurrent — **not** parallel FastCDC). All additive;
-**defaults ≡ 1.8.0**. Workspace / CLI version is still **1.8.0** until M7.
-**`check_compat_1_8.sh`** is in tree (M5).
+**defaults ≡ 1.8.0**. Workspace / CLI version is **1.9.0**.
 
 **Responsibility (store create):** **`store create` ≠ recompress ≠ default
 zstd ≠ pack** — create empty CAS only; never migrates an existing store;
 creation default remains **none**; loose `.cnk` layout unchanged.
 
-**Delivered (M1–M6):**
+**Delivered:**
 
 - **`store create`**: empty local CAS; json fields `ok` / `store` /
   `compression`. **≠** recompress / trim / default zstd / pack. See
@@ -1001,8 +1000,6 @@ creation default remains **none**; loose `.cnk` layout unchanged.
 - Smoke: [`scripts/demo_store_create_pull_compression.sh`](scripts/demo_store_create_pull_compression.sh).
 - Gate: [`scripts/check_compat_1_8.sh`](scripts/check_compat_1_8.sh) (calls 1_7 + 1.9 flags).
 - **P1 `make --jobs`**: post-chunk put concurrency; default 1; help honest.
-
-**Not yet:** workspace version bump to **1.9.0** (M7).
 
 **Non-goals:** packfile; write mount / COW; bidirectional sync; extract prune
 / `--delete`; remote scrub; full aws-sdk / multipart / IMDS / SSO /
@@ -1026,8 +1023,8 @@ bash scripts/demo_store_create_pull_compression.sh
 # E: default paths quiet (no progress noise)
 # F: repeat store create → non-zero (create ≠ recompress)
 
-./target/debug/chunkforge --version   # still → chunkforge 1.8.0 (until M7)
-bash scripts/check_compat_1_8.sh       # M5 gate
+./target/debug/chunkforge --version   # → chunkforge 1.9.0
+bash scripts/check_compat_1_8.sh
 ```
 
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stability.md),

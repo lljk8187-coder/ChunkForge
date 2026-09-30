@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 19 toward **1.9.0** (workspace still **1.8.0** until M7). M1–M6 landed:
-`store create`, `pull --compression`, `diff --progress`, docs +
-`demo_store_create_pull_compression.sh`, `check_compat_1_8.sh`, P1 honest
-`make --jobs` (post-chunk put) + thin docs brush. Defaults remain ≡ **1.8.0**.
-Version bump is **not** in this milestone.
+Nothing yet.
+
+## [1.9.0] — 2026-09-30
+
+Phase 19 closeout — `store create`; `pull --compression` (create-time; omit ≡
+none ≡ 1.8); `diff --progress` (default off); docs +
+`demo_store_create_pull_compression.sh`; `check_compat_1_8.sh`; P1 honest
+`make --jobs` (post-chunk put / on-disk encoding parallel; FastCDC stays
+serial; default **1**). Defaults remain ≡ **1.8.0**. No pack / write mount /
+aws-sdk / remote scrub / extract prune / bidirectional sync / push listing /
+LRU / store trim / **default** zstd / HTTP wire compression / `store
+recompress` / `push --fallback`.
 
 ### Added
 
@@ -22,15 +29,39 @@ Version bump is **not** in this milestone.
 - **`check_compat_1_8.sh`** (Phase 19 M5): calls `check_compat_1_7.sh` + asserts `store create` / pull `--compression` / diff `--progress`; thin non-goals (no prune / pack / LRU / aws-sdk / default zstd / recompress / push `--fallback`).
 - **`make --jobs`** (Phase 19 M6 / P1 O1, path A): opt-in; default **1** ≡ 1.8 serial; FastCDC cut-points stay **serial**; after chunking, `put_with_id` runs via `parallel::map_indexed` (speeds store put / on-disk zstd encoding only — **not** parallel FastCDC). Help text is honest. See README Phase 19.
 - **P1 docs brush** (Phase 19 M6 / O2): README / stability / remote-layout Phase 19·1.9 narrative; responsibility note **`store create` ≠ recompress ≠ default zstd ≠ pack**.
+- Workspace version **1.9.0** (Phase 19 M7 closeout).
 
-### Not yet (later Phase 19 milestones)
+### Not delivered / deferred (Phase 19)
 
-- Workspace / CLI version bump to **1.9.0** (M7)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
 
-### Non-goals (unchanged)
+### Compatibility
 
-- packfile; write mount; bidirectional sync; extract prune; remote scrub; aws-sdk; cache LRU; **default** zstd; HTTP wire compression; `store recompress`; `push --fallback`
-
+- CLI defaults match **1.8.0**: no `store create` side effects on old paths; no
+  pull `--compression` ⇒ create **none**; no `diff --progress` ⇒ quiet;
+  `make --jobs` default **1**; create compression **none**; no `--verify` on
+  pull ⇒ quiet; no `--cache-stats` ⇒ no cache noise; no cat/verify/doctor
+  `--progress` ⇒ quiet; no `--fallback` ⇒ single origin; no
+  `--cache-max-bytes` ⇒ unbounded cache fill; plain integer cache-max still
+  accepted; no `--decode` ⇒ zstd stats stay cheap; no diff path flags ⇒ full
+  listing; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  mount prefetch depth **1** ≡ 1.8.0 / 1.7.0 / …
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged (only additive where noted);
+  disk zstd orthogonal to HTTP plaintext body; no silent break of 1.8.0
+  behaviour
 
 ## [1.8.0] — 2026-09-30
 
@@ -1059,6 +1090,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.9.0
 [1.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.8.0
 [1.7.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.7.0
 [1.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.6.0

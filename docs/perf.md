@@ -52,12 +52,12 @@ now.
 > deferred.
 >
 > **1.9.0 / Phase 19 still does not implement pack.** `store create`,
-> `pull --compression` (create-time only; omit ≡ none ≡ 1.8), and
-> `diff --progress` are additive opt-in only; they keep the loose `.cnk`
-> layout and do not change product defaults (`jobs=1`, `retries=0`, create
-> compression **none**, progress **off**). Promotion checklist condition 1
-> stays unmet; pack stays deferred. Workspace still reports **1.8.0** until
-> M7.
+> `pull --compression` (create-time only; omit ≡ none ≡ 1.8),
+> `diff --progress`, and P1 honest `make --jobs` (post-chunk put only) are
+> additive opt-in only; they keep the loose `.cnk` layout and do not change
+> product defaults (`jobs=1`, `retries=0`, create compression **none**,
+> progress **off**). Promotion checklist condition 1 stays unmet; pack stays
+> deferred.
 
 ## What we measure
 

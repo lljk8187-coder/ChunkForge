@@ -286,7 +286,7 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
-## Cache observation vs failover vs sync (Phase 18 / 1.8.0; still holds in Phase 19 / 1.9 target)
+## Cache observation vs failover vs sync (Phase 18 / 1.8.0; still holds in Phase 19 / 1.9.0)
 
 | Flag / layer | Role | Not |
 |---|---|---|
@@ -297,7 +297,7 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 
 **`--cache-stats` ≠ LRU ≠ sync ≠ fallback.** Observation only; default quiet ≡ 1.7.
 
-## Disk zstd ≠ wire compression ≠ pack (Phase 17–19 / toward 1.9.0)
+## Disk zstd ≠ wire compression ≠ pack (Phase 17–19 / 1.9.0)
 
 | Layer | Contract |
 |---|---|
@@ -309,7 +309,7 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 `--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 Store lifecycle + pull compression smoke: [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh).
 
-## Explicit non-goals (this layout / Phase 3–19 / through 1.9 target)
+## Explicit non-goals (this layout / Phase 3–19 / through 1.9.0)
 
 | Non-goal | Status |
 |---|---|

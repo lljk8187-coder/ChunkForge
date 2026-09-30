@@ -55,7 +55,7 @@ P1 **`doctor --progress`**. Defaults stay ≡ **1.7.0** (no `--verify` on pull
 off, text, mount prefetch depth 1, no `--fallback` ⇒ single origin). The
 workspace reports **1.8.0**.
 
-**1.9.0** (Phase 19 target) adds further **opt-in** only: **`store create`**
+**1.9.0** adds further **opt-in** only: **`store create`**
 (`--compression none|zstd`, default omit ≡ **none** ≡ 1.8 create;
 **≠** recompress / trim / default zstd / pack), **`pull --compression`**
 (create-time only for a new `--store`; omit ≡ none ≡ 1.8; existing store
@@ -64,9 +64,12 @@ opens by meta / explicit conflict → non-zero; dry-run never creates),
 `--format json`; TOTAL = filtered File-path union), and P1 honest
 **`make --jobs`** (default **1** ≡ 1.8; FastCDC cut-points stay serial;
 post-chunk store put / on-disk zstd encoding only — **not** parallel
-FastCDC). Defaults stay ≡ **1.8.0**. Workspace still reports **1.8.0** until
-M7 (version bump). **`check_compat_1_8.sh`** is in tree (Phase19-M5; calls
-1_7 + 1.9 flag asserts).
+FastCDC). Defaults stay ≡ **1.8.0** (no `store create` side effects on old
+paths; omit pull `--compression` ⇒ create **none**; no `diff --progress` ⇒
+quiet; `make --jobs` default **1**; create compression **none**; jobs=1,
+retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
+origin). The workspace reports **1.9.0**. **`check_compat_1_8.sh`** gates
+1.9 flags (calls 1_7).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -94,7 +97,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `store create`, `pull --compression`, `diff --progress`, `make --jobs`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18), and
-**1.9.0** (Phase19 target) are such minors: all new
+**1.9.0** (Phase19) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
