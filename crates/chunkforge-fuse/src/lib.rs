@@ -1129,6 +1129,79 @@ mod tests {
         assert!(full_fs.is_file_path("other/x.txt"));
     }
 
+    /// Phase26-M3: mount path benefit without /dev/fuse — `filter_dir_archive`
+    /// keeps a PathFilter-matched empty leaf Dir, then DirFs exposes it
+    /// (lookup / readdir). Real FUSE mounts stay `#[ignore]`.
+    #[test]
+    fn filter_path_keeps_empty_leaf_dir_in_dirfs() {
+        use chunkforge_index::{PathFilter, filter_dir_archive};
+
+        let a = b"keep-a\n".to_vec();
+        let mut src = MemSource::default();
+        let a_chunks = chunks_from_cuts(&a, &[a.len()], &mut src);
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "keep".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "keep/a.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: a.len() as u64,
+                        mtime_secs: 1,
+                        blob_blake3: ChunkId::hash(&a),
+                        chunks: a_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "empty_leaf".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+            ],
+        )
+        .unwrap();
+
+        let filter = PathFilter::new(["empty_leaf"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        assert!(
+            filtered
+                .entries
+                .iter()
+                .any(|e| e.path == "empty_leaf" && matches!(e.kind, DirEntryKind::Dir { .. })),
+            "filter_dir_archive must keep empty_leaf Dir; entries={:?}",
+            filtered.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !filtered.entries.iter().any(|e| e.path.starts_with("keep")),
+            "keep/* must be dropped under --path empty_leaf"
+        );
+
+        let fs = DirFs::new(filtered, src);
+        assert!(
+            fs.is_dir_path("empty_leaf"),
+            "DirFs must expose empty_leaf as directory after path filter"
+        );
+        assert!(fs.lookup_path("empty_leaf").is_some());
+        assert!(fs.lookup_path("keep").is_none());
+        assert!(fs.lookup_path("keep/a.txt").is_none());
+
+        let root = fs.readdir_path("").unwrap();
+        let names: Vec<_> = root.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["empty_leaf"],
+            "root readdir must be only empty_leaf; got {names:?}"
+        );
+        let kids = fs.readdir_path("empty_leaf").unwrap();
+        assert!(
+            kids.is_empty(),
+            "empty_leaf readdir must be empty; got {kids:?}"
+        );
+    }
+
     /// Real DirFs FUSE mount — needs fuse3 + /dev/fuse; skipped by default.
     #[test]
     #[ignore = "requires fuse3 + /dev/fuse; run with --ignored when available"]

@@ -3622,6 +3622,337 @@ fn phase26_empty_dirs_filter_path_keeps_leaf_dir() {
     );
 }
 
+// --- Phase26-M3: leaf-Dir / store get / no-empty-dirs correctness matrix ---
+
+/// Tight three-way: `ls --path` / `filter --path` / `extract --path` agree on the
+/// same empty leaf path from an `--empty-dirs` listing (M2 smokes strengthened).
+#[test]
+fn phase26_m3_ls_filter_extract_path_agree_on_empty_leaf() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"m3-agree\n").unwrap();
+
+    let store = dir.path().join("store");
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let leaf = "empty_leaf";
+
+    // 1) ls --path
+    let ls = run_ok(&["ls", "--path", leaf, full.to_str().unwrap()]);
+    let ls_s = String::from_utf8_lossy(&ls.stdout);
+    assert!(
+        ls_s.lines().any(|l| l == format!("dir\t{leaf}")),
+        "ls --path must show dir\\t{leaf}; stdout={ls_s}"
+    );
+    assert!(
+        !ls_s.contains("keep/a.txt"),
+        "ls --path must not leak keep/a.txt; stdout={ls_s}"
+    );
+
+    // 2) filter --path → ls of filtered listing
+    let filtered = dir.path().join("leaf_only.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        leaf,
+        "-o",
+        filtered.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let fls = run_ok(&["ls", filtered.to_str().unwrap()]);
+    let fls_s = String::from_utf8_lossy(&fls.stdout);
+    assert!(
+        fls_s.lines().any(|l| l == format!("dir\t{leaf}")),
+        "filter --path then ls must show dir\\t{leaf}; stdout={fls_s}"
+    );
+    assert!(
+        !fls_s.contains("keep/a.txt"),
+        "filtered listing must drop keep/a.txt; stdout={fls_s}"
+    );
+
+    // 3) extract --path materializes the same leaf
+    let dest = dir.path().join("extracted");
+    let ext = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        leaf,
+        "-o",
+        dest.to_str().unwrap(),
+        "--format",
+        "json",
+        full.to_str().unwrap(),
+    ]);
+    let ev: serde_json::Value = serde_json::from_slice(&ext.stdout).expect("extract json");
+    assert!(
+        ev["dirs"].as_u64().unwrap_or(0) >= 1,
+        "extract --path {leaf} dirs>=1; json={ev}"
+    );
+    assert!(
+        dest.join(leaf).is_dir(),
+        "extract --path must create {leaf}"
+    );
+    assert!(
+        !dest.join("keep").exists(),
+        "extract --path must not materialize keep/"
+    );
+
+    // Same relative path string across the three surfaces.
+    assert_eq!(
+        ls_s.lines().find(|l| l.starts_with("dir\t")).unwrap(),
+        format!("dir\t{leaf}")
+    );
+    assert_eq!(
+        fls_s.lines().find(|l| l.starts_with("dir\t")).unwrap(),
+        format!("dir\t{leaf}")
+    );
+}
+
+/// Path-scoped listing↔listing `diff`: empty leaf Dir is kept by the shared
+/// `filter_dir_archive` step; DiffReport ignores Dir-only leaves so matching
+/// files → exit 0 (no ghost File adds/removes from empty Dirs). Without
+/// `--empty-dirs`, path-scoped diff on the would-be-empty path is also clean.
+#[test]
+fn phase26_m3_diff_path_empty_leaf_no_ghost() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"m3-diff\n").unwrap();
+
+    let store = dir.path().join("store");
+    let with_empty = dir.path().join("with.cfdir");
+    let without = dir.path().join("without.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        with_empty.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        without.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Prove path filter retains the leaf Dir on the with-empty listing.
+    let ls_path = run_ok(&["ls", "--path", "empty_leaf", with_empty.to_str().unwrap()]);
+    let ls_path_s = String::from_utf8_lossy(&ls_path.stdout);
+    assert!(
+        ls_path_s.lines().any(|l| l == "dir\tempty_leaf"),
+        "diff path filter input (via ls --path) must keep empty_leaf; stdout={ls_path_s}"
+    );
+
+    // Files match; Dir-only difference must not invent File ghosts (full diff).
+    let full = run_ok(&[
+        "diff",
+        with_empty.to_str().unwrap(),
+        without.to_str().unwrap(),
+    ]);
+    let full_s = String::from_utf8_lossy(&full.stdout);
+    let full_sum = parse_diff_summary(&full_s);
+    assert!(
+        full_sum.contains("added=0")
+            && full_sum.contains("removed=0")
+            && full_sum.contains("changed=0"),
+        "Dir-only empty_leaf must not create File diffs; summary={full_sum}"
+    );
+
+    // Path-scoped to empty_leaf: both sides File leaf-set empty after filter
+    // (right has no Dir either) → exit 0, no ghosts.
+    let scoped = run_ok(&[
+        "diff",
+        "--path",
+        "empty_leaf",
+        with_empty.to_str().unwrap(),
+        without.to_str().unwrap(),
+    ]);
+    let scoped_s = String::from_utf8_lossy(&scoped.stdout);
+    let scoped_sum = parse_diff_summary(&scoped_s);
+    assert!(
+        scoped_sum.contains("added=0")
+            && scoped_sum.contains("removed=0")
+            && scoped_sum.contains("changed=0"),
+        "diff --path empty_leaf must be clean; summary={scoped_sum}"
+    );
+
+    // Two with-empty listings, path-scoped: identical empty Dir → exit 0.
+    let twin = dir.path().join("with2.cfdir");
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        twin.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let same = run_ok(&[
+        "diff",
+        "--path",
+        "empty_leaf",
+        with_empty.to_str().unwrap(),
+        twin.to_str().unwrap(),
+    ]);
+    let same_s = String::from_utf8_lossy(&same.stdout);
+    let same_sum = parse_diff_summary(&same_s);
+    assert!(
+        same_sum.contains("added=0") && same_sum.contains("removed=0"),
+        "identical empty-dirs path-scoped diff must be clean; summary={same_sum}"
+    );
+
+    // Neither listing has empty-dirs → ls --path empty_leaf empty; diff --path clean.
+    let ls_none = run_ok(&["ls", "--path", "empty_leaf", without.to_str().unwrap()]);
+    let ls_none_s = String::from_utf8_lossy(&ls_none.stdout);
+    assert!(
+        ls_none_s.trim().is_empty(),
+        "without --empty-dirs, ls --path empty_leaf must be empty (no ghost); stdout={ls_none_s:?}"
+    );
+    let none_scoped = run_ok(&[
+        "diff",
+        "--path",
+        "empty_leaf",
+        without.to_str().unwrap(),
+        without.to_str().unwrap(),
+    ]);
+    let none_s = String::from_utf8_lossy(&none_scoped.stdout);
+    let none_sum = parse_diff_summary(&none_s);
+    assert!(
+        none_sum.contains("added=0") && none_sum.contains("removed=0"),
+        "no-empty-dirs path-scoped self-diff must be clean; summary={none_sum}"
+    );
+}
+
+/// No `--empty-dirs` ≡ 1.15: path filter must not synthesize a ghost Dir for a
+/// would-be-empty leaf; file-only trees stay File-only under path scope.
+#[test]
+fn phase26_m3_no_empty_dirs_path_no_ghost_dir() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"m3-no-empty\n").unwrap();
+    fs::write(src.join("pkgs/foo/b.txt"), b"foo-b\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("omit.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Listing has no explicit empty leaf Dir (≡ 1.15 / archive_default_omits).
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    assert!(
+        arch.entries
+            .iter()
+            .all(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. })),
+        "without --empty-dirs must be File-only; entries={:?}",
+        arch.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    assert!(
+        !arch.entries.iter().any(|e| e.path == "empty_leaf"),
+        "must not record empty_leaf Dir without --empty-dirs"
+    );
+
+    // ls --path / filter --path on would-be-empty → empty (no ghost Dir).
+    let ls = run_ok(&["ls", "--path", "empty_leaf", out.to_str().unwrap()]);
+    let ls_s = String::from_utf8_lossy(&ls.stdout);
+    assert!(
+        ls_s.trim().is_empty(),
+        "ls --path empty_leaf must be empty without --empty-dirs; stdout={ls_s:?}"
+    );
+
+    let filtered = dir.path().join("ghost.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "empty_leaf",
+        "-o",
+        filtered.to_str().unwrap(),
+        out.to_str().unwrap(),
+    ]);
+    let fls = run_ok(&["ls", filtered.to_str().unwrap()]);
+    let fls_s = String::from_utf8_lossy(&fls.stdout);
+    assert!(
+        fls_s.trim().is_empty(),
+        "filter --path empty_leaf must yield empty listing; stdout={fls_s:?}"
+    );
+
+    // Path filter on file-only tree: no extra Dir rows (pre-M1 / ≡ 1.15).
+    let keep_only = dir.path().join("keep_only.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "keep",
+        "-o",
+        keep_only.to_str().unwrap(),
+        out.to_str().unwrap(),
+    ]);
+    let keep_ls = run_ok(&["ls", "--format", "json", keep_only.to_str().unwrap()]);
+    let kv: serde_json::Value = serde_json::from_slice(&keep_ls.stdout).expect("ls json");
+    let entries = kv["entries"].as_array().expect("entries");
+    assert_eq!(
+        entries.len(),
+        1,
+        "file-only path filter: one File; json={kv}"
+    );
+    assert_eq!(entries[0]["kind"], "file");
+    assert_eq!(entries[0]["path"], "keep/a.txt");
+    assert!(
+        entries.iter().all(|e| e["kind"] != "dir"),
+        "no Dir rows on file-only filter; json={kv}"
+    );
+
+    let pkgs = dir.path().join("pkgs_only.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs",
+        "-o",
+        pkgs.to_str().unwrap(),
+        out.to_str().unwrap(),
+    ]);
+    let pkgs_ls = run_ok(&["ls", "--format", "json", pkgs.to_str().unwrap()]);
+    let pv: serde_json::Value = serde_json::from_slice(&pkgs_ls.stdout).expect("ls json");
+    let pkgs_entries = pv["entries"].as_array().expect("entries");
+    assert!(
+        pkgs_entries.iter().all(|e| e["kind"] == "file"),
+        "pkgs path filter on no-empty-dirs listing must stay File-only; json={pv}"
+    );
+    assert!(
+        pkgs_entries
+            .iter()
+            .any(|e| e["path"].as_str() == Some("pkgs/foo/b.txt")),
+        "pkgs/foo/b.txt retained; json={pv}"
+    );
+}
+
 #[test]
 fn chunk_id_format_json() {
     let input = fixtures_dir().join("hello.txt");
@@ -15562,6 +15893,114 @@ fn store_get_missing_and_bad_hex_nonzero() {
             || err.to_ascii_lowercase().contains("invalid"),
         "bad hex should be clear; stderr={err}"
     );
+    let miss = run_fail(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        &missing_id,
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let miss_err = String::from_utf8_lossy(&miss.stderr);
+    assert!(
+        miss_err.to_ascii_lowercase().contains("missing")
+            || miss_err.to_ascii_lowercase().contains("not found")
+            || miss_err.to_ascii_lowercase().contains("notfound"),
+        "missing chunk message must be clear; stderr={miss_err}"
+    );
+}
+
+/// Tamper `.cnk` after put: `store get --verify` → clear non-zero (corrupt).
+/// Without `--verify`, CLI trusts on-disk decode (`get_verify(false)`) and may
+/// still succeed — assert that verify path specifically rejects the mutation.
+#[test]
+fn store_get_verify_rejects_tampered_chunk() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let original = fs::read(&input).unwrap();
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let store_h = chunkforge_store::Store::open(&store).unwrap();
+    let id = store_h.list_chunk_ids().unwrap()[0];
+    let expected = store_h.get_verify(&id, true).unwrap();
+    // Plaintext from known put / Store::get path.
+    assert_eq!(
+        expected, original,
+        "Store plaintext must match make input fixture bytes"
+    );
+
+    let cnk = store_h.chunk_path(&id);
+    assert!(cnk.is_file(), "expected .cnk at {}", cnk.display());
+    let mut bytes = fs::read(&cnk).unwrap();
+    assert!(!bytes.is_empty(), "cnk must be non-empty to tamper");
+    bytes[0] ^= 0xff;
+    fs::write(&cnk, &bytes).unwrap();
+
+    // --verify must fail clearly (re-hash).
+    let out_v = dir.path().join("verify.bin");
+    let fail = run_fail(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        "--verify",
+        &id.to_string(),
+        "-o",
+        out_v.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("corrupt"),
+        "store get --verify on tampered .cnk must say corrupt; stderr={err}"
+    );
+    assert!(
+        !out_v.exists() || fs::metadata(&out_v).map(|m| m.len()).unwrap_or(0) == 0,
+        "--verify failure should not leave good output; exists={}",
+        out_v.exists()
+    );
+
+    // Without --verify: trust on-disk decode — may succeed with mutated plaintext.
+    let out_nv = dir.path().join("no-verify.bin");
+    let no_verify = Command::new(bin())
+        .args([
+            "store",
+            "get",
+            "--store",
+            store.to_str().unwrap(),
+            &id.to_string(),
+            "-o",
+            out_nv.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn store get");
+    if no_verify.status.success() {
+        let got = fs::read(&out_nv).unwrap();
+        assert_ne!(
+            got, expected,
+            "without --verify, tampered decode must not equal original plaintext"
+        );
+        assert_eq!(
+            got, bytes,
+            "Compression::None: without --verify returns on-disk bytes"
+        );
+    } else {
+        // Accept clear non-zero if decode somehow rejected; still not a verify-pass.
+        let e = String::from_utf8_lossy(&no_verify.stderr);
+        assert!(
+            !e.to_ascii_lowercase().contains("ok id="),
+            "failed no-verify path must not claim ok; stderr={e}"
+        );
+    }
 }
 
 #[test]
