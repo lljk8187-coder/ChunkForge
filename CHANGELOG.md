@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mount --prefetch-chunks`, `gc --jobs`/`--format`, `store scrub --format`);
   thin non-goal: no pack subcommand / `--pack*` in CLI help (aws-sdk already
   gated by 1_0). No absolute perf SLA; does not run `bench_loose_http.sh`.
+- **Opt-in `--progress`** (Phase 12 M6 / O1): explicit flag; **default off**
+  ≡ 1.1.0. Covers **`push` / `pull` / `store scrub`** (per chunk) and **`gc
+  --apply`** (per delete). Stderr lines `progress: op=<name> done=N/TOTAL`
+  (total known). Orthogonal to `--format json` (progress → stderr; JSON →
+  stdout only). Hand-rolled — **no** `indicatif` / tracing / otel. Help lists
+  `--progress` on those commands.
 
 ## [1.1.0] — 2026-09-29
 

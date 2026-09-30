@@ -5561,6 +5561,10 @@ fn store_scrub_help_lists_flags() {
         scrub_s.contains("--format"),
         "store scrub --help must list --format:\n{scrub_s}"
     );
+    assert!(
+        scrub_s.contains("--progress"),
+        "store scrub --help must list --progress:\n{scrub_s}"
+    );
 }
 
 #[test]
@@ -7994,4 +7998,175 @@ fn pull_format_json_dry_run() {
     assert_eq!(v["dry_run"], true);
     assert_eq!(v["failed"], 0);
     assert!(v["fetched"].as_u64().unwrap() >= 1, "fetched={v}");
+}
+
+// --- Phase 12 M6: opt-in --progress (push / pull / scrub / gc) ---
+
+#[test]
+fn progress_help_listed_on_push_pull_scrub_gc() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["push", "--help"], "push"),
+        (&["pull", "--help"], "pull"),
+        (&["store", "scrub", "--help"], "store scrub"),
+        (&["gc", "--help"], "gc"),
+    ];
+    for (args, label) in cases {
+        let help = run_ok(args);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--progress"),
+            "{label} --help must list --progress:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn store_scrub_progress_emits_stderr_lines() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=scrub done=")),
+        "with --progress stderr must contain progress: lines; stderr={err}"
+    );
+    // Total known → done=N/TOTAL form
+    assert!(
+        err.lines().any(|l| l.contains("done=") && l.contains('/')),
+        "scrub progress should include done=N/TOTAL; stderr={err}"
+    );
+    let out = String::from_utf8_lossy(&with.stdout);
+    assert!(
+        out.lines().any(|l| l.starts_with("scrub: ok=")),
+        "text summary still on stdout; stdout={out}"
+    );
+    assert!(
+        !out.contains("progress:"),
+        "progress must not pollute stdout; stdout={out}"
+    );
+
+    let without = run_ok(&["store", "scrub", "--store", store.to_str().unwrap()]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "without --progress stderr must not contain progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn store_scrub_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--progress",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("progress: op=scrub"),
+        "progress on stderr with json; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("progress:"),
+        "json stdout must not contain progress:; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("scrub json invalid with --progress: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert!(v["checked"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn push_progress_with_stub_emits_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    let with = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--progress",
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=push done=")),
+        "push --progress stderr; stderr={err}"
+    );
+    assert!(
+        err.contains("push:"),
+        "text summary still on stderr; stderr={err}"
+    );
+
+    let without = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "push without --progress must be silent on progress:; stderr={err0}"
+    );
 }

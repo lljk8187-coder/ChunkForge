@@ -17,7 +17,7 @@
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
-| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` |
+| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -473,7 +473,7 @@ Phase 12 closes local maintenance symmetry with **1.1.0**: **`gc --jobs N`**
 summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
 (**1.2.0** bump is **not** this milestone).
 
-**Delivered so far (M1–M5):**
+**Delivered so far (M1–M6):**
 
 - **`gc --jobs N`**: default **1**; `--apply` parallel per-id delete; dry-run
   path listing stays ordered.
@@ -493,6 +493,10 @@ summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
   (`--skip-trust-mtime`, extract/push/pull/`gc`/`store scrub --format`,
   `mount --prefetch-chunks`, `gc --jobs`); thin no-pack CLI assert. No
   absolute perf SLA.
+- **Opt-in `--progress`** (M6 / O1): default **off** ≡ 1.1.0. Long paths
+  **`push` / `pull` / `store scrub`** (+ **`gc --apply`**). Stderr
+  `progress: op=… done=N/TOTAL`; orthogonal to `--format json`. No
+  indicatif / tracing / otel.
 
 **Responsibility split (no remote scrub):**
 
@@ -503,9 +507,10 @@ summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash (no listing) |
 
-**Not in this milestone / still deferred:** **1.2.0** bump (M7), P1
-`--progress` (M6), packfile, write mount, remote scrub, aws-sdk, extract prune,
-bidirectional sync. Pack stays measured-only in [docs/perf.md](docs/perf.md).
+**Not in this milestone / still deferred:** **1.2.0** bump (M7), packfile,
+write mount, remote scrub, aws-sdk, extract prune, bidirectional sync,
+`archive --format json`. Pack stays measured-only in
+[docs/perf.md](docs/perf.md).
 
 ```bash
 # Phase 12 maint smoke + compat gate (~minutes; no internet)

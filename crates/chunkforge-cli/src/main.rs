@@ -1,6 +1,7 @@
 //! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store (+ chunk-id debug).
 
 mod parallel;
+mod progress;
 
 use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
@@ -18,6 +19,7 @@ use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
 };
 use clap::{Parser, Subcommand, ValueEnum};
+use progress::ProgressReporter;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -322,6 +324,10 @@ enum Commands {
         /// or `json` (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit `progress: op=gc done=N/TOTAL` on stderr while `--apply` deletes
+        /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
+        #[arg(long = "progress")]
+        progress: bool,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are retained
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -365,6 +371,10 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit `progress: op=push done=N/TOTAL` on stderr per chunk
+        /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
+        #[arg(long = "progress")]
+        progress: bool,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -402,6 +412,10 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit `progress: op=pull done=N/TOTAL` on stderr per chunk
+        /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
+        #[arg(long = "progress")]
+        progress: bool,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are fetched
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -466,6 +480,10 @@ enum StoreCommands {
         /// Output format (default text ≡ 1.1.0 scrub lines; json = one object on stdout)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit `progress: op=scrub done=N/TOTAL` on stderr per chunk
+        /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
+        #[arg(long = "progress")]
+        progress: bool,
     },
 }
 
@@ -726,10 +744,11 @@ fn run() -> Result<()> {
             apply,
             jobs,
             format,
+            progress,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_gc(&store, &indexes, apply, jobs, format)
+            cmd_gc(&store, &indexes, apply, jobs, format, progress)
         }
         Commands::Push {
             store,
@@ -739,11 +758,12 @@ fn run() -> Result<()> {
             dry_run,
             verify,
             format,
+            progress,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
             cmd_push(
-                &store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs, format,
+                &store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs, format, progress,
             )
         }
         Commands::Pull {
@@ -753,10 +773,13 @@ fn run() -> Result<()> {
             jobs,
             dry_run,
             format,
+            progress,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs, format)
+            cmd_pull(
+                &store, &source, &http_tmpl, dry_run, &indexes, jobs, format, progress,
+            )
         }
         Commands::Diff {
             format,
@@ -774,10 +797,11 @@ fn run() -> Result<()> {
                     store,
                     jobs,
                     format,
+                    progress,
                 },
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_store_scrub(&store, jobs, format)
+            cmd_store_scrub(&store, jobs, format, progress)
         }
     }
 }
@@ -2830,6 +2854,7 @@ fn cmd_gc(
     apply: bool,
     jobs: usize,
     format: CliFormat,
+    progress: bool,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
@@ -2889,14 +2914,18 @@ fn cmd_gc(
         }
     }
 
+    // Progress only ticks on `--apply` deletes (dry-run is an ordered path dump).
+    let prog = ProgressReporter::new(progress, "gc", Some(unreferenced.len()));
     if apply {
         // Per-id .cnk files are independent; parallel::map_indexed with jobs=1
         // stays on the calling thread (≡ 1.1.0 serial). Result set is identical
         // for any jobs >= 1.
         let outcomes = parallel::map_indexed(&unreferenced, jobs, |_i, id| {
-            store
+            let r = store
                 .remove(id)
-                .with_context(|| format!("delete unreferenced chunk {id}"))
+                .with_context(|| format!("delete unreferenced chunk {id}"));
+            prog.tick();
+            r
         });
         for r in outcomes {
             r?;
@@ -2987,6 +3016,7 @@ fn cmd_push(
     index_paths: &[PathBuf],
     jobs: usize,
     format: CliFormat,
+    progress: bool,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
@@ -3005,48 +3035,54 @@ fn cmd_push(
     }
 
     let store_display = store_path.display().to_string();
+    let prog = ProgressReporter::new(progress, "push", Some(ids.len()));
     let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| {
-        let plain = match store.get(id) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let msg = format!("local chunk {id} unavailable from store {store_display}: {e}");
-                if format == CliFormat::Text {
-                    eprintln!("push: fail {id}: {msg}");
+        let outcome = (|| {
+            let plain = match store.get(id) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let msg =
+                        format!("local chunk {id} unavailable from store {store_display}: {e}");
+                    if format == CliFormat::Text {
+                        eprintln!("push: fail {id}: {msg}");
+                    }
+                    // Local store miss / I/O → permanent (not an HTTP transient).
+                    return (PushOne::Failed(SummaryFailureBucket::Permanent), Some(msg));
                 }
-                // Local store miss / I/O → permanent (not an HTTP transient).
-                return (PushOne::Failed(SummaryFailureBucket::Permanent), Some(msg));
-            }
-        };
+            };
 
-        match sink.has(id) {
-            Ok(true) => return (PushOne::Skipped, None),
-            Ok(false) => {}
-            Err(e) => {
-                let msg = format!("remote has check failed for {id}: {e}");
-                if format == CliFormat::Text {
-                    eprintln!("push: fail {id}: {msg}");
+            match sink.has(id) {
+                Ok(true) => return (PushOne::Skipped, None),
+                Ok(false) => {}
+                Err(e) => {
+                    let msg = format!("remote has check failed for {id}: {e}");
+                    if format == CliFormat::Text {
+                        eprintln!("push: fail {id}: {msg}");
+                    }
+                    let bucket = classify_sink_error(&e).summary_bucket();
+                    return (PushOne::Failed(bucket), Some(msg));
                 }
-                let bucket = classify_sink_error(&e).summary_bucket();
-                return (PushOne::Failed(bucket), Some(msg));
             }
-        }
 
-        if dry_run {
-            return (PushOne::Uploaded, None);
-        }
+            if dry_run {
+                return (PushOne::Uploaded, None);
+            }
 
-        match ChunkSink::put(&sink, id, &plain) {
-            Ok(PutOutcome::Written) => (PushOne::Uploaded, None),
-            Ok(PutOutcome::SkippedExists) => (PushOne::Skipped, None),
-            Err(e) => {
-                let msg = format!("put failed for {id}: {e}");
-                if format == CliFormat::Text {
-                    eprintln!("push: fail {id}: {msg}");
+            match ChunkSink::put(&sink, id, &plain) {
+                Ok(PutOutcome::Written) => (PushOne::Uploaded, None),
+                Ok(PutOutcome::SkippedExists) => (PushOne::Skipped, None),
+                Err(e) => {
+                    let msg = format!("put failed for {id}: {e}");
+                    if format == CliFormat::Text {
+                        eprintln!("push: fail {id}: {msg}");
+                    }
+                    let bucket = classify_sink_error(&e).summary_bucket();
+                    (PushOne::Failed(bucket), Some(msg))
                 }
-                let bucket = classify_sink_error(&e).summary_bucket();
-                (PushOne::Failed(bucket), Some(msg))
             }
-        }
+        })();
+        prog.tick();
+        outcome
     });
 
     let mut skipped = 0usize;
@@ -3143,6 +3179,7 @@ fn cmd_push(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_pull(
     store_path: &Path,
     source_spec: &str,
@@ -3151,6 +3188,7 @@ fn cmd_pull(
     index_paths: &[PathBuf],
     jobs: usize,
     format: CliFormat,
+    progress: bool,
 ) -> Result<()> {
     let source = open_primary_source(source_spec, http_tmpl)
         .with_context(|| format!("open chunk source {source_spec:?}"))?;
@@ -3183,47 +3221,52 @@ fn cmd_pull(
     }
 
     let store_display = store_path.display().to_string();
+    let prog = ProgressReporter::new(progress, "pull", Some(ids.len()));
     let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| {
-        let already = match store.as_ref() {
-            Some(s) => s.has(id),
-            None => false,
-        };
-        if already {
-            return (PullOne::Skipped, None);
-        }
-
-        if dry_run {
-            return (PullOne::Fetched, None);
-        }
-
-        let store = store
-            .as_ref()
-            .expect("non-dry-run pull always opens or creates the store");
-
-        let plain = match source.get(id) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let msg = format!("source get failed for {id} (store {store_display}): {e}");
-                if format == CliFormat::Text {
-                    eprintln!("pull: fail {id}: {msg}");
-                }
-                let bucket = classify_source_error(&e).summary_bucket();
-                return (PullOne::Failed(bucket), Some(msg));
+        let outcome = (|| {
+            let already = match store.as_ref() {
+                Some(s) => s.has(id),
+                None => false,
+            };
+            if already {
+                return (PullOne::Skipped, None);
             }
-        };
 
-        match ChunkSink::put(store, id, &plain) {
-            Ok(PutOutcome::Written) => (PullOne::Fetched, None),
-            Ok(PutOutcome::SkippedExists) => (PullOne::Skipped, None),
-            Err(e) => {
-                let msg = format!("store put failed for {id}: {e}");
-                if format == CliFormat::Text {
-                    eprintln!("pull: fail {id}: {msg}");
-                }
-                let bucket = classify_sink_error(&e).summary_bucket();
-                (PullOne::Failed(bucket), Some(msg))
+            if dry_run {
+                return (PullOne::Fetched, None);
             }
-        }
+
+            let store = store
+                .as_ref()
+                .expect("non-dry-run pull always opens or creates the store");
+
+            let plain = match source.get(id) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let msg = format!("source get failed for {id} (store {store_display}): {e}");
+                    if format == CliFormat::Text {
+                        eprintln!("pull: fail {id}: {msg}");
+                    }
+                    let bucket = classify_source_error(&e).summary_bucket();
+                    return (PullOne::Failed(bucket), Some(msg));
+                }
+            };
+
+            match ChunkSink::put(store, id, &plain) {
+                Ok(PutOutcome::Written) => (PullOne::Fetched, None),
+                Ok(PutOutcome::SkippedExists) => (PullOne::Skipped, None),
+                Err(e) => {
+                    let msg = format!("store put failed for {id}: {e}");
+                    if format == CliFormat::Text {
+                        eprintln!("pull: fail {id}: {msg}");
+                    }
+                    let bucket = classify_sink_error(&e).summary_bucket();
+                    (PullOne::Failed(bucket), Some(msg))
+                }
+            }
+        })();
+        prog.tick();
+        outcome
     });
 
     let mut skipped = 0usize;
@@ -3384,7 +3427,12 @@ fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
 /// Prints per-bad-chunk lines (`scrub: corrupt <id>` / `scrub: unreadable <id>`)
 /// and a summary `scrub: ok=… corrupt=… unreadable=…`. Never deletes. Exit
 /// non-zero iff corrupt+unreadable > 0 (empty store → all zeros, exit 0).
-fn cmd_store_scrub(store_path: &Path, jobs: usize, format: CliFormat) -> Result<()> {
+fn cmd_store_scrub(
+    store_path: &Path,
+    jobs: usize,
+    format: CliFormat,
+    progress: bool,
+) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
     let mut ids = store
@@ -3399,10 +3447,15 @@ fn cmd_store_scrub(store_path: &Path, jobs: usize, format: CliFormat) -> Result<
         Unreadable,
     }
 
-    let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| match store.get_verify(id, true) {
-        Ok(_) => ScrubOne::Ok,
-        Err(StoreError::Corrupt(_)) => ScrubOne::Corrupt,
-        Err(_) => ScrubOne::Unreadable,
+    let prog = ProgressReporter::new(progress, "scrub", Some(ids.len()));
+    let outcomes = parallel::map_indexed(&ids, jobs, |_i, id| {
+        let outcome = match store.get_verify(id, true) {
+            Ok(_) => ScrubOne::Ok,
+            Err(StoreError::Corrupt(_)) => ScrubOne::Corrupt,
+            Err(_) => ScrubOne::Unreadable,
+        };
+        prog.tick();
+        outcome
     });
 
     let mut ok_count = 0u64;
