@@ -5854,6 +5854,194 @@ fn store_scrub_default_format_is_text_not_json() {
     );
 }
 
+
+// --- Phase 14 M2: store stats / du + --format json ---
+
+#[test]
+fn store_stats_help_lists_stats_du_and_format() {
+    let s = run_ok(&["store", "--help"]);
+    let s_out = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        s_out.contains("stats"),
+        "store --help should list stats:\n{s_out}"
+    );
+    assert!(
+        s_out.contains("du"),
+        "store --help should show du alias:\n{s_out}"
+    );
+
+    let stats = run_ok(&["store", "stats", "--help"]);
+    let stats_s = String::from_utf8_lossy(&stats.stdout);
+    assert!(stats_s.contains("--store"), "{stats_s}");
+    assert!(
+        stats_s.contains("--format"),
+        "store stats --help must list --format:\n{stats_s}"
+    );
+    assert!(
+        !stats_s.contains("--apply"),
+        "store stats must not offer --apply:\n{stats_s}"
+    );
+
+    let du = run_ok(&["store", "du", "--help"]);
+    let du_s = String::from_utf8_lossy(&du.stdout);
+    assert!(du_s.contains("--store"), "{du_s}");
+    assert!(
+        du_s.contains("--format"),
+        "store du --help must list --format:\n{du_s}"
+    );
+}
+
+#[test]
+fn store_stats_empty_store_text_and_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    {
+        use chunkforge_store::{Compression, Store};
+        Store::create(&store, Compression::None).unwrap();
+    }
+
+    let out = run_ok(&["store", "stats", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == "store stats: chunks=0 bytes_on_disk=0 compression=none"),
+        "empty store text summary; stdout={stdout}"
+    );
+
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("store stats:"),
+        "json must not dual-write text; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stats json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["chunks"].as_u64(), Some(0));
+    assert_eq!(v["bytes_on_disk"].as_u64(), Some(0));
+    assert_eq!(v["compression"].as_str(), Some("none"));
+}
+
+#[test]
+fn store_stats_after_put_json_chunks_and_bytes() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("store stats:"),
+        "json must not dual-write text; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stats json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    let chunks = v["chunks"].as_u64().expect("chunks");
+    let bytes = v["bytes_on_disk"].as_u64().expect("bytes_on_disk");
+    assert!(chunks >= 1, "chunks={chunks}");
+    assert!(bytes > 0, "bytes_on_disk={bytes}");
+    assert_eq!(v["compression"].as_str(), Some("none"));
+
+    // Cross-check against library + on-disk .cnk sizes
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        let lib = s.stats().unwrap();
+        assert_eq!(chunks, lib.chunks);
+        assert_eq!(bytes, lib.bytes_on_disk);
+    }
+}
+
+#[test]
+fn store_stats_default_format_is_text_not_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["store", "stats", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("store stats: chunks=")
+            && l.contains("bytes_on_disk=")
+            && l.contains("compression=")),
+        "default (no --format) must keep text summary; stdout={stdout}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
+        "default (no --format) stdout must not be pure JSON; got {stdout}"
+    );
+}
+
+#[test]
+fn store_stats_du_alias_works() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    {
+        use chunkforge_store::{Compression, Store};
+        Store::create(&store, Compression::None).unwrap();
+    }
+
+    let out = run_ok(&["store", "du", "--store", store.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == "store stats: chunks=0 bytes_on_disk=0 compression=none"),
+        "du alias text; stdout={stdout}"
+    );
+
+    let out = run_ok(&[
+        "store",
+        "du",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("du json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["chunks"].as_u64(), Some(0));
+    assert_eq!(v["bytes_on_disk"].as_u64(), Some(0));
+}
+
 // --- Phase 7 M6: archive --seed-trust-mtime + extract --force ---
 
 #[test]

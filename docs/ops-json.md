@@ -10,7 +10,7 @@ note). See [stability.md](stability.md) Breaking-change policy. Additive keys
 in a minor are allowed when defaults stay compatible; this matrix lists the
 **minimum stable set** scripts may rely on.
 
-Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `doctor`),
+Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` / `doctor`),
 [diff.md](diff.md), [archive.md](archive.md), [extract.md](extract.md),
 [push.md](push.md), [pull.md](pull.md).
 
@@ -29,6 +29,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `doctor`),
 | **`pull`** | `ok`, `skipped`, `fetched`, `failed`, `failed_transient`, `failed_permanent`, `retries`, `unique_chunks`, `listings`, `dry_run` | Same shape as push with `fetched` instead of `uploaded`. With `--path`/`--exclude`, **`unique_chunks` = filtered** unique id count (field name unchanged). |
 | **`gc`** | `ok`, `dry_run`, `applied`, `listings`, `referenced`, `unreferenced`, `deleted` | Phase 12 §3.2. `unreferenced` = candidate count this run; `deleted` = actual deletes (**0** on dry-run). Both always present. No path listing on json. `--jobs` orthogonal. |
 | **`store scrub`** | `ok`, `checked`, `ok_count`, `corrupt`, `unreadable`, `corrupt_ids`, `unreadable_ids` | Phase 12 §3.2. `checked` = total scanned; `ok_count`/`corrupt`/`unreadable` partition; bad ids **only** in arrays. `ok` true iff corrupt+unreadable==0. `--jobs` orthogonal. |
+| **`store stats`** (alias **`du`**) | `ok`, `chunks`, `bytes_on_disk`; optional `compression` (`"none"` \| `"zstd"`) | Phase 14 M2. Read-only; `chunks` = `list_chunk_ids` count; `bytes_on_disk` = sum of `.cnk` `metadata().len()` (no plaintext decode). Default **text**: `store stats: chunks=N bytes_on_disk=M compression=…` on stdout. **json**: one object; no text dual-write. **Not** GC / scrub / trim / LRU. |
 
 ## Conventions
 
@@ -49,6 +50,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `doctor`),
 | `doctor` | Are **referenced** chunks **present**? (`has`, optional `--deep` = `get`) |
 | `gc` | Which **local** loose chunks are **unreferenced**? (dry-run / `--apply`) |
 | `store scrub` | Are **local** loose `.cnk` objects bit-rot free? (full BLAKE3; no listing) |
+| `store stats` / `du` | How many loose chunks / how many **on-disk** bytes? (observation only) |
 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.

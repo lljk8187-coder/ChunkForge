@@ -538,12 +538,31 @@ enum StoreCommands {
         #[arg(long = "progress")]
         progress: bool,
     },
+    /// Report local CAS chunk count and on-disk bytes (alias: `du`)
+    ///
+    /// Read-only observation via `Store::stats` — never deletes, trims, or
+    /// applies LRU. Default **`--format text`**: one stdout summary line
+    /// `store stats: chunks=N bytes_on_disk=M compression=none|zstd`.
+    /// **`--format json`**: one JSON object on stdout (`ok` / `chunks` /
+    /// `bytes_on_disk` / `compression`); no text dual-write. Exit codes are
+    /// format-independent (success → 0).
+    #[command(visible_alias = "du")]
+    Stats {
+        /// Local CAS store directory
+        #[arg(long)]
+        store: PathBuf,
+        /// Output format (default text; json = one object on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
+    },
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` / `store scrub` / `archive` (Phase 8–12 + Phase 13 M2).
+/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive`
+/// (Phase 8–12 + Phase 13 M2 + Phase 14 M2).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
-/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0).
+/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
+/// `store stats` ≡ text summary).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -880,6 +899,9 @@ fn run() -> Result<()> {
             let jobs = parse_jobs(jobs)?;
             cmd_store_scrub(&store, jobs, format, progress)
         }
+        Commands::Store {
+            command: StoreCommands::Stats { store, format },
+        } => cmd_store_stats(&store, format),
     }
 }
 
@@ -3718,6 +3740,40 @@ fn cmd_store_scrub(
             "scrub: {} bad chunk(s) (corrupt={corrupt} unreadable={unreadable})",
             corrupt + unreadable
         );
+    }
+    Ok(())
+}
+
+/// Local CAS size observation: chunk count + on-disk `.cnk` bytes.
+///
+/// Text (default): one stdout line
+/// `store stats: chunks=N bytes_on_disk=M compression=none|zstd`.
+/// Json: one object (`ok`, `chunks`, `bytes_on_disk`, `compression`); no text
+/// dual-write. Never deletes. Exit 0 on success for both formats.
+fn cmd_store_stats(store_path: &Path, format: CliFormat) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+    let s = store
+        .stats()
+        .with_context(|| format!("stats for store {}", store_path.display()))?;
+    match format {
+        CliFormat::Text => {
+            println!(
+                "store stats: chunks={} bytes_on_disk={} compression={}",
+                s.chunks,
+                s.bytes_on_disk,
+                s.compression.as_str()
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "chunks": s.chunks,
+                "bytes_on_disk": s.bytes_on_disk,
+                "compression": s.compression.as_str(),
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }

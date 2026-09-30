@@ -1,7 +1,7 @@
 # Doctor / GC / Scrub
 
 Phase 3 optional CLI utilities for store hygiene, plus Phase 7 CAS bitrot scrub.
-**`doctor`**, **`gc`**, and **`store scrub`** are implemented. Stable JSON fields:
+**`doctor`**, **`gc`**, **`store scrub`**, and **`store stats`** (`du`) are implemented. Stable JSON fields:
 [ops-json.md](ops-json.md).
 
 ## `chunkforge doctor`
@@ -131,12 +131,42 @@ chunkforge store scrub --store ./empty-store
 | Repair | **None** — report only; do not auto-delete (re-pull / replace bad objects separately) |
 | Exit code | corrupt+unreadable == 0 → **0**; else **non-zero** (same for text and json) |
 
+
+## `chunkforge store stats` (alias `du`)
+
+Local-only **size observation** for a CAS store: chunk count + on-disk `.cnk`
+bytes via `Store::stats`. Does **not** decode plaintext, delete, trim, or
+apply LRU. Pair with `store scrub` (integrity) and `gc` (reclaim).
+
+```bash
+# Text summary (default) — one stdout line
+chunkforge store stats --store ./store
+# → store stats: chunks=N bytes_on_disk=M compression=none
+
+# Alias
+chunkforge store du --store ./store
+
+# Machine-readable (Phase 14 M2)
+chunkforge store stats --store ./store --format json
+# → {"ok":true,"chunks":N,"bytes_on_disk":M,"compression":"none"}
+```
+
+| Rule | Behaviour |
+|---|---|
+| Scope | All layout-conforming loose chunks under local `--store` |
+| Counts | `chunks` = `list_chunk_ids` length; `bytes_on_disk` = sum of `.cnk` file lengths |
+| `compression` | Store-wide policy from `meta.toml` (`none` / `zstd`) |
+| `--format text\|json` | Default **text**: `store stats: chunks=… bytes_on_disk=… compression=…` on stdout. **json**: one object (`ok`, `chunks`, `bytes_on_disk`, `compression`); no text dual-write. Exit format-independent. |
+| Mutation | **None** — observation only; **no** `--apply` / delete / trim |
+| Exit code | Success → **0** (empty store → chunks=0 bytes_on_disk=0) |
+
 ## Presence vs scrub vs GC
 
 | Tool | Question it answers |
 |---|---|
 | **`doctor`** | Are chunks **referenced by listings** present? (`has`, optional `--deep` = `get`) |
 | **`store scrub`** | Are **objects already in the local CAS** bit-rot free? (re-BLAKE3; no listing) |
+| **`store stats` / `du`** | How many loose chunks / how many **on-disk** bytes? (observation; not trim) |
 | **`gc`** | Which loose chunks are **unreferenced** and can be reclaimed? (dry-run / `--apply`) |
 
 `doctor --deep` is still presence-oriented (fetch/discard), **not** a full-store

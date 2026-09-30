@@ -572,7 +572,13 @@ Workspace / CLI version is **1.3.0**.
 | `diff` | Listing↔listing; **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
-**Not delivered / non-goals (carry forward):** `push --path`; `store du`;
+**Phase 14 (Unreleased, pre-1.4.0):** `store stats` / alias `du` +
+`--format text|json` (local chunk count + on-disk bytes; see
+[docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md)).
+Still pending: `push --path`/`--exclude`, `--exclude-from`,
+`check_compat_1_3`, 1.4.0 bump.
+
+**Not delivered / non-goals (carry forward):** `push --path`;
 `--exclude-from`; packfile; write mount / COW; bidirectional sync; extract
 prune / `--delete`; remote scrub; aws-sdk; byte-range resume; push listing
 upload; changing default jobs·retries; video analysis. Pack remains

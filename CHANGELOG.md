@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Phase14-M1** (`chunkforge-store`): `Store::stats` → `StoreStats { chunks, bytes_on_disk, compression }` — aggregates via `list_chunk_ids` + per-`.cnk` `metadata().len()` (no plaintext decode). Library only; **not** wired to CLI yet (M2).
+- **Phase14-M1** (`chunkforge-store`): `Store::stats` → `StoreStats { chunks, bytes_on_disk, compression }` — aggregates via `list_chunk_ids` + per-`.cnk` `metadata().len()` (no plaintext decode).
+- **Phase14-M2** (`chunkforge-cli`): `store stats` (visible alias **`du`**) + `--format text|json` — wires `Store::open` + `stats()`. Default **text**: one stdout line `store stats: chunks=N bytes_on_disk=M compression=none|zstd`. **json**: `{ok, chunks, bytes_on_disk, compression}` on stdout; no text dual-write; exit format-independent. Read-only (no `--apply` / delete / trim / LRU). Ops matrix row in `docs/ops-json.md`; short section in `docs/doctor-gc.md`.
 
 ## [1.3.0] — 2026-09-29
 
