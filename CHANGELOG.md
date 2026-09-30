@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Phase 17 in progress toward **1.7.0** (workspace / CLI still **1.6.0** until
+M7). Delivered through M6: create-time `--compression none|zstd` (default
+**none** ≡ 1.6); `archive` / `extract` / `make --progress` (default off);
+docs + `demo_zstd_progress.sh`; **`check_compat_1_6.sh`**; P1 CacheSource
+observation counters (`hits` / `miss_fills` / `miss_refused` — **≠** LRU).
+**Unreleased / deferred:** `cat` / `verify --progress`; version bump + tag
+**1.7.0** (M7). No pack / write mount / aws-sdk / prune / LRU / default zstd /
+wire compression.
+
+### Added
+
+- **`scripts/check_compat_1_6.sh`** (Phase 17 M6 / G6): calls
+  `check_compat_1_5.sh`, then asserts `make`/`archive --help` contain
+  `--compression` and `archive`/`extract`/`make --help` contain `--progress`;
+  re-asserts thin non-goals (no `--delete` / pack / LRU / aws-sdk); asserts
+  `demo_zstd_progress.sh` present + executable. Does **not** treat absolute
+  perf as CI SLA; does **not** force-run the long demo. Keeps
+  `check_compat_1_0`…`1_5` / `demo_*` independently runnable.
+- **CacheSource observation counters** (Phase 17 M6 P1 / O1): atomic
+  `hits` / `miss_fills` / `miss_refused` on `get` path; exposed via
+  `hits()` / `miss_fills()` / `miss_refused()` getters. Soft budget remains
+  refuse-fill — counters are **not** LRU / trim.
+
+### Not delivered (still Unreleased)
+
+- **`cat` / `verify --progress`** — P1 O3 deferred (schedule).
+- Workspace / CLI version bump + annotated tag **1.7.0** — M7.
+
 ## [1.6.0] — 2026-09-29
 
 Phase 16 closeout — `FallbackSource` / CLI `--fallback` (Missing-only;

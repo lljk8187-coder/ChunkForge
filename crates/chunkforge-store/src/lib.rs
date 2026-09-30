@@ -22,6 +22,9 @@
 //! Phase 16 adds [`FallbackSource`]: ordered multi-source read failover that
 //! advances only on [`SourceError::NotFound`] (Missing); Corrupt/Io/Backend fail fast.
 //!
+//! Phase 17 P1: [`CacheSource`] exposes observation counters
+//! (`hits` / `miss_fills` / `miss_refused`) on the `get` path — **not** LRU / trim.
+//!
 //! Phase 4 adds [`ChunkSink`]: a write-only trait implemented by [`Store`]
 //! (and later by HTTP PUT) so push pipelines share one write face without
 //! forcing `put` onto read-only [`ChunkSource`] backends.

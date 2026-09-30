@@ -22,7 +22,7 @@
 | **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
 | **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
 | **Phase 16** | **1.6.0** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
-| **Phase 17** | **1.7.0** (narrative; workspace still **1.6.0** until M7) | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress`; defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
+| **Phase 17** | **1.7.0** (narrative; workspace still **1.6.0** until M7) | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress` + **`check_compat_1_6`** (+ P1 CacheSource hit/refuse counters); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -838,7 +838,7 @@ SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single origin).
 Workspace / CLI version remains **1.6.0** until Phase 17 closeout (M7 version
 bump); this section is the product narrative for **1.7.0**.
 
-**Delivered (through M5):**
+**Delivered (through M6):**
 
 - **`--compression none|zstd`** (create-time only): applied when `meta.toml` is
   absent; existing stores open by meta (explicit conflict → clear non-zero).
@@ -855,10 +855,15 @@ bump); this section is the product narrative for **1.7.0**.
   [docs/remote-layout.md](docs/remote-layout.md) / [docs/archive.md](docs/archive.md) /
   [docs/extract.md](docs/extract.md) (disk zstd ≠ wire ≠ pack).
 - Smoke: [`scripts/demo_zstd_progress.sh`](scripts/demo_zstd_progress.sh).
+- Gate: [`scripts/check_compat_1_6.sh`](scripts/check_compat_1_6.sh) (calls
+  `check_compat_1_5` + asserts `--compression` / archive·extract·make
+  `--progress`; thin no-pack / no-`--delete` / no-LRU / no-aws-sdk; does **not**
+  treat absolute perf as CI SLA).
+- P1 **CacheSource** observation counters: `hits` / `miss_fills` /
+  `miss_refused` (get-path only; **≠** LRU / trim).
 
-**Not yet (later milestones):** `check_compat_1_6` (M6); Cargo / workspace
-version bump + tag to **1.7.0** (M7). P1 Cache hit/refuse counters and
-`cat`/`verify --progress` remain optional.
+**Not yet (later milestones):** Cargo / workspace version bump + tag to
+**1.7.0** (M7). P1 `cat`/`verify --progress` remains optional / Unreleased.
 
 **Non-goals (carry forward):** packfile; write mount / COW; bidirectional sync;
 extract prune / `--delete`; remote scrub; full aws-sdk / multipart / IMDS /

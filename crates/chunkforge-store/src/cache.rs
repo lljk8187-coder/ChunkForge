@@ -3,6 +3,7 @@
 use crate::Store;
 use crate::source::{ChunkSource, SourceError};
 use chunkforge_chunk::ChunkId;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Read-through cache: check local cache store first; on miss fetch primary and
 /// `put` into the cache only (never writes the primary).
@@ -15,12 +16,23 @@ use chunkforge_chunk::ChunkId;
 /// caps fill using `cache.stats().bytes_on_disk`. Over budget skips `put` but
 /// still returns primary plaintext. Never evicts / removes existing cache
 /// entries. `None` / [`CacheSource::new`] ≡ 1.4 unbounded fill.
+///
+/// Observation counters (Phase 17 P1): [`hits`](CacheSource::hits) /
+/// [`miss_fills`](CacheSource::miss_fills) /
+/// [`miss_refused`](CacheSource::miss_refused) track `get` outcomes only.
+/// Counters are **not** an LRU / trim API — soft budget remains refuse-fill.
 #[derive(Debug)]
 pub struct CacheSource<P, S = Store> {
     primary: P,
     cache: S,
     /// Soft fill budget over `cache.stats().bytes_on_disk`. `None` = unbounded.
     max_bytes: Option<u64>,
+    /// Successful `get` served from the cache store (no primary fetch).
+    hits: AtomicU64,
+    /// Cache miss that fetched primary and filled the cache.
+    miss_fills: AtomicU64,
+    /// Cache miss that fetched primary but soft-budget refused the fill.
+    miss_refused: AtomicU64,
 }
 
 impl<P> CacheSource<P, Store> {
@@ -30,6 +42,9 @@ impl<P> CacheSource<P, Store> {
             primary,
             cache,
             max_bytes: None,
+            hits: AtomicU64::new(0),
+            miss_fills: AtomicU64::new(0),
+            miss_refused: AtomicU64::new(0),
         }
     }
 
@@ -44,6 +59,9 @@ impl<P> CacheSource<P, Store> {
             primary,
             cache,
             max_bytes,
+            hits: AtomicU64::new(0),
+            miss_fills: AtomicU64::new(0),
+            miss_refused: AtomicU64::new(0),
         }
     }
 
@@ -66,6 +84,22 @@ impl<P> CacheSource<P, Store> {
     pub fn into_parts(self) -> (P, Store) {
         (self.primary, self.cache)
     }
+
+    /// Number of `get` calls served from the cache (no primary fetch).
+    /// Observation only — **not** an eviction / LRU control.
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    /// Number of cache misses that fetched primary and filled the cache.
+    pub fn miss_fills(&self) -> u64 {
+        self.miss_fills.load(Ordering::Relaxed)
+    }
+
+    /// Number of cache misses that fetched primary but soft-budget refused fill.
+    pub fn miss_refused(&self) -> u64 {
+        self.miss_refused.load(Ordering::Relaxed)
+    }
 }
 
 impl<P: ChunkSource> ChunkSource for CacheSource<P, Store> {
@@ -78,7 +112,10 @@ impl<P: ChunkSource> ChunkSource for CacheSource<P, Store> {
 
     fn get(&self, id: &ChunkId) -> Result<Vec<u8>, SourceError> {
         match ChunkSource::get(&self.cache, id) {
-            Ok(data) => Ok(data),
+            Ok(data) => {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                Ok(data)
+            }
             Err(SourceError::NotFound(_)) => {
                 let data = self.primary.get(id)?;
                 // Soft budget: skip fill when adding this plaintext would
@@ -86,6 +123,7 @@ impl<P: ChunkSource> ChunkSource for CacheSource<P, Store> {
                 if let Some(max) = self.max_bytes {
                     let on_disk = self.cache.stats().map_err(SourceError::from)?.bytes_on_disk;
                     if on_disk.saturating_add(data.len() as u64) > max {
+                        self.miss_refused.fetch_add(1, Ordering::Relaxed);
                         return Ok(data);
                     }
                 }
@@ -93,6 +131,7 @@ impl<P: ChunkSource> ChunkSource for CacheSource<P, Store> {
                 self.cache
                     .put_with_id(id, &data)
                     .map_err(SourceError::from)?;
+                self.miss_fills.fetch_add(1, Ordering::Relaxed);
                 Ok(data)
             }
             Err(e) => Err(e),
@@ -277,5 +316,39 @@ mod tests {
         let src = CacheSource::with_max_bytes(primary, cache, Some(0));
         assert_eq!(src.get(&id).unwrap(), data);
         assert!(src.cache().has(&id), "hit must not remove existing entry");
+    }
+
+    #[test]
+    fn observation_counters_hit_fill_refuse() {
+        let primary_dir = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+        let primary = Store::create(primary_dir.path(), Compression::None).unwrap();
+        let a = vec![b'a'; 100];
+        let b = vec![b'b'; 100];
+        let (id_a, _) = primary.put(&a).unwrap();
+        let (id_b, _) = primary.put(&b).unwrap();
+        let cache = Store::create(cache_dir.path(), Compression::None).unwrap();
+
+        // max=150: first fills; second refuses; third get of a is a hit.
+        let src = CacheSource::with_max_bytes(primary, cache, Some(150));
+        assert_eq!(src.hits(), 0);
+        assert_eq!(src.miss_fills(), 0);
+        assert_eq!(src.miss_refused(), 0);
+
+        assert_eq!(src.get(&id_a).unwrap(), a);
+        assert_eq!(src.hits(), 0);
+        assert_eq!(src.miss_fills(), 1);
+        assert_eq!(src.miss_refused(), 0);
+
+        assert_eq!(src.get(&id_b).unwrap(), b);
+        assert_eq!(src.hits(), 0);
+        assert_eq!(src.miss_fills(), 1);
+        assert_eq!(src.miss_refused(), 1);
+        assert!(!src.cache().has(&id_b));
+
+        assert_eq!(src.get(&id_a).unwrap(), a);
+        assert_eq!(src.hits(), 1);
+        assert_eq!(src.miss_fills(), 1);
+        assert_eq!(src.miss_refused(), 1);
     }
 }
