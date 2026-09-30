@@ -44,6 +44,17 @@ and is **not** pack / wire Content-Encoding / LRU. Defaults stay ≡ **1.6.0**
 retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
 origin). The workspace reports **1.7.0**.
 
+**1.8.0** (Phase18 narrative; workspace / `Cargo.toml` still **1.7.0** until
+M7) adds further **opt-in** only: **`pull --verify`** (post-success verify
+against local `--store`; dry-run / failed pull skip; default **off** ≡ 1.7),
+**`--cache-stats`** stderr observation + ops-json additive **`cache_*`**
+fields when `--cache` (≠ LRU / trim), and **`cat` / `verify --progress`**
+(default **off** ≡ 1.7; reuse `ProgressReporter`; per listing chunk). Defaults
+stay ≡ **1.7.0** (no `--verify` on pull ⇒ quiet; no `--cache-stats` ⇒ no
+cache noise; no cat/verify `--progress` ⇒ quiet; create compression **none**;
+jobs=1, retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback`
+⇒ single origin).
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -65,12 +76,14 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--progress`, `--path` / `--exclude` / `--exclude-from`, `archive --format json`,
 `store stats`/`du`, `push --path`, `--cache-max-bytes`, `make`/`cat
 --format json`, `--fallback`, cache-max human suffixes, `store stats`
-`bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`) may ship in
+`bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
+`pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, and **1.7.0** are such minors: all new
+**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, and **1.8.0** (Phase18) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
-no `--fallback` / create compression **none** / progress **off** ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
-trim ≠ GC ≠ sync).
+no `--fallback` / create compression **none** / progress **off** / no pull
+`--verify` / no `--cache-stats` ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
+trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 
 ## Breaking-change policy
 
@@ -138,6 +151,9 @@ At 1.0, ChunkForge promises:
 | `store stats` `bytes_plaintext` / `--decode` | Observation: none ⇒ plaintext ≡ on_disk; zstd needs `--decode`; **≠ trim ≠ LRU** |
 | `make` / `archive --compression` | Create-time store meta only (`none`\|`zstd`; omit ≡ **none** ≡ 1.6); existing store opens by meta; **≠ wire compression ≠ pack ≠ LRU** |
 | `archive` / `extract` / `make --progress` | Opt-in stderr `progress: op=…`; default **off** ≡ 1.6; **orthogonal** to `--format json` |
+| `pull --verify` | Opt-in post-success verify of each listing against local `--store` (symmetric to `push --verify`); dry-run / failed pull **skip**; default **off** ≡ 1.7; **≠** sync |
+| `--cache-stats` / ops-json `cache_*` | Opt-in CacheSource observation (`hits` / `miss_fills` / `miss_refused`); requires `--cache`; **≠ LRU ≠ trim**; default quiet ≡ 1.7 |
+| `cat` / `verify --progress` | Opt-in stderr `progress: op=cat|verify done=N/TOTAL` per listing chunk; default **off** ≡ 1.7; **orthogonal** to `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats` |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
@@ -163,5 +179,8 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 [`scripts/check_compat_1_4.sh`](../scripts/check_compat_1_4.sh)
 (1.5 cache-max / make·cat format; calls 1_3), and
 [`scripts/check_compat_1_5.sh`](../scripts/check_compat_1_5.sh)
-(1.6 `--fallback` / suffixes / `bytes_plaintext`/`--decode`; calls 1_4).
-No absolute perf SLA.
+(1.6 `--fallback` / suffixes / `bytes_plaintext`/`--decode`; calls 1_4),
+[`scripts/check_compat_1_6.sh`](../scripts/check_compat_1_6.sh)
+(1.7 `--compression` / archive·extract·make `--progress`; calls 1_5).
+Phase18 **`check_compat_1_7.sh`** (pull `--verify` / `--cache-stats` /
+cat·verify `--progress`) lands in M6. No absolute perf SLA.

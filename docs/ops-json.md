@@ -21,12 +21,12 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`archive`** (write) | `ok`, `dry_run` (`false`), `files`, `dirs`, `chunks`, `written`, `reused`, `seed_reused_files`, `rechunked_files`, `skipped_symlinks`, `skipped_special`, `excluded` | Phase 13 §3.3 / M5. Default **text** ≡ 1.2.0. `excluded` = regular files rejected by `--path`/`--exclude` (0 when no filter). Empty Dir entries omitted → `dirs` usually 0. |
 | **`archive`** (dry-run) | `ok`, `dry_run` (`true`), `files`, `dirs`, `chunks`, `would_write`, `would_reuse`, `seed_reused_files`, `rechunked_files`, `skipped_symlinks`, `skipped_special`, `excluded` | Dry-run uses **`would_write` / `would_reuse`** (not `written` / `reused`). Other counters present in both modes. |
 | **`diff`** | `added`, `removed`, `changed`, `meta_changed` (string arrays of paths); `chunks_shared`, `chunks_only_left`, `chunks_only_right` (numbers) | No top-level `ok`. Differences → exit **1** (like `diff(1)`). `--max-paths` does **not** truncate JSON arrays. |
-| **`verify`** | `ok` (bool); `kind` (`"cfidx"` \| `"cfdir"`); **cfidx:** `bytes`, `chunks`; **cfdir:** `files`, `chunks`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Success-only object shown here; failure paths bail before JSON. Without `--cache`, the three `cache_*` keys are **omitted** (1.7 baseline shape). With `--cache`, present even if `--cache-stats` is off. **≠** LRU. |
+| **`verify`** | `ok` (bool); `kind` (`"cfidx"` \| `"cfdir"`); **cfidx:** `bytes`, `chunks`; **cfdir:** `files`, `chunks`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Success-only object shown here; failure paths bail before JSON. Without `--cache`, the three `cache_*` keys are **omitted** (1.7 baseline shape). With `--cache`, present even if `--cache-stats` is off. **≠** LRU. Orthogonal to **`--progress`** (stderr only; Phase18-M5). |
 | **`doctor`** | `ok`, `listings`, `checked`, `missing`, `deep`, `retries`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | When complete: `missing` is **`0`** (number). When gaps: `missing` is a **string array** of hex ids (not also printed as bare lines). Without `--cache`, omit `cache_*`. Counters follow `CacheSource` get-path observation (`--deep` exercises `get`; default `has` may leave zeros). **≠** LRU. |
 | **`extract`** (write) | `ok`, `dry_run` (`false`), `skipped`, `wrote`, `dirs`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Always emits `skipped`/`wrote`/`dirs` (`skipped=0` when `--skip-unchanged` off). Path filter does **not** rename fields; counts reflect the filtered set. Without `--cache`, omit `cache_*`. |
 | **`extract`** (dry-run) | `ok`, `dry_run` (`true`), `would_skip`, `would_write`, `would_dirs`, `would_fail` | No chunk gets; exit **0** when listing is valid even if `would_fail > 0`. Dry-run does **not** open `--cache`, so `cache_*` keys stay **omitted** even if `--cache` was passed (no `CacheStatsRef`). |
 | **`push`** | `ok`, `skipped`, `uploaded`, `failed`, `failed_transient`, `failed_permanent`, `retries`, `unique_chunks`, `listings`, `dry_run` | JSON emitted before non-zero exit on `failed > 0`. With `--path`/`--exclude`, **`unique_chunks` = filtered** unique id count (field name unchanged; ≡ pull). |
-| **`pull`** | `ok`, `skipped`, `fetched`, `failed`, `failed_transient`, `failed_permanent`, `retries`, `unique_chunks`, `listings`, `dry_run`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Same shape as push with `fetched` instead of `uploaded`. With `--path`/`--exclude`, **`unique_chunks` = filtered** unique id count (field name unchanged). Without `--cache`, omit `cache_*`. |
+| **`pull`** | `ok`, `skipped`, `fetched`, `failed`, `failed_transient`, `failed_permanent`, `retries`, `unique_chunks`, `listings`, `dry_run`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Same shape as push with `fetched` instead of `uploaded`. With `--path`/`--exclude`, **`unique_chunks` = filtered** unique id count (field name unchanged). Without `--cache`, omit `cache_*`. Opt-in **`--verify`** (Phase18-M1) runs post-pull listing verify against `--store` on **stderr** only — it does **not** add/rename JSON fields (orthogonal; dry-run/failed pull skips verify). |
 | **`gc`** | `ok`, `dry_run`, `applied`, `listings`, `referenced`, `unreferenced`, `deleted` | Phase 12 §3.2. `unreferenced` = candidate count this run; `deleted` = actual deletes (**0** on dry-run). Both always present. No path listing on json. `--jobs` orthogonal. |
 | **`store scrub`** | `ok`, `checked`, `ok_count`, `corrupt`, `unreadable`, `corrupt_ids`, `unreadable_ids` | Phase 12 §3.2. `checked` = total scanned; `ok_count`/`corrupt`/`unreadable` partition; bad ids **only** in arrays. `ok` true iff corrupt+unreadable==0. `--jobs` orthogonal. Phase 15 P1 `--listing` scopes `checked` to listing refs (field names unchanged; **not** remote scrub). |
 | **`store stats`** (alias **`du`**) | `ok`, `chunks`, `bytes_on_disk`, `bytes_plaintext` (`number` \| `null`); optional `compression` (`"none"` \| `"zstd"`) | Phase 14 M2 + Phase 16 M4. Read-only; `chunks` = `list_chunk_ids` count; `bytes_on_disk` = sum of `.cnk` `metadata().len()` (no plaintext decode). `bytes_plaintext`: `compression=none` → equals `bytes_on_disk` (cheap); `compression=zstd` → `null` unless opt-in **`--decode`** (full-store `get` sum). Default **text**: `store stats: chunks=N bytes_on_disk=M [bytes_plaintext=P] compression=…` (`bytes_plaintext` printed only when known). **json**: one object; `bytes_plaintext` number or `null`; no text dual-write. Old field names unchanged. **Not** GC / scrub / trim / LRU. |
@@ -117,6 +117,11 @@ Phase 17 / **1.7.0** adds create-time `--compression` and
 sections below). Gated by **`check_compat_1_6.sh`** (calls 1_5; no absolute
 perf SLA). Workspace reports **1.7.0**. Smoke:
 [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
+Phase18 / **1.8.0** narrative (workspace still **1.7.0** until M7):
+`pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify
+--progress` (all opt-in; defaults ≡ 1.7). Smoke:
+[`scripts/demo_pull_verify_cache_stats.sh`](../scripts/demo_pull_verify_cache_stats.sh).
+Gate **`check_compat_1_7.sh`** lands in M6.
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)
@@ -143,16 +148,18 @@ Rules:
 | Soft budget | Counters observe refuse-fill; they are **not** an LRU / trim / eviction API |
 | Coverage | `cat` / `verify` / `extract` (write path) / `pull` / `doctor`. `mount` has no ops-json |
 
-## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7.0)
+## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7.0 + Phase18)
 
-Opt-in **`--progress`** (default **off** ≡ 1.6) on long ops emits
+Opt-in **`--progress`** (default **off** ≡ prior minor) on long ops emits
 `progress: op=… done=N/TOTAL` lines on **stderr** only. It does **not** add,
 rename, or remove any JSON field in this matrix. With **`--format json`**,
 the single JSON object still goes to **stdout**; progress noise stays on
-stderr. Exit codes remain format-independent.
+stderr. Exit codes remain format-independent. Orthogonal to `--jobs` /
+`--cache` / `--fallback` / `--cache-stats`.
 
-Coverage today: `push` / `pull` / `store scrub` / `gc --apply` (Phase 12+) plus
-**`archive` / `extract` / `make`** (Phase 17). Default off ≡ prior minor.
+Coverage: `push` / `pull` / `store scrub` / `gc --apply` (Phase 12+) plus
+**`archive` / `extract` / `make`** (Phase 17) plus **`cat` / `verify`**
+(Phase18-M4/M5; per listing chunk). Default off ≡ prior minor.
 
 ## Store compression narrative (Phase 17 / 1.7.0)
 

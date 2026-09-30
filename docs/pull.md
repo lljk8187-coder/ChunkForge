@@ -14,12 +14,15 @@ chunkforge pull \
   --store <local-cas> \
   --source <PATH|URL> \
   [--fallback <PATH|URL>]... \
+  [--cache DIR] [--cache-max-bytes SIZE] [--cache-stats] \
   [--url-template '{base}/{path}'] \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
   [--jobs N] \
   [--http-retries N] \
   [--dry-run] \
+  [--verify] \
+  [--progress] \
   [--format text|json] \
   [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
   listing1.cfidx|.cfdir [listing2 ...]
@@ -35,6 +38,9 @@ chunkforge pull \
 | `--jobs N` | Bounded concurrency for has/get/put (default **1** = serial) |
 | `--dry-run` | Probe + count only; **no** store writes (does not create `meta.toml`) |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
+| `--verify` | After a **successful** pull (and not `--dry-run`), treat local `--store` as a `ChunkSource` and run the same verify path used by `chunkforge verify` on each listing (symmetric to `push --verify`, which verifies `--dest`). Default **off** ≡ 1.7. Dry-run or pull already failed → **skip** verify with a clear stderr note. Verify failure → **non-zero** even if fetch counts were ok. Does **not** reshape `--format json` fields (verify chatter stays on stderr). Orthogonal to `--jobs` / `--progress` / path filter / `--fallback` / `--cache` |
+| `--progress` | Opt-in stderr `progress: op=pull done=N/TOTAL` per chunk (default **off**) |
+| `--cache` / `--cache-max-bytes` / `--cache-stats` | Optional local cache ahead of `--source` (fill on miss; soft budget refuse-fill). `--cache-stats` emits `cache: hits=…` on stderr (requires `--cache`; ≠ LRU). With `--cache` + `--format json`, additive `cache_*` fields (see [ops-json.md](ops-json.md)) |
 | `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.2.0** full reference set). Does **not** download or alter the listing |
 | `--exclude PAT` | Exclude matching File paths (repeatable): exact, trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. Applied after `--path` |
 | `--exclude-from FILE` | Repeatable UTF-8 file of `--exclude` patterns (blank / `#` skipped, trim). Union with CLI `--exclude` → one `PathFilter`. Missing/unreadable file or illegal line → clear non-zero |
@@ -68,6 +74,31 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 
 ```json
 {"ok":true,"skipped":0,"fetched":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
+```
+
+### `--verify` (Phase18 / 1.8 opt-in)
+
+Symmetric to [`push --verify`](push.md): after a **successful** fetch into
+local `--store`, re-open that store as a `ChunkSource` and verify each listing
+(`.cfidx` / `.cfdir`) with the same integrity path as `chunkforge verify`
+(structure + referenced chunk presence/hash/length + blob_blake3).
+
+| Rule | Detail |
+|---|---|
+| Default | **Off** ≡ **1.7.0** (no post-verify; no verify noise) |
+| Success path | Pull `failed == 0` and not `--dry-run` → verify each listing against `--store` |
+| Skip | `--dry-run`, or pull already failed (`failed > 0`) → clear stderr skip note; do **not** claim verify ok |
+| Failure | Any listing verify failure → **non-zero** exit (even if fetch counters looked successful) |
+| JSON | Does **not** add/rename fields; JSON object is emitted for the pull itself; verify chatter is stderr-only |
+| Orthogonal | `--format` / `--jobs` / `--progress` / path filter / `--fallback` / `--cache` / `--cache-stats` |
+| ≠ sync | One-way post-check only; not bidirectional sync, not prune, not extract |
+
+```bash
+# Fill empty store from local primary, then verify the listing against --store
+chunkforge pull --store ./store2 --source ./store --verify ./blob.cfidx
+# stderr: pull: verifying 1 listing against --store …
+#         verify: ok (…)
+#         pull: verify ok (1 listing)
 ```
 
 ### `--path` / `--exclude` / `--exclude-from` (Phase 13 M4 / Phase 14 M4)
@@ -160,3 +191,4 @@ Partial progress may leave some chunks in `--store`; re-run is safe (existing id
 - Path-filter smoke: [`scripts/demo_path_filter.sh`](../scripts/demo_path_filter.sh)
 - Fallback / suffix / `bytes_plaintext` smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh)
 - Ops JSON: [ops-json.md](ops-json.md)
+- Phase18 smoke (`pull --verify` / cache-stats / cat·verify `--progress`): [`scripts/demo_pull_verify_cache_stats.sh`](../scripts/demo_pull_verify_cache_stats.sh)

@@ -12523,3 +12523,151 @@ fn cat_progress_orthogonal_to_format_json() {
     assert_eq!(v["ok"], true);
     assert!(v.get("bytes").is_some());
 }
+
+// --- Phase 18 M5: verify --progress ---
+
+#[test]
+fn verify_help_lists_progress() {
+    let help = run_ok(&["verify", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--progress"),
+        "verify --help must list --progress:\n{s}"
+    );
+}
+
+#[test]
+fn verify_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    // Multi-chunk blob so TOTAL > 1 is observable.
+    let input = dir.path().join("blob.bin");
+    let mut data = Vec::with_capacity(200 * 1024);
+    for i in 0..(200 * 1024) {
+        data.push((i % 251) as u8);
+    }
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=verify done=")),
+        "verify --progress stderr must contain progress: op=verify; stderr={err}"
+    );
+    assert!(
+        err.contains("done=") && err.contains("/"),
+        "verify progress should include done=N/TOTAL; stderr={err}"
+    );
+
+    let without = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "without --progress stderr must not contain progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn verify_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let result = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        stderr.contains("progress: op=verify"),
+        "progress on stderr with json; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("progress:"),
+        "json stdout must not contain progress:; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("verify json invalid with --progress: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["kind"], "cfidx");
+}
+
+#[test]
+fn verify_cfdir_progress_chunk_granularity() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let tree = dir.path().join("tree");
+    let archive = dir.path().join("tree.cfdir");
+    fs::create_dir_all(&tree).unwrap();
+    // Two small files → known multi-chunk TOTAL with fixed chunk size.
+    fs::write(tree.join("a.bin"), vec![1u8; 8192]).unwrap();
+    fs::write(tree.join("b.bin"), vec![2u8; 4096]).unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--chunk-size",
+        "4096:4096:4096",
+        "-o",
+        archive.to_str().unwrap(),
+        tree.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+        archive.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=verify done=")),
+        "verify --progress on cfdir must emit progress:; stderr={err}"
+    );
+    // Fixed 4KiB chunks: 8192+4096 → 3 chunks → last line should reach /3
+    assert!(
+        err.contains("/3") || err.lines().any(|l| l.contains("done=3/3")),
+        "cfdir verify progress TOTAL should be chunk count; stderr={err}"
+    );
+}

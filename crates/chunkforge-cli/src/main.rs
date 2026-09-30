@@ -360,7 +360,8 @@ enum Commands {
     /// tree verify (structure + per-file `blob_blake3` + missing chunks fail with id).
     /// Default **`--format text`** (≡ 0.9.0): summary on stderr. **`--format json`**:
     /// one JSON object on stdout (`ok` / `kind` / size fields); exit code is
-    /// format-independent (ok → 0, failure → non-zero).
+    /// format-independent (ok → 0, failure → non-zero). Orthogonal to
+    /// `--progress` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Verify {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -402,6 +403,12 @@ enum Commands {
         /// Output format: `text` (default ≡ 0.9.0 stderr summary) or `json`
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Emit `progress: op=verify done=N/TOTAL` on stderr per listing chunk
+        /// (TOTAL = referenced chunk count for `.cfidx` / `.cfdir`). Default
+        /// **off** (≡ 1.7.0 quiet). Orthogonal to `--format json` / `--jobs` /
+        /// `--cache` / `--fallback` / `--cache-stats`.
+        #[arg(long = "progress")]
+        progress: bool,
         /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
     },
@@ -1111,6 +1118,7 @@ fn run() -> Result<()> {
             jobs,
             format,
             index,
+            progress,
         } => {
             let jobs = parse_jobs(jobs)?;
             require_cache_for_stats(cache.as_deref(), cache_stats)?;
@@ -1122,7 +1130,14 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_verify(src.as_ref(), &index, jobs, format, stats.as_ref());
+            let result = cmd_verify(
+                src.as_ref(),
+                &index,
+                jobs,
+                format,
+                progress,
+                stats.as_ref(),
+            );
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
@@ -3074,11 +3089,16 @@ fn cmd_verify(
     listing_path: &Path,
     jobs: usize,
     format: CliFormat,
+    progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     match peek_listing_kind(listing_path)? {
-        ListingKind::Index => cmd_verify_index(source, listing_path, jobs, format, cache_stats),
-        ListingKind::DirArchive => cmd_verify_dir(source, listing_path, jobs, format, cache_stats),
+        ListingKind::Index => {
+            cmd_verify_index(source, listing_path, jobs, format, progress, cache_stats)
+        }
+        ListingKind::DirArchive => {
+            cmd_verify_dir(source, listing_path, jobs, format, progress, cache_stats)
+        }
     }
 }
 
@@ -3087,12 +3107,16 @@ fn cmd_verify_index(
     index_path: &Path,
     jobs: usize,
     format: CliFormat,
+    progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let index = load_index(index_path)?;
     index
         .validate()
         .map_err(|e| anyhow::anyhow!("index structure: {e}"))?;
+
+    // Progress is per listing chunk (TOTAL = entry count).
+    let prog = ProgressReporter::new(progress, "verify", Some(index.entries.len()));
 
     let plains = if jobs <= 1 {
         // Serial path ≡ 0.3.0: has then get, fail-fast in entry order.
@@ -3124,11 +3148,12 @@ fn cmd_verify_index(
                 );
             }
             plains.push(plain);
+            prog.tick();
         }
         plains
     } else {
         // Concurrent get (presence implied); length-checked; errors include chunk id.
-        fetch_entry_plains(source, &index.entries, jobs, "verify failed", None)?
+        fetch_entry_plains(source, &index.entries, jobs, "verify failed", Some(&prog))?
     };
 
     let mut hasher = blake3::Hasher::new();
@@ -3181,6 +3206,7 @@ fn cmd_verify_dir(
     archive_path: &Path,
     jobs: usize,
     format: CliFormat,
+    progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let archive = load_dir_archive(archive_path)?;
@@ -3190,6 +3216,15 @@ fn cmd_verify_dir(
 
     let mut file_count = 0usize;
     let mut total_chunks = 0usize;
+    for entry in &archive.entries {
+        if let DirEntryKind::File { chunks, .. } = &entry.kind {
+            file_count += 1;
+            total_chunks += chunks.len();
+        }
+    }
+
+    // Progress is per referenced chunk across all File entries (TOTAL known).
+    let prog = ProgressReporter::new(progress, "verify", Some(total_chunks));
 
     for entry in &archive.entries {
         match &entry.kind {
@@ -3202,8 +3237,6 @@ fn cmd_verify_dir(
                 chunks,
                 ..
             } => {
-                file_count += 1;
-                total_chunks += chunks.len();
                 let op = format!("verify failed (file {})", entry.path);
                 let plains = if jobs <= 1 {
                     let mut plains = Vec::with_capacity(chunks.len());
@@ -3234,10 +3267,11 @@ fn cmd_verify_dir(
                             );
                         }
                         plains.push(plain);
+                        prog.tick();
                     }
                     plains
                 } else {
-                    fetch_entry_plains(source, chunks, jobs, &op, None)?
+                    fetch_entry_plains(source, chunks, jobs, &op, Some(&prog))?
                 };
 
                 let mut hasher = blake3::Hasher::new();
@@ -4153,7 +4187,7 @@ fn cmd_push(
         let source = open_primary_source(dest, http_tmpl)
             .context("build HTTP chunk source from --dest for push --verify")?;
         for path in index_paths {
-            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text, None).with_context(|| {
+            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text, false, None).with_context(|| {
                 format!(
                     "push --verify failed for {} (remote missing/corrupt chunk or hash mismatch)",
                     path.display()
@@ -4360,7 +4394,7 @@ fn cmd_pull(
             if listings_ok == 1 { "" } else { "s" },
         );
         for path in index_paths {
-            cmd_verify(store, path, jobs, CliFormat::Text, None).with_context(|| {
+            cmd_verify(store, path, jobs, CliFormat::Text, false, None).with_context(|| {
                 format!(
                     "pull --verify failed for {} (local store missing/corrupt chunk or hash mismatch)",
                     path.display()
