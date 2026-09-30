@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Phase15-M1 — `CacheSource` soft budget**: `CacheSource::with_max_bytes(primary, cache, max_bytes: Option<u64>)`; `None` / `new` ≡ 1.4 unbounded fill. On miss, if `cache.stats().bytes_on_disk + plaintext.len() > max` → skip `put`, still return primary plaintext. Never evicts / removes. No `ChunkSource`/`ChunkSink` signature change; no CLI wiring yet (M2).
 - **Phase15-M2 — CLI `--cache-max-bytes`**: `cat` / `verify` / `extract` / `mount` (every command that already has `--cache`). Pure integer bytes (`u64`); no KiB suffix. Requires `--cache` — without it → clear non-zero error. With `--cache` + max → `CacheSource::with_max_bytes(..., Some(N))`; `--cache` alone → `new` / `None` ≡ 1.4 unbounded. Orthogonal to jobs / format / prefetch / retries / SigV4. No LRU / eviction / prune. See `docs/mount.md` / `docs/extract.md`.
+- **Phase15-M3 — `make --format text|json`**: Shared `CliFormat`; default **text** ≡ 1.4.0 stderr summary. **json**: one stdout object `{ok, bytes, chunks, new, reused}` (no text dual-write); exit format-independent. `docs/ops-json.md` draft row for `make` (M5 may finalize). No `cat --format` (M4); no version bump.
 
 ## [1.4.0] — 2026-09-29
 

@@ -43,6 +43,12 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Chunk a file, write chunks into a local store (dedup), and write a .cfidx
+    ///
+    /// Default **`--format text`** (≡ 1.4.0): summary on stderr
+    /// (`make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`).
+    /// **`--format json`**: one JSON object on stdout (`ok`, `bytes`, `chunks`,
+    /// `new`, `reused`); no duplicate text summary; exit codes are
+    /// format-independent.
     Make {
         /// Local CAS store directory (created if missing)
         #[arg(long)]
@@ -55,6 +61,10 @@ enum Commands {
         /// Override FastCDC sizes as min:avg:max (bytes; all even, min≤avg≤max)
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
+        /// Output format: `text` (default ≡ 1.4.0 stderr summary) or `json`
+        /// (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -627,11 +637,11 @@ enum StoreCommands {
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive`
-/// (Phase 8–12 + Phase 13 M2 + Phase 14 M2).
+/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive` / `make`
+/// (Phase 8–12 + Phase 13 M2 + Phase 14 M2 + Phase 15 M3).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
-/// `store stats` ≡ text summary).
+/// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -718,7 +728,8 @@ fn run() -> Result<()> {
             output,
             input,
             chunk_size,
-        } => cmd_make(&store, &output, &input, chunk_size.as_deref()),
+            format,
+        } => cmd_make(&store, &output, &input, chunk_size.as_deref(), format),
         Commands::Archive {
             store,
             output,
@@ -1192,6 +1203,7 @@ fn cmd_make(
     output: &Path,
     input: &Path,
     chunk_size: Option<&str>,
+    format: CliFormat,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
@@ -1250,16 +1262,30 @@ fn cmd_make(
     file.sync_all()
         .with_context(|| format!("fsync index {}", output.display()))?;
 
-    eprintln!(
-        "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}) → store {}",
-        output.display(),
-        data.len(),
-        chunks.len(),
-        if chunks.len() == 1 { "" } else { "s" },
-        new_chunks,
-        reused_chunks,
-        store_path.display()
-    );
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}) → store {}",
+                output.display(),
+                data.len(),
+                chunks.len(),
+                if chunks.len() == 1 { "" } else { "s" },
+                new_chunks,
+                reused_chunks,
+                store_path.display()
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "bytes": data.len() as u64,
+                "chunks": chunks.len(),
+                "new": new_chunks,
+                "reused": reused_chunks,
+            });
+            println!("{obj}");
+        }
+    }
     Ok(())
 }
 

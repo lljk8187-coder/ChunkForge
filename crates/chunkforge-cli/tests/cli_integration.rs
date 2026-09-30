@@ -10093,3 +10093,157 @@ fn extract_cache_max_bytes_caps_disk() {
         fs::read(extract_out.join("blob.bin")).unwrap()
     );
 }
+
+// --- Phase 15 M3: make --format text|json ---
+
+#[test]
+fn make_help_lists_format() {
+    let out = run_ok(&["make", "--help"]);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("--format"),
+        "make --help must list --format:\n{s}"
+    );
+    assert!(
+        s.contains("text") && s.contains("json"),
+        "make --help --format should mention text|json:\n{s}"
+    );
+}
+
+#[test]
+fn make_default_format_is_text_not_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("make: wrote"),
+        "default text must keep stderr summary; stderr={stderr}"
+    );
+    let (new_n, reused_n) = parse_make_stats(&stderr);
+    assert!(new_n >= 1, "expected new chunks; new={new_n}");
+    assert_eq!(reused_n, 0, "first make should reuse=0");
+    assert!(
+        !stdout.trim().starts_with('{'),
+        "default (no --format) stdout must not be pure JSON; got {stdout}"
+    );
+    assert!(idx.is_file(), "index must be written");
+}
+
+#[test]
+fn make_format_text_explicit_matches_default() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--format",
+        "text",
+        input.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("make: wrote") && stderr.contains("new="),
+        "explicit --format text must keep stderr summary; stderr={stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.trim().starts_with('{'),
+        "text format must not emit JSON on stdout; got {stdout}"
+    );
+}
+
+#[test]
+fn make_format_json_parses_and_has_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let input_bytes = fs::metadata(&input).unwrap().len();
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("make: wrote"),
+        "json must not dual-write text summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    let chunks = v["chunks"].as_u64().expect("chunks field");
+    assert!(chunks >= 1, "chunks={chunks}");
+    let new_n = v["new"].as_u64().expect("new field");
+    let reused = v["reused"].as_u64().expect("reused field");
+    assert_eq!(new_n + reused, chunks, "new+reused must equal chunks");
+    assert!(idx.is_file(), "index must still be written under json");
+}
+
+#[test]
+fn make_format_json_reused_on_second_make() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("a.cfidx");
+    let idx2 = dir.path().join("b.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    let chunks = v["chunks"].as_u64().expect("chunks");
+    assert_eq!(v["new"].as_u64(), Some(0), "second make should write no new chunks");
+    assert_eq!(
+        v["reused"].as_u64(),
+        Some(chunks),
+        "second make should reuse all chunks"
+    );
+}
