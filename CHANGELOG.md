@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `corrupt_ids` / `unreadable_ids`); bad ids only in arrays (no text lines);
   exit codes format-independent; `--jobs` orthogonal. Shared `CliFormat`.
   See `docs/doctor-gc.md`.
+- **Ops JSON field matrix + `demo_ops_maint`** (Phase 12 M4):
+  `docs/ops-json.md` (eight-command minimum stable fields; default text;
+  field rename → breaking) linked from `docs/stability.md`;
+  `scripts/demo_ops_maint.sh` (gc dry-run json + scrub json + `--jobs 4`,
+  local only); README Phase 12 / 1.2 draft section; `docs/doctor-gc.md`
+  aligned with §3.2; `docs/perf.md` notes Phase 12 still does not implement
+  pack.
 
 ## [1.1.0] — 2026-09-29
 

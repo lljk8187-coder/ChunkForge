@@ -1,7 +1,8 @@
 # Doctor / GC / Scrub
 
 Phase 3 optional CLI utilities for store hygiene, plus Phase 7 CAS bitrot scrub.
-**`doctor`**, **`gc`**, and **`store scrub`** are implemented.
+**`doctor`**, **`gc`**, and **`store scrub`** are implemented. Stable JSON fields:
+[ops-json.md](ops-json.md).
 
 ## `chunkforge doctor`
 

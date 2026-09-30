@@ -17,6 +17,7 @@
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
+| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -445,9 +446,9 @@ Workspace / CLI version is **1.1.0**.
 multipart / packfile / write mount / bidirectional sync / extract prune /
 remote scrub / byte-range resume / push listing upload / changing default
 jobs·retries / video analysis. Pack stays measured-only in
-[docs/perf.md](docs/perf.md). **`gc --jobs N`** (default 1 ≡ serial),
-**`gc --format text|json`**, and **`store scrub --format text|json`** land in
-Unreleased / Phase 12 M1–M3 — see [docs/doctor-gc.md](docs/doctor-gc.md).
+[docs/perf.md](docs/perf.md). **`gc --jobs N`**, **`gc`/`store scrub --format json`**, and the ops JSON
+matrix land in Unreleased / Phase 12 — see [Phase 12](#phase-12--12-draft--unreleased-local-maint-ops-json)
+and [docs/doctor-gc.md](docs/doctor-gc.md).
 
 ```bash
 # Phase 11 ops smoke (~minutes; local put_stub only)
@@ -461,6 +462,56 @@ bash scripts/demo_ops_json.sh
 
 Details: [docs/extract.md](docs/extract.md), [docs/push.md](docs/push.md),
 [docs/pull.md](docs/pull.md), [docs/mount.md](docs/mount.md).
+
+
+## Phase 12 / 1.2 (draft / Unreleased): local maint ops JSON
+
+Phase 12 closes local maintenance symmetry with **1.1.0**: **`gc --jobs N`**
+(default **1** ≡ serial, symmetric to `store scrub --jobs`), expands ops
+**`--format json`** to **`gc`** and **`store scrub`**, and publishes the
+**[Ops JSON field matrix](docs/ops-json.md)**. Defaults stay ≡ **1.1.0** (text
+summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
+(**1.2.0** bump is **not** this milestone).
+
+**Delivered so far (M1–M4):**
+
+- **`gc --jobs N`**: default **1**; `--apply` parallel per-id delete; dry-run
+  path listing stays ordered.
+- **`gc --format text|json`**: default **text**. JSON minimum set (`ok` /
+  `dry_run` / `applied` / `listings` / `referenced` / `unreferenced` /
+  `deleted`) — see [docs/doctor-gc.md](docs/doctor-gc.md) / Phase12 §3.2.
+- **`store scrub --format text|json`**: default **text**. JSON minimum set
+  (`ok` / `checked` / `ok_count` / `corrupt` / `unreadable` / `corrupt_ids` /
+  `unreadable_ids`).
+- **Ops JSON field matrix**: [docs/ops-json.md](docs/ops-json.md) (linked from
+  [docs/stability.md](docs/stability.md)) — `diff` / `verify` / `doctor` /
+  `extract` / `push` / `pull` / `gc` / `store scrub`; **field rename → breaking**.
+- Smoke: [`scripts/demo_ops_maint.sh`](scripts/demo_ops_maint.sh) (gc dry-run
+  json + scrub json + `--jobs 4`; local only).
+
+**Responsibility split (no remote scrub):**
+
+| Command | Role |
+|---|---|
+| `verify` | Listing structure + referenced chunk integrity (incl. HTTP) |
+| `doctor` | Presence of referenced chunks (`has` / `--deep`) |
+| `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
+| `store scrub` | Local loose-chunk full BLAKE3 rehash (no listing) |
+
+**Not in this milestone / still deferred:** `check_compat_1_1` (M5), **1.2.0**
+bump (M7), packfile, write mount, remote scrub, aws-sdk, extract prune,
+bidirectional sync. Pack stays measured-only in [docs/perf.md](docs/perf.md).
+
+```bash
+# Phase 12 maint smoke (~minutes; no internet)
+cargo build -p chunkforge-cli
+bash scripts/demo_ops_maint.sh
+# A: archive v1 → change → archive --seed v2 (orphan chunks vs v2-only)
+# B: gc --format json (unreferenced>0) + store scrub --format json + --jobs 4
+```
+
+Details: [docs/doctor-gc.md](docs/doctor-gc.md), [docs/ops-json.md](docs/ops-json.md),
+[docs/stability.md](docs/stability.md).
 
 ## Incremental dedup demo
 

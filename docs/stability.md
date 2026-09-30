@@ -9,7 +9,7 @@ and the frozen surface stay ≡ **1.0.0**. The workspace reports **1.1.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
-[remote-layout.md](remote-layout.md).
+[remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
 
 ## Frozen surface (1.0 commitments)
 
@@ -83,7 +83,15 @@ At 1.0, ChunkForge promises:
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
 | `diff` | Listing↔listing (+ `--tree`); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
-| `extract` / `push` / `pull --format json` | Ops JSON (default **text** ≡ 1.0.0); field rename is breaking |
+| `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0) |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
+
+
+## Ops JSON field matrix
+
+Stable `--format json` fields for ops commands live in
+**[ops-json.md](ops-json.md)** (one row per command: `diff` / `verify` /
+`doctor` / `extract` / `push` / `pull` / `gc` / `store scrub`). Default remains
+**text**. **Field rename → breaking** (same policy as above).
