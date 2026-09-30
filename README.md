@@ -17,7 +17,7 @@
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
-| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` |
+| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -473,7 +473,7 @@ Phase 12 closes local maintenance symmetry with **1.1.0**: **`gc --jobs N`**
 summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
 (**1.2.0** bump is **not** this milestone).
 
-**Delivered so far (M1–M4):**
+**Delivered so far (M1–M5):**
 
 - **`gc --jobs N`**: default **1**; `--apply` parallel per-id delete; dry-run
   path listing stays ordered.
@@ -488,6 +488,11 @@ summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
   `extract` / `push` / `pull` / `gc` / `store scrub`; **field rename → breaking**.
 - Smoke: [`scripts/demo_ops_maint.sh`](scripts/demo_ops_maint.sh) (gc dry-run
   json + scrub json + `--jobs 4`; local only).
+- **Compat gate**: [`scripts/check_compat_1_1.sh`](scripts/check_compat_1_1.sh)
+  — runs `check_compat_1_0.sh`, then asserts 1.1/1.2 help flags
+  (`--skip-trust-mtime`, extract/push/pull/`gc`/`store scrub --format`,
+  `mount --prefetch-chunks`, `gc --jobs`); thin no-pack CLI assert. No
+  absolute perf SLA.
 
 **Responsibility split (no remote scrub):**
 
@@ -498,20 +503,22 @@ summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash (no listing) |
 
-**Not in this milestone / still deferred:** `check_compat_1_1` (M5), **1.2.0**
-bump (M7), packfile, write mount, remote scrub, aws-sdk, extract prune,
+**Not in this milestone / still deferred:** **1.2.0** bump (M7), P1
+`--progress` (M6), packfile, write mount, remote scrub, aws-sdk, extract prune,
 bidirectional sync. Pack stays measured-only in [docs/perf.md](docs/perf.md).
 
 ```bash
-# Phase 12 maint smoke (~minutes; no internet)
+# Phase 12 maint smoke + compat gate (~minutes; no internet)
 cargo build -p chunkforge-cli
 bash scripts/demo_ops_maint.sh
 # A: archive v1 → change → archive --seed v2 (orphan chunks vs v2-only)
 # B: gc --format json (unreferenced>0) + store scrub --format json + --jobs 4
+bash scripts/check_compat_1_1.sh   # includes check_compat_1_0 + 1.1/1.2 flags
 ```
 
 Details: [docs/doctor-gc.md](docs/doctor-gc.md), [docs/ops-json.md](docs/ops-json.md),
-[docs/stability.md](docs/stability.md).
+[docs/stability.md](docs/stability.md). Gate:
+[`scripts/check_compat_1_1.sh`](scripts/check_compat_1_1.sh).
 
 ## Incremental dedup demo
 

@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local only); README Phase 12 / 1.2 draft section; `docs/doctor-gc.md`
   aligned with §3.2; `docs/perf.md` notes Phase 12 still does not implement
   pack.
+- **`check_compat_1_1.sh` + 1.1 regression gate** (Phase 12 M5):
+  `scripts/check_compat_1_1.sh` runs `check_compat_1_0.sh` (keeps 1_0
+  independently runnable), then asserts 1.1/1.2 help flags
+  (`extract --skip-trust-mtime`/`--format`, `push`/`pull --format`,
+  `mount --prefetch-chunks`, `gc --jobs`/`--format`, `store scrub --format`);
+  thin non-goal: no pack subcommand / `--pack*` in CLI help (aws-sdk already
+  gated by 1_0). No absolute perf SLA; does not run `bench_loose_http.sh`.
 
 ## [1.1.0] — 2026-09-29
 

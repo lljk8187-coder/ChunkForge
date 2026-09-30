@@ -95,3 +95,7 @@ Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `diff` / `verify` /
 `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub`). Default remains
 **text**. **Field rename → breaking** (same policy as above).
+
+Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
+(1.0 defaults) and [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
+(1.1/1.2 additive flags; calls 1_0). No absolute perf SLA.

@@ -49,3 +49,9 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `doctor`),
 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.
+
+## Compat gate
+
+Flag presence for ops JSON / 1.1+ CLIs is gated by
+[`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh) (calls
+`check_compat_1_0.sh`; no absolute perf SLA).
