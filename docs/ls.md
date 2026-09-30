@@ -1,7 +1,7 @@
 # `chunkforge ls` (+ `cat --path`)
 
 List paths in a `.cfidx` / `.cfdir` listing (**inventory only**). Phase25 /
-toward **1.15.0** (workspace / CLI version stays **1.14.0** until M7).
+**1.15.0** closeout.
 
 Consumes public [`DirArchive::decode`](../crates/chunkforge-index/src/dir.rs) /
 [`Index::decode`](../crates/chunkforge-index/src/index.rs) (magic-dispatch like
@@ -141,9 +141,9 @@ Cross-link nail: **`cat --path` ≠ extract ≠ prune ≠ sync**.
 - changing other command defaults
 - default record symlink / follow / fifo·xattr / offline bundle
 
-Pack stance: [perf.md](perf.md) — **Phase25 / toward 1.15.0 still does not
+Pack stance: [perf.md](perf.md) — **Phase25 / 1.15.0 still does not
 implement pack**.
 
-Compat gate **`check_compat_1_14.sh`** (Phase25-M5; calls 1_13; no absolute
+Compat gate **`check_compat_1_14.sh`** (Phase25; calls 1_13; no absolute
 perf SLA). Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).

@@ -88,12 +88,12 @@ now.
 > checklist condition 1 stays unmet on local stub evidence; pack stays
 > deferred.
 >
-> **Phase25 / toward 1.15.0 still does not implement pack**. `chunkforge
-> ls` is listing inventory only (no store / no chunk I/O / no layout
-> change; ≠ pack). `cat --path` reuses the existing single-blob fetch
-> pipeline (≠ pack). Workspace version stays **1.14.0** until M7.
-> Promotion checklist condition 1 stays unmet on local stub evidence;
-> pack stays deferred. Existing loose-HTTP baseline remains
+> **Phase25 / 1.15.0 still does not implement pack**. `chunkforge ls` is
+> listing inventory only (no store / no chunk I/O / no layout change; ≠
+> pack). `cat --path` reuses the existing single-blob fetch pipeline (≠
+> pack). `archive --empty-dirs` is Dir metadata only (≠ pack). Promotion
+> checklist condition 1 stays unmet on local stub evidence; pack stays
+> deferred. Existing loose-HTTP baseline remains
 > [`scripts/bench_loose_http.sh`](../scripts/bench_loose_http.sh).
 
 ## What we measure

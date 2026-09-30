@@ -257,8 +257,8 @@ if ! "$BIN" pull --help | grep -F -- '--verify' >/dev/null; then
 fi
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! echo "$VER" | grep -F '1.14.0' >/dev/null; then
-  echo "error: expected chunkforge 1.14.0; got $VER" >&2
+if ! echo "$VER" | grep -F '1.15.0' >/dev/null; then
+  echo "error: expected chunkforge 1.15.0; got $VER" >&2
   exit 1
 fi
 

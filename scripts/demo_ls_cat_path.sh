@@ -15,9 +15,9 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P25_DEMO_DIR (default /tmp/cf-p25-ls-cat-demo)
 #
-# Version gate expects chunkforge 1.14.0 (Phase25 toward 1.15.0; bump in M7).
+# Version gate expects chunkforge 1.15.0 (Phase25-M7 closeout).
 #
-# Gate (Phase25-M5): require check_compat_1_14.sh present + executable
+# Gate (Phase25-M7): require check_compat_1_14.sh present + executable
 # (same pattern as Phase24-M5 demo_filter_listing ↔ compat_1_13).
 # Do not force-run the long gate here.
 set -euo pipefail
@@ -277,15 +277,15 @@ echo "no pack subcommand: OK"
 echo "G: help / ≠ prune / ≠ gc-path / ≠ pack: OK"
 
 echo
-echo "==> H. version 1.14.0 + Cargo 1.14.0 + compat_1_14 (Phase25-M5)"
+echo "==> H. version 1.15.0 + Cargo 1.15.0 + compat_1_14 (Phase25-M7)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.14.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.14.0; got $VER" >&2
+if ! grep -F '1.15.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.15.0; got $VER" >&2
   exit 1
 fi
-if ! grep -E '^version = "1\.14\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must be 1.14.0 (Phase25 until M7)" >&2
+if ! grep -E '^version = "1\.15\.0"' "$ROOT/Cargo.toml" >/dev/null; then
+  echo "error: workspace Cargo.toml version must be 1.15.0 (Phase25-M7)" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -310,7 +310,7 @@ if [[ ! -x "$COMPAT114" ]]; then
   echo "error: check_compat_1_14.sh must be executable" >&2
   exit 1
 fi
-echo "H: version 1.14.0 / Cargo 1.14.0 / compat_1_13 + compat_1_14 present+executable: OK"
+echo "H: version 1.15.0 / Cargo 1.15.0 / compat_1_13 + compat_1_14 present+executable: OK"
 
 echo
 echo "demo_ls_cat_path: ALL OK / PASS"

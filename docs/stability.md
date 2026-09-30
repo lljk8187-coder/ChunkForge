@@ -150,19 +150,21 @@ Gate **`check_compat_1_13.sh`** (calls 1_12; asserts `filter` + thin Symlink
 keep; no absolute perf SLA). Defaults of existing commands stay ≡
 **1.13.0**. The workspace reports **1.14.0**.
 
-**Phase25 / toward 1.15.0** (in progress on `main`; workspace / CLI version
-stays **1.14.0** until M7) adds first-class **`chunkforge ls`** — listing
-inventory for `.cfidx` / `.cfdir` (magic dispatch; `.cfdir` path 四件套;
-`--format text|json`; optional `--chunks`; File / Symlink / Dir; **never**
-opens a store; **≠** mount **≠** extract **≠** verify **≠** pack **≠**
-filter) and extended **`cat --path`** (`.cfdir` exact File → single `-o`;
-`.cfidx` ≡ 1.14 omit `--path`; **≠** extract **≠** prune **≠** sync).
-**Hard ban unchanged:** **`gc --path`**, write mount, prune, pack, default
-zstd, push `--fallback`, mount `--progress`, default record. Docs:
-[ls.md](ls.md) / [ops-json.md](ops-json.md); smoke:
+**1.15.0** (Phase25 closeout) adds further **opt-in** only: first-class
+**`chunkforge ls`** — listing inventory for `.cfidx` / `.cfdir` (magic
+dispatch; `.cfdir` path 四件套; `--format text|json`; optional `--chunks`;
+File / Symlink / Dir; **never** opens a store; **≠** mount **≠** extract
+**≠** verify **≠** pack **≠** filter) and extended **`cat --path`**
+(`.cfdir` exact File → single `-o`; `.cfidx` ≡ 1.14 omit `--path`; **≠**
+extract **≠** prune **≠** sync). P1: **`archive --empty-dirs`** (omit ≡
+1.14 omit empty dirs; **≠** prune **≠** write mount) + thin **`chunk-id` /
+`store has --format json`**. **Hard ban unchanged:** **`gc --path`**, write
+mount, prune, pack, default zstd, push `--fallback`, mount `--progress`,
+default record. Docs: [ls.md](ls.md) / [ops-json.md](ops-json.md); smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
-Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25-M5; calls 1_13).
-Defaults of existing commands stay ≡ **1.14.0**.
+Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (calls
+1_13; asserts `ls` / `cat --path`; no absolute perf SLA). Defaults of
+existing commands stay ≡ **1.14.0**. The workspace reports **1.15.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [filter.md](filter.md), [ls.md](ls.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -196,8 +198,8 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 **1.12.0** (Phase22 symlink opt-in), **1.13.0** (Phase23
 `diff --tree --symlinks` + P1 `would_symlinks`), and **1.14.0** (Phase24
 `chunkforge filter` + P1 `make --seed` / mount help Symlink honesty), and
-**Phase25 / toward 1.15.0** (`chunkforge ls` + `cat --path` + P1 `archive --empty-dirs` / `chunk-id`·`store has --format json`; version still
-**1.14.0** until M7) are such minors: all new
+**1.15.0** (Phase25 `chunkforge ls` + `cat --path` + P1 `archive --empty-dirs` /
+`chunk-id`·`store has --format json`) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
@@ -219,8 +221,8 @@ prune ≠ `gc --path` ≠ default record**.
 **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
 **`cat --path` ≠ extract ≠ prune ≠ sync**.
 Omit make `--seed` ≡ 1.13 make; **`filter`** is additive (new subcommand).
-Phase25 `ls` / `cat --path` are present on `main` as additive surfaces;
-version stays **1.14.0** until M7 (**1.15.0**).
+**`ls`** is additive (new subcommand); **`cat --path`** is additive
+(`.cfidx` cat unchanged). Omit archive `--empty-dirs` ≡ 1.14 omit empty dirs.
 
 ## Breaking-change policy
 
@@ -264,7 +266,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.14.0** and **Phase25 / toward 1.15.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.15.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -343,6 +345,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.13 `diff --symlinks` / demo_diff_tree_symlink; calls 1_11).
 **`check_compat_1_13.sh`** (Phase24; gates `filter` + 1.14 flags; calls
 1_12).
-**[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25-M5;
+**[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25;
 gates `ls` / `cat --path` + 1.15 flags; calls 1_13).
 No absolute perf SLA.

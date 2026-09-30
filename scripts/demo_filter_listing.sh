@@ -13,7 +13,7 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P24_DEMO_DIR (default /tmp/cf-p24-filter-demo)
 #
-# Version gate expects chunkforge 1.14.0 (Phase24-M7 closeout).
+# Version gate expects chunkforge 1.15.0 (Phase25-M7 closeout).
 #
 # Gate (Phase24-M5): require check_compat_1_13.sh present + executable
 # (same pattern as Phase23-M5 demo_diff_tree_symlink ↔ compat_1_12).
@@ -290,15 +290,15 @@ echo "no pack subcommand: OK"
 echo "G: help / ≠ prune / ≠ gc-path / ≠ pack: OK"
 
 echo
-echo "==> H. version 1.14.0 + Cargo 1.14.0 + compat_1_13 (Phase24-M7)"
+echo "==> H. version 1.15.0 + Cargo 1.15.0 + compat_1_13 (Phase25-M7)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.14.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.14.0; got $VER" >&2
+if ! grep -F '1.15.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.15.0; got $VER" >&2
   exit 1
 fi
-if ! grep -E '^version = "1\.14\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must be 1.14.0 (Phase24-M7)" >&2
+if ! grep -E '^version = "1\.15\.0"' "$ROOT/Cargo.toml" >/dev/null; then
+  echo "error: workspace Cargo.toml version must be 1.15.0 (Phase25-M7)" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -323,7 +323,7 @@ if [[ ! -x "$COMPAT113" ]]; then
   echo "error: check_compat_1_13.sh must be executable" >&2
   exit 1
 fi
-echo "H: version 1.14.0 / Cargo 1.14.0 / compat_1_12 + compat_1_13 present+executable: OK"
+echo "H: version 1.15.0 / Cargo 1.15.0 / compat_1_12 + compat_1_13 present+executable: OK"
 
 echo
 echo "demo_filter_listing: ALL OK / PASS"

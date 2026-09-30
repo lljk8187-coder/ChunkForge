@@ -7,24 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 25 M6 (P1) — **`archive --empty-dirs`** + thin UX JSON. Version stays
-**1.14.0** until M7 (**1.15.0**).
+Nothing yet.
+
+## [1.15.0] — 2026-09-30
+
+Phase 25 closeout — **`chunkforge ls`** (listing inventory for `.cfidx` /
+`.cfdir`; path 四件套 on `.cfdir`; `--format text|json`; optional `--chunks`;
+File+Symlink+Dir; **never** opens a store; **≠** mount **≠** extract **≠**
+verify **≠** pack **≠** filter) + **`cat --path`** (`.cfdir` exact File →
+single `-o`; `.cfidx` cat ≡ 1.14 omit `--path`; **≠** extract whole tree **≠**
+prune) + `docs/ls.md` + `demo_ls_cat_path.sh` + `check_compat_1_14.sh`; P1
+**`archive --empty-dirs`** + O2 **`chunk-id`/`store has --format json`**.
+Defaults of existing commands remain ≡ **1.14.0** (archive empty-dirs still
+**off** by default). No pack / write mount / aws-sdk / remote scrub / extract
+prune / bidirectional sync / push listing / LRU / store trim / **default**
+zstd / HTTP wire compression / `store recompress` / `push --fallback` / multi
+dest / **`gc --path`** / mount `--progress` / **default record symlink** /
+follow dir symlink / fifo·xattr / offline bundle.
 
 ### Added
 
-- **`archive --empty-dirs`** (Phase25-M6 / P1 O1): opt-in record of truly empty
-  leaf directories as `DirEntryKind::Dir` (mode from metadata; relative path;
-  same PathFilter as files). Default **off** ≡ **1.14.0** omit empty dirs
-  (parents of files remain implied by file paths). `ls` shows `dir\t…`;
-  extract recreates empty dirs when the flag was used. **≠** prune **≠** write
-  mount. Omit flag ≡ 1.14.
-- **`chunk-id --format json`** / **`store has --format json`** (Phase25-M6 / P1
-  O2): thin ops-json honesty; default text unchanged.
+- **`chunkforge ls`** (Phase 25 M1–M3 / P0): first-class listing inventory.
+  Magic-dispatch `.cfidx` / `.cfdir`; `.cfdir` path 四件套 (`--path` /
+  `--path-from` / `--exclude` / `--exclude-from`) same semantics as
+  archive/extract/mount/filter; **`--format text|json`** (`ok` / `entries`
+  [{`kind`,`path`,`size?`,`target?`,`chunks?`}]); optional **`--chunks`**
+  (File hex ids only). Emits File / Symlink / Dir rows. Never opens a store;
+  never fetches chunks; never mounts; never extracts; never verifies hashes;
+  never writes a new listing. `.cfidx` + path flags → clear non-zero.
+  Responsibility nail: **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
+  See `docs/ls.md` / `docs/stability.md` / `docs/ops-json.md`.
+- **`cat --path`** (Phase 25 M2–M3 / P0): `.cfdir` + **`--path <file>`**
+  reassembles one exact File entry to `-o` (reuse existing chunk-fetch
+  pipeline: jobs / cache / fallback / progress / format). `.cfidx` path
+  remains ≡ **1.14** (omit `--path`; `--path` on `.cfidx` → clear non-zero).
+  `.cfdir` without `--path` / Symlink / Dir / missing path → clear non-zero.
+  Prior JSON field names `ok`/`bytes` **frozen**. Responsibility nail:
+  **`cat --path` ≠ extract ≠ prune ≠ sync**. See `docs/ls.md`.
+- **Docs + `demo_ls_cat_path.sh`** (Phase 25 M4): ls / stability / ops-json /
+  perf / README Phase 25 narrative; local smoke for archive-record full →
+  filter `--path` → `ls` shows retained File+Symlink; `cat --path` ≡ source /
+  extract bytes; `.cfidx` ls/cat regression; help / ≠ mount / ≠ extract / ≠
+  prune / ≠ pack / ≠ filter.
+- **`check_compat_1_14.sh`** (Phase 25 M5): calls `check_compat_1_13` +
+  asserts `ls` / `cat --path` help + thin filter→ls / cat --path smoke; no
+  gc `--path` / no write mount / no pack / no default record / no mount
+  `--progress`; requires `demo_ls_cat_path.sh` present + executable.
+- **`archive --empty-dirs`** (Phase 25 M6 / P1 O1): opt-in record of truly
+  empty leaf directories as `DirEntryKind::Dir` (mode from metadata; relative
+  path; same PathFilter as files). Default **off** ≡ **1.14.0** omit empty
+  dirs (parents of files remain implied by file paths). `ls` shows `dir\t…`;
+  extract recreates empty dirs when the flag was used. **≠** prune **≠**
+  write mount. Omit flag ≡ 1.14.
+- **`chunk-id --format json`** / **`store has --format json`** (Phase 25 M6 /
+  P1 O2): thin ops-json honesty; default text unchanged.
+- Workspace version **1.15.0** (Phase 25 M7 closeout).
 
 ### Changed
 
-- Docs (`dir-format` / `archive` / `ls` / `ops-json` / README Phase25): nail
-  `--empty-dirs` semantics (omit ≡ 1.14; ≠ prune ≠ write mount).
+- Docs (`dir-format` / `archive` / `ls` / `ops-json` / README / stability /
+  perf): nail `--empty-dirs` semantics (omit ≡ 1.14; ≠ prune ≠ write mount);
+  mark Phase25 closed at **1.15.0**.
+
+### Not delivered / deferred (Phase 25)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
+- **`mount --progress`** — non-goal (session-typed; no natural done/TOTAL)
+- **Default record symlink** / follow directory symlink / fifo·socket·device /
+  xattr / ACL — non-goal (opt-in record only; tree default stays skip)
+- Offline bundle — deferred (not pack; not this release)
+- Re-litigating Phase24 `filter` / Phase23 `diff --tree --symlinks` — non-goal
+
+### Compatibility
+
+- CLI defaults of existing commands match **1.14.0**: archive without
+  `--empty-dirs` ≡ 1.14 omit empty dirs; `diff --tree` without `--symlinks`
+  (or `--symlinks skip`) ≡ 1.12–1.14 tree skip+warn; no silent default
+  **record**; archive `--symlinks skip` ≡ 1.11–1.14; create compression
+  **none**; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  progress **off**, mount prefetch depth **1**; no mount path flags ⇒ full
+  tree; omit make `--dry-run` ≡ real write; omit make `--seed` ≡ 1.13/1.14
+  make; no `--path-from` / no doctor·verify path flags ⇒ full set; no
+  `diff --progress` ⇒ quiet; `make --jobs` default **1**; no `--verify` on
+  pull ⇒ quiet; no `--cache-stats` ⇒ no cache noise; no `--fallback` ⇒
+  single origin; no `--cache-max-bytes` ⇒ unbounded cache fill; omit push
+  `--compression` ≡ create none; extract dry-run `would_write` still includes
+  symlink (additive `would_symlinks` only); **`ls` is additive** (new
+  subcommand); **`cat --path` is additive** (`.cfidx` cat unchanged); other
+  commands unchanged
+- `.cfidx` v1 on-wire bytes unchanged; `.cfdir` default write (no Symlink)
+  stays v1; opt-in v2 unchanged from 1.12–1.14; Source/Sink signatures
+  unchanged; FUSE stays **RO**
 
 ## [1.14.0] — 2026-09-30
 
@@ -1507,6 +1592,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.15.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.15.0
 [1.14.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.14.0
 [1.13.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.13.0
 [1.12.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.12.0

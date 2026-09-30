@@ -39,7 +39,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`make`** (dry-run) | `ok`, `dry_run` (`true`), `bytes`, `chunks`, `would_write`, `would_reuse`; **additive with `--seed`:** `seed_reused` | Phase22-M7 / P1 + Phase24-M6. Plan-only: FastCDC (rechunk path) + `has()` accounting; no store create/put; no `.cfidx` write. Uses **`would_write` / `would_reuse`** (not `new` / `reused`). Missing store → all unique chunks `would_write` on rechunk; seed Reuse with missing chunks → clear non-zero. With `--seed`, additive `seed_reused`. Omit `--seed` ⇒ no `seed_reused` (≡ 1.13). **≠** pack / **≠** recompress / **≠** path. |
 | **`cat`** | `ok`, `bytes`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Phase 15 + Phase18-M3 + Phase25 `cat --path`. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`.cfidx` = `index.total_size`; `.cfdir --path` = matched File size). Without `--cache`, omit `cache_*` (1.7 baseline). With `--cache`, three numeric fields from the same `CacheStatsRef` (even if `--cache-stats` off). Orthogonal to `--cache-max-bytes` / `--jobs` / `--cache-stats` / `--progress` / `--path`. Failure paths do not require a full JSON object. Prior field names **frozen** (`.cfdir --path` does **not** rename). **`cat --path` ≠ extract ≠ prune ≠ sync**. See [ls.md](ls.md). |
 | **`filter`** | `ok`, `dry_run`, `input`, `output`, `files`, `dirs`, `symlinks`, `excluded` | Phase24 / **1.14.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ stderr summary. **json**: one object on stdout; no text dual-write; exit format-independent. `dry_run` true under `--dry-run` (no `-o` write). `excluded` = input File+Symlink leaves that failed PathFilter (Dirs that drop as non-ancestors not counted — same leaf accounting as archive). Empty path 四件套 ⇒ `excluded=0` (identity). **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**. See [filter.md](filter.md). |
-| **`ls`** | `ok`, `entries` (array of `{kind, path, size?, target?, chunks?}`) | Phase25 / toward **1.15.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ tab columns on stdout. **json**: one object on stdout; no text dual-write; exit format-independent. Each entry: `kind` = `"file"`\|`"dir"`\|`"symlink"`; `path` always; `size` on File; `target` on Symlink; `chunks` (hex string array) only when `--chunks` and kind=file. **Never** opens a store. **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**. See [ls.md](ls.md). |
+| **`ls`** | `ok`, `entries` (array of `{kind, path, size?, target?, chunks?}`) | Phase25 / **1.15.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ tab columns on stdout. **json**: one object on stdout; no text dual-write; exit format-independent. Each entry: `kind` = `"file"`\|`"dir"`\|`"symlink"`; `path` always; `size` on File; `target` on Symlink; `chunks` (hex string array) only when `--chunks` and kind=file. **Never** opens a store. **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**. See [ls.md](ls.md). |
 
 ## Conventions
 
@@ -174,11 +174,12 @@ make `--seed` additive **`seed_reused`**. Gated by **`check_compat_1_13.sh`**
 [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
 **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**.
 **`make --seed` ≠ pack ≠ recompress ≠ path**.
-Phase 25 / toward **1.15.0** (workspace still **1.14.0** until M7) adds
-**`ls`** (new command field set: `ok`/`entries`[{`kind`,`path`,`size?`,
-`target?`,`chunks?`}]) and documents **`cat --path`** (same `ok`/`bytes`
-names; `.cfdir` single File). Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)**
-(Phase25-M5; calls 1_13; no absolute perf SLA). Smoke:
+Phase 25 / **1.15.0** adds **`ls`** (new command field set:
+`ok`/`entries`[{`kind`,`path`,`size?`,`target?`,`chunks?`}]) and documents
+**`cat --path`** (same `ok`/`bytes` names; `.cfdir` single File), plus thin
+O2 **`chunk-id`/`store has --format json`**. Gated by
+**[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (calls 1_13; no
+absolute perf SLA). Workspace reports **1.15.0**. Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
 **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
 **`cat --path` ≠ extract ≠ prune ≠ sync**.
