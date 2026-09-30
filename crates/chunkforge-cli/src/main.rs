@@ -10,8 +10,7 @@ use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives_with_progress, entry_length,
-    hash_reader, judge_extract_unchanged_opts, load_exclude_file, load_path_file,
-    seed_file_map,
+    hash_reader, judge_extract_unchanged_opts, load_exclude_file, load_path_file, seed_file_map,
     validate_archive_path,
 };
 use chunkforge_remote::{
@@ -383,10 +382,16 @@ enum Commands {
     ///
     /// Magic-dispatches: `.cfidx` → single-blob verify (unchanged); `.cfdir` →
     /// tree verify (structure + per-file `blob_blake3` + missing chunks fail with id).
-    /// Default **`--format text`** (≡ 0.9.0): summary on stderr. **`--format json`**:
-    /// one JSON object on stdout (`ok` / `kind` / size fields); exit code is
-    /// format-independent (ok → 0, failure → non-zero). Orthogonal to
-    /// `--progress` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
+    /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from`
+    /// restrict which **File** entries in a `.cfdir` are verified (Dir entries never
+    /// contribute chunks). Omit all path/exclude flags ⇒ full tree (≡ 1.9.0).
+    /// `.cfidx` + any path/exclude flag (including `--path-from` / `--exclude-from`)
+    /// → clear non-zero error. JSON field names unchanged (`files` / `chunks` may
+    /// shrink under a filter). Orthogonal to `--progress` / `--jobs` / `--cache` /
+    /// `--fallback` / `--cache-stats` / `--format`. Default **`--format text`**
+    /// (≡ 0.9.0): summary on stderr. **`--format json`**: one JSON object on
+    /// stdout (`ok` / `kind` / size fields); exit code is format-independent
+    /// (ok → 0, failure → non-zero).
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Verify {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -429,11 +434,39 @@ enum Commands {
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
         /// Emit `progress: op=verify done=N/TOTAL` on stderr per listing chunk
-        /// (TOTAL = referenced chunk count for `.cfidx` / `.cfdir`). Default
-        /// **off** (≡ 1.7.0 quiet). Orthogonal to `--format json` / `--jobs` /
-        /// `--cache` / `--fallback` / `--cache-stats`.
+        /// (TOTAL = referenced chunk count for `.cfidx` / `.cfdir`, after path
+        /// filter). Default **off** (≡ 1.7.0 quiet). Orthogonal to `--format
+        /// json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats` / path.
         #[arg(long = "progress")]
         progress: bool,
+        /// Include only `.cfdir` File paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.9.0 full set).
+        /// Dir entries never contribute chunks. With `.cfidx` → clear non-zero
+        /// error.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude `.cfdir` File paths matching this pattern (repeatable): exact,
+        /// trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
+
+        /// Read include path prefixes from a UTF-8 file (repeatable). One prefix
+        /// per line (same rules as `--path`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--path` (OR) into one `PathFilter`.
+        /// May combine with `--exclude` / `--exclude-from`. Unreadable file or
+        /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
+        #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        path_from: Vec<PathBuf>,
         /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
     },
@@ -505,6 +538,13 @@ enum Commands {
     },
     /// Check indexes and chunk presence (missing ids → non-zero exit)
     ///
+    /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from`
+    /// restrict which **File** entries in a `.cfdir` contribute chunk ids (Dir
+    /// entries never contribute). Omit all path/exclude flags ⇒ full reference
+    /// set (≡ 1.9.0). `.cfidx` + any path/exclude flag (including `--path-from` /
+    /// `--exclude-from`) → clear non-zero error. JSON field names unchanged
+    /// (`checked` / `missing` may shrink under a filter). Orthogonal to `--deep`
+    /// / `--fallback` / `--cache*` / `--jobs` / `--progress` / `--format`.
     /// Default **`--format text`** (≡ 0.9.0): ok summary on stderr; missing ids
     /// one-per-line on stdout then non-zero. **`--format json`**: one JSON object
     /// on stdout (`ok` / `listings` / `checked` / `missing` / `deep`); missing ids
@@ -558,10 +598,39 @@ enum Commands {
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
         /// Emit progress: op=doctor done=N/TOTAL on stderr per checked chunk
-        /// (TOTAL = referenced chunk ids). Default off ≡ 1.7.0. Orthogonal to
-        /// `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
+        /// (TOTAL = referenced chunk ids after path filter). Default off ≡ 1.7.0.
+        /// Orthogonal to `--format json` / `--jobs` / `--cache` / `--fallback` /
+        /// `--cache-stats` / path.
         #[arg(long = "progress")]
         progress: bool,
+        /// Include only `.cfdir` File paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.9.0 full set).
+        /// Dir entries never contribute chunks. With `.cfidx` → clear non-zero
+        /// error.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude `.cfdir` File paths matching this pattern (repeatable): exact,
+        /// trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
+
+        /// Read include path prefixes from a UTF-8 file (repeatable). One prefix
+        /// per line (same rules as `--path`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--path` (OR) into one `PathFilter`.
+        /// May combine with `--exclude` / `--exclude-from`. Unreadable file or
+        /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
+        #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        path_from: Vec<PathBuf>,
         /// One or more `.cfidx` / `.cfdir` listings to check
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -1229,11 +1298,19 @@ fn run() -> Result<()> {
             http_tmpl,
             jobs,
             format,
-            index,
             progress,
+            paths,
+            excludes,
+            exclude_from,
+            path_from,
+            index,
         } => {
             let jobs = parse_jobs(jobs)?;
             require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let paths = merged_paths(&paths, &path_from)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
@@ -1242,7 +1319,15 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_verify(src.as_ref(), &index, jobs, format, progress, stats.as_ref());
+            let result = cmd_verify(
+                src.as_ref(),
+                &index,
+                jobs,
+                format,
+                progress,
+                stats.as_ref(),
+                &path_filter,
+            );
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
@@ -1296,10 +1381,18 @@ fn run() -> Result<()> {
             no_probe,
             format,
             progress,
+            paths,
+            excludes,
+            exclude_from,
+            path_from,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
             require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let paths = merged_paths(&paths, &path_from)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
@@ -1324,6 +1417,7 @@ fn run() -> Result<()> {
                 format,
                 progress,
                 stats.as_ref(),
+                &path_filter,
             );
             maybe_emit_cache_stats(&stats, cache_stats);
             result
@@ -3270,14 +3364,30 @@ fn cmd_verify(
     format: CliFormat,
     progress: bool,
     cache_stats: Option<&CacheStatsRef>,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     match peek_listing_kind(listing_path)? {
         ListingKind::Index => {
+            // `.cfidx` + any path/exclude flag → clear non-zero (same as push/pull).
+            let filter_active =
+                !path_filter.paths().is_empty() || !path_filter.excludes().is_empty();
+            if filter_active {
+                bail!(
+                    "--path/--path-from/--exclude applies to `.cfdir` File entries; {} looks like a `.cfidx` (use without path flags for full single-blob reference set)",
+                    listing_path.display()
+                );
+            }
             cmd_verify_index(source, listing_path, jobs, format, progress, cache_stats)
         }
-        ListingKind::DirArchive => {
-            cmd_verify_dir(source, listing_path, jobs, format, progress, cache_stats)
-        }
+        ListingKind::DirArchive => cmd_verify_dir(
+            source,
+            listing_path,
+            jobs,
+            format,
+            progress,
+            cache_stats,
+            path_filter,
+        ),
     }
 }
 
@@ -3387,25 +3497,34 @@ fn cmd_verify_dir(
     format: CliFormat,
     progress: bool,
     cache_stats: Option<&CacheStatsRef>,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     let archive = load_dir_archive(archive_path)?;
     archive
         .validate()
         .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
 
+    // Only File entries that pass PathFilter contribute (Dir never does).
+    // Empty filter ≡ full tree (≡ 1.9.0).
     let mut file_count = 0usize;
     let mut total_chunks = 0usize;
     for entry in &archive.entries {
+        if !path_filter.allows(&entry.path) {
+            continue;
+        }
         if let DirEntryKind::File { chunks, .. } = &entry.kind {
             file_count += 1;
             total_chunks += chunks.len();
         }
     }
 
-    // Progress is per referenced chunk across all File entries (TOTAL known).
+    // Progress is per referenced chunk across filtered File entries (TOTAL known).
     let prog = ProgressReporter::new(progress, "verify", Some(total_chunks));
 
     for entry in &archive.entries {
+        if !path_filter.allows(&entry.path) {
+            continue;
+        }
         match &entry.kind {
             DirEntryKind::Dir { .. } => {
                 // Structure already validated; nothing to fetch.
@@ -3899,6 +4018,7 @@ fn cmd_doctor(
     format: CliFormat,
     progress: bool,
     cache_stats: Option<&CacheStatsRef>,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     // Optional local-store meta.toml summary.
     maybe_print_local_store_meta(origin_spec);
@@ -3911,11 +4031,12 @@ fn cmd_doctor(
     }
 
     // Load + validate all listings (`.cfidx` / `.cfdir`) first (serial; cheap).
+    // PathFilter narrows `.cfdir` File chunk ids; `.cfidx` + active filter → error.
     let mut checks: Vec<(String, ChunkId)> = Vec::new();
     let mut listings_ok = 0usize;
     for listing_path in index_paths {
         let display = listing_path.display().to_string();
-        for id in listing_chunk_ids(listing_path)? {
+        for id in listing_chunk_ids_filtered(listing_path, path_filter)? {
             checks.push((display.clone(), id));
         }
         listings_ok += 1;
@@ -4373,8 +4494,21 @@ fn cmd_push(
         );
         let source = open_primary_source(dest, http_tmpl)
             .context("build HTTP chunk source from --dest for push --verify")?;
+        // Post-push verify stays full-listing (path filter only shrunk the upload
+        // set). Empty PathFilter ≡ 1.9.0 verify behaviour.
+        let full =
+            &PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).expect("empty PathFilter");
         for path in index_paths {
-            cmd_verify(source.as_ref(), path, jobs, CliFormat::Text, false, None).with_context(|| {
+            cmd_verify(
+                source.as_ref(),
+                path,
+                jobs,
+                CliFormat::Text,
+                false,
+                None,
+                full,
+            )
+            .with_context(|| {
                 format!(
                     "push --verify failed for {} (remote missing/corrupt chunk or hash mismatch)",
                     path.display()
@@ -4582,7 +4716,11 @@ fn cmd_pull(
             if listings_ok == 1 { "" } else { "s" },
         );
         for path in index_paths {
-            cmd_verify(store, path, jobs, CliFormat::Text, false, None).with_context(|| {
+            // Post-pull verify stays full-listing (path filter only shrunk the fetch
+            // set). Empty PathFilter ≡ 1.9.0 verify behaviour.
+            let full = &PathFilter::new(Vec::<String>::new(), Vec::<String>::new())
+                .expect("empty PathFilter");
+            cmd_verify(store, path, jobs, CliFormat::Text, false, None, full).with_context(|| {
                 format!(
                     "pull --verify failed for {} (local store missing/corrupt chunk or hash mismatch)",
                     path.display()

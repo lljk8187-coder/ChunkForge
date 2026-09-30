@@ -13329,12 +13329,12 @@ fn archive_path_from_include_matches_cli_path() {
     ]);
     let bytes = fs::read(&via_path).unwrap();
     let arch_path = chunkforge_index::DirArchive::decode(&bytes).unwrap();
-    let paths_cli: Vec<_> = arch_path
-        .entries
-        .iter()
-        .map(|e| e.path.as_str())
-        .collect();
-    assert_eq!(paths_cli, vec!["a/f.txt"], "cli --path; paths={paths_cli:?}");
+    let paths_cli: Vec<_> = arch_path.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        paths_cli,
+        vec!["a/f.txt"],
+        "cli --path; paths={paths_cli:?}"
+    );
 
     let include = dir.path().join("include.txt");
     fs::write(&include, "# only a\n\n  a  \n").unwrap();
@@ -13351,11 +13351,7 @@ fn archive_path_from_include_matches_cli_path() {
     ]);
     let bytes = fs::read(&via_from).unwrap();
     let arch_from = chunkforge_index::DirArchive::decode(&bytes).unwrap();
-    let paths_from: Vec<_> = arch_from
-        .entries
-        .iter()
-        .map(|e| e.path.as_str())
-        .collect();
+    let paths_from: Vec<_> = arch_from.entries.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(
         paths_from, paths_cli,
         "path-from must match handwritten --path; from={paths_from:?} cli={paths_cli:?}"
@@ -13505,4 +13501,264 @@ fn push_cfidx_with_path_from_errors_clearly() {
         err.contains("--path") || err.contains("looks like a `.cfidx`") || err.contains("cfidx"),
         "stderr should explain cfidx+path-from is invalid; stderr={err}"
     );
+}
+
+// --- Phase 20 M3: doctor/verify path scope ---
+
+#[test]
+fn doctor_verify_help_lists_path_four_flags() {
+    for cmd in ["doctor", "verify"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        for flag in ["--path", "--path-from", "--exclude", "--exclude-from"] {
+            assert!(s.contains(flag), "{cmd} --help should list {flag}:\n{s}");
+        }
+    }
+}
+
+#[test]
+fn gc_help_has_no_path_flags() {
+    let help = run_ok(&["gc", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    // Avoid matching "--path" inside longer words; clap prints "  --path ".
+    assert!(
+        !s.contains("--path ")
+            && !s.contains("--path\n")
+            && !s.contains("--path-from")
+            && !s.contains("--exclude")
+            && !s.contains("--exclude-from"),
+        "gc --help must NOT list path/exclude flags:\n{s}"
+    );
+}
+
+#[test]
+fn doctor_cfidx_plus_path_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "a",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path") || err.contains("looks like a `.cfidx`") || err.contains("cfidx"),
+        "doctor .cfidx+--path must be clear non-zero; stderr={err}"
+    );
+}
+
+#[test]
+fn verify_cfidx_plus_path_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "a",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path") || err.contains("looks like a `.cfidx`") || err.contains("cfidx"),
+        "verify .cfidx+--path must be clear non-zero; stderr={err}"
+    );
+}
+
+#[test]
+fn doctor_cfdir_path_subset_shrinks_checked() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep").join("a.txt"), b"keep-doctor-aaa\n").unwrap();
+    fs::write(src.join("skip").join("b.txt"), b"skip-doctor-bbb\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let full = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        cfdir.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full.stdout).trim()).unwrap();
+    let full_checked = full_v["checked"].as_u64().unwrap();
+    assert!(
+        full_checked >= 2,
+        "full doctor should check both files' chunks; {full_v}"
+    );
+
+    let subset = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--path",
+        "keep",
+        cfdir.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&subset.stdout).trim()).unwrap();
+    assert_eq!(sub_v["ok"], true);
+    let sub_checked = sub_v["checked"].as_u64().unwrap();
+    assert!(
+        sub_checked < full_checked && sub_checked >= 1,
+        "subset checked must shrink: full={full_checked} sub={sub_checked}; {sub_v}"
+    );
+}
+
+#[test]
+fn verify_cfdir_path_subset_shrinks_files() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep").join("a.txt"), b"keep-verify-aaa\n").unwrap();
+    fs::write(src.join("skip").join("b.txt"), b"skip-verify-bbb\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let full = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        cfdir.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full.stdout).trim()).unwrap();
+    assert_eq!(full_v["ok"], true);
+    assert_eq!(full_v["kind"], "cfdir");
+    let full_files = full_v["files"].as_u64().unwrap();
+    let full_chunks = full_v["chunks"].as_u64().unwrap();
+    assert_eq!(full_files, 2, "full verify files; {full_v}");
+
+    let subset = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--path",
+        "keep",
+        cfdir.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&subset.stdout).trim()).unwrap();
+    assert_eq!(sub_v["ok"], true);
+    assert_eq!(sub_v["kind"], "cfdir");
+    let sub_files = sub_v["files"].as_u64().unwrap();
+    let sub_chunks = sub_v["chunks"].as_u64().unwrap();
+    assert_eq!(sub_files, 1, "subset verify files; {sub_v}");
+    assert!(
+        sub_chunks < full_chunks && sub_chunks >= 1,
+        "subset chunks must shrink: full={full_chunks} sub={sub_chunks}; {sub_v}"
+    );
+}
+
+#[test]
+fn doctor_verify_path_from_and_exclude_from_smoke() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("a")).unwrap();
+    fs::create_dir_all(src.join("b")).unwrap();
+    fs::write(src.join("a").join("f.txt"), b"path-from-a\n").unwrap();
+    fs::write(src.join("b").join("g.txt"), b"path-from-b\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let include = dir.path().join("inc.txt");
+    fs::write(&include, "# only a\na\n").unwrap();
+    let exclude = dir.path().join("exc.txt");
+    fs::write(&exclude, "b/\n").unwrap();
+
+    let out = run_ok(&[
+        "doctor",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--path-from",
+        include.to_str().unwrap(),
+        "--exclude-from",
+        exclude.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(v["checked"].as_u64().unwrap() >= 1, "{v}");
+
+    let out = run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--path-from",
+        include.to_str().unwrap(),
+        cfdir.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["files"], 1, "{v}");
 }
