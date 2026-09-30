@@ -111,6 +111,18 @@ dir symlink ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default
 record**. Defaults stay ≡ **1.11.0**. The workspace reports **1.12.0**. Gate
 **`check_compat_1_11.sh`** gates 1.12 flags (calls 1_10).
 
+**Phase23 / toward 1.13.0** (in progress; workspace still **1.12.0** until
+M7 bump) adds further **opt-in** only: **`diff --tree --symlinks
+skip|record`** (default **`skip`** ≡ **1.12.0** tree skip+warn; **`record`**
+→ ephemeral `DirEntryKind::Symlink` on the tree side; absolute/empty target →
+non-zero; **not** followed; clap **`requires = "tree"`**). Defaults stay ≡
+**1.12.0** until the 1.13.0 closeout. Responsibility nail: **`diff --tree
+--symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path`
+≠ default record**. Gate **`check_compat_1_12.sh`** is **planned for M5**
+(note-only here — this milestone does not assert that file must or must not
+exist). See [diff.md](diff.md) and
+[`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -136,7 +148,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
 `store create`, `pull --compression`, `diff --progress`, `make --jobs`,
 `--path-from`, `doctor`/`verify` path scope, `mount` path quartet,
-`archive --symlinks record`) may ship in
+`archive --symlinks record`, `diff --tree --symlinks record`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
 **1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21), and
@@ -154,6 +166,8 @@ trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ 
 **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
 **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**.
 **`archive --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠
+prune ≠ `gc --path` ≠ default record**.
+**`diff --tree --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠
 prune ≠ `gc --path` ≠ default record**.
 
 ## Breaking-change policy
@@ -198,7 +212,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** and Phase22 / **1.12.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.12.0** and Phase23 / toward **1.13.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -213,7 +227,7 @@ At 1.0, ChunkForge promises:
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`); **no** `--path` (hard ban) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
 | `store stats` / `du` | Local chunk count + on-disk bytes (observation; not trim) |
-| `diff` | Listing↔listing (+ `--tree`); optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); not sync |
+| `diff` | Listing↔listing (+ `--tree`); File+Symlink compare; optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); Phase23 opt-in **`diff --tree --symlinks skip\|record`** (default skip ≡ 1.12; record → ephemeral Symlink; **≠** write mount **≠** follow **≠** pack **≠** sync **≠** prune **≠** `gc --path` **≠** default record); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes` / path quartet / Symlink `readlink`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU); Phase21 path flags subset DirFs visibility (default ≡ 1.10 full tree; **≠** write mount **≠** prune **≠** `gc --path`); Phase22 Symlink nodes + `readlink` still **RO** (**record ≠ write mount ≠ follow**) |
@@ -230,7 +244,7 @@ At 1.0, ChunkForge promises:
 | `store create` | Create empty local CAS (`Store::create`); `--compression none|zstd` (omit ≡ **none** ≡ 1.8); existing → non-zero; **≠** recompress / trim / default zstd / pack |
 | `pull --compression` | Create-time only for new `--store` (same as make/archive/`store create`); omit ≡ none ≡ 1.8; existing by meta / conflict → non-zero; dry-run never creates |
 | `make --jobs` | Opt-in post-chunk store put concurrency (default **1** ≡ 1.8); FastCDC stays serial; **not** parallel FastCDC |
-| `diff --progress` | Opt-in stderr `progress: op=diff done=N/TOTAL` (filtered File-path union); default **off** ≡ 1.8; **orthogonal** to `--format json` |
+| `diff --progress` | Opt-in stderr `progress: op=diff done=N/TOTAL` (filtered **File or Symlink** path union); default **off** ≡ 1.8; **orthogonal** to `--format json` |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
@@ -267,4 +281,8 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.10 `--path-from` / doctor·verify `--path`; no gc `--path`; calls 1_8).
 [`scripts/check_compat_1_10.sh`](../scripts/check_compat_1_10.sh)
 (1.11 mount path quartet; no gc `--path`; no mount `--progress`; calls 1_9).
+[`scripts/check_compat_1_11.sh`](../scripts/check_compat_1_11.sh)
+(1.12 archive `--symlinks` / demo_symlink; calls 1_10).
+**`check_compat_1_12.sh`** is **planned for M5** (Phase23; note-only — do not
+assert that file must or must not exist at this milestone).
 No absolute perf SLA.

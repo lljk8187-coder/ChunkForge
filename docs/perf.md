@@ -76,6 +76,11 @@ now.
 > metadata-only (0 chunks) and does not change the loose `.cnk` layout or
 > product defaults. `make --dry-run` is plan-only accounting (≠ pack).
 > Promotion checklist condition 1 stays unmet; pack stays deferred.
+>
+> **Phase23 / 1.13.0 still does not implement pack** (stance for this phase
+> even while the workspace version remains **1.12.0** until M7). Tree
+> `--symlinks record` is ephemeral metadata compare only (0 chunks; ≠ pack).
+> Promotion checklist condition 1 stays unmet; pack stays deferred.
 
 ## What we measure
 

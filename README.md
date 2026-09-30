@@ -28,6 +28,7 @@
 | **Phase 20** | **1.10.0** | **`--path-from`** (`load_path_file`) on archive/extract/push/pull/diff/doctor/verify + **`doctor`/`verify` path scope** (default ≡ 1.9 full) + docs + `demo_path_from_doctor_verify` + **`check_compat_1_9`** + P1 **`push` local/`file://` dest** (Store as `ChunkSink`; single dest; create **none**); **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ fallback**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub |
 | **Phase 21** | **1.11.0** | **`mount` path quartet** (`--path`/`--exclude`/`--exclude-from`/`--path-from` → `filter_dir_archive` → DirFs; default ≡ 1.10 full tree; `.cfidx`+path → non-zero) + docs + `demo_mount_path` + **`check_compat_1_10`** + P1 **`push --compression`** + P1 **`store list`** (+ thin docs); **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub / mount `--progress` |
 | **Phase 22** | **1.12.0** | **`.cfdir` Symlink opt-in** (`archive --symlinks skip\|record`; default **skip** ≡ 1.11 + write v1; record → `KIND_SYMLINK` / `format_version=2`; extract materialize; DirFs `readlink`; still RO) + docs + `demo_symlink` + **`check_compat_1_11`** + P1 **`make --dry-run`**; **`record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
+| **Phase 23** | **→ 1.13.0** (in progress; workspace still **1.12.0**) | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12 tree skip+warn; **record** → ephemeral Symlink; absolute/empty → non-zero; **no** follow; clap requires `--tree`) + docs/diff listing↔listing File+Symlink + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh); **`diff --tree --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` / `check_compat_1_12` (M5) / version bump (M7) |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -58,6 +59,7 @@ Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount
 **Phase 20 closed at 1.10.0**: `--path-from` + `doctor`/`verify` path scope + `demo_path_from_doctor_verify` + `check_compat_1_9` + P1 **`push` local/`file://` `--dest`** (Store as `ChunkSink`; single dest; create compression **none**) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md) / [docs/push.md](docs/push.md); defaults ≡ 1.9; **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ `--fallback` / multi-dest**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub.
 **Phase 21 closed at 1.11.0**: `mount` path quartet (`filter_dir_archive` → DirFs; default ≡ 1.10 full tree) + docs + `demo_mount_path` + `check_compat_1_10` + P1 `push --compression` + P1 `store list` — see [docs/mount.md](docs/mount.md) / [docs/store.md](docs/store.md) / [docs/stability.md](docs/stability.md); **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**; **not** pack / write mount / **`gc --path`** / mount `--progress` / default zstd.
 **Phase 22 closed at 1.12.0**: `.cfdir` Symlink opt-in (`--symlinks record`; default skip ≡ 1.11) + extract/DirFs wiring + `demo_symlink` + `check_compat_1_11` + P1 `make --dry-run` — see [docs/dir-format.md](docs/dir-format.md) / [docs/archive.md](docs/archive.md) / [docs/stability.md](docs/stability.md); **`record` ≠ write mount ≠ follow ≠ pack ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / **`gc --path`** / mount `--progress` / default zstd / default record.
+**Phase 23 in progress toward 1.13.0** (workspace / CLI still **1.12.0** until M7): `diff --tree --symlinks skip|record` + docs + `demo_diff_tree_symlink` — see [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md); **`diff --tree --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / **`gc --path`** / default record / follow / version already 1.13.0.
 
 ## Quick start (local CAS)
 
@@ -1222,6 +1224,63 @@ Details: [docs/dir-format.md](docs/dir-format.md), [docs/archive.md](docs/archiv
 [docs/extract.md](docs/extract.md), [docs/mount.md](docs/mount.md),
 [docs/stability.md](docs/stability.md), [docs/ops-json.md](docs/ops-json.md),
 [docs/perf.md](docs/perf.md).
+
+## Phase 23 / toward 1.13.0: `diff --tree --symlinks` (in progress)
+
+Phase 23 closes the **tree↔listing Symlink asymmetry** that remained after
+Phase22: listing↔listing already compared Symlink target/mode, but
+`diff --tree` hardcoded skip. Opt-in **`diff --tree --symlinks record`**
+builds ephemeral `DirEntryKind::Symlink` entries on the tree side (target
+as-is; mode from `symlink_metadata`; **0 chunks**; **not** followed;
+absolute/empty target → clear non-zero). Default **`--symlinks skip`** (or
+omit) ≡ **1.12.0** tree skip+warn. Clap **`requires = "tree"`** — the flag
+is rejected without `--tree` (listing↔listing already compares Symlink
+in-lib). Workspace / CLI version remains **1.12.0** until M7; do **not**
+read this section as claiming **1.13.0** is already released.
+
+**Responsibility:** **`diff --tree --symlinks record` ≠ write mount ≠ follow
+≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**.
+
+**Delivered so far (M1–M4):**
+
+- `diff --symlinks skip|record` + ephemeral tree record path (M1).
+- Path quartet orthogonal + progress honesty for Symlink ticks (M2).
+- Correctness matrix (identical record → exit 0; skip path; kind mismatch) (M3).
+- Docs + smoke: [`scripts/demo_diff_tree_symlink.sh`](scripts/demo_diff_tree_symlink.sh)
+  (M4); [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md) /
+  [docs/perf.md](docs/perf.md).
+
+**Still ahead:** `check_compat_1_12.sh` (M5); P1 extract dry-run
+`would_symlinks` / thin docs (M6, optional); workspace / CLI **1.13.0** bump
+(M7).
+
+**Non-goals (unchanged):** packfile; write mount / COW; bidirectional sync;
+extract prune / `--delete`; **`gc --path`**; remote scrub; full aws-sdk /
+multipart / IMDS / SSO / ListObjects; byte-range resume; push listing upload;
+cache LRU; **default** zstd; HTTP wire compression; `store recompress`;
+`push --fallback`; multi dest; mount `--progress`; **default record
+symlink**; follow directory symlink; fifo / socket / device / xattr / ACL;
+offline bundle; changing default jobs·retries·SigV4·progress·create
+compression; absolute perf SLA in CI; video analysis. Pack stance:
+[docs/perf.md](docs/perf.md) — **Phase23 / 1.13.0 still does not implement
+pack**.
+
+```bash
+# Phase 23 tree↔listing Symlink smoke (~minutes; local only)
+cargo build -p chunkforge-cli
+bash scripts/demo_diff_tree_symlink.sh
+# A: archive --symlinks record → listing
+# B: diff --tree default skip → false added / skip warn (exit non-zero OK)
+# C: diff --tree --symlinks record → identical exit 0
+# D: absolute target → non-zero under record
+# E: thin --path on symlink path
+#   + version still 1.12.0; compat_1_12 note-only (planned M5)
+
+./target/debug/chunkforge --version   # → chunkforge 1.12.0 (until M7)
+```
+
+Details: [docs/diff.md](docs/diff.md), [docs/stability.md](docs/stability.md),
+[docs/perf.md](docs/perf.md), [docs/dir-format.md](docs/dir-format.md).
 
 ## Incremental dedup demo
 
