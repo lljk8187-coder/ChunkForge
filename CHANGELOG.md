@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 16 toward **1.6.0** (workspace / CLI still **1.5.0** until M7).
-Defaults remain ≡ **1.5.0**. No pack / write mount / aws-sdk / remote scrub /
-extract prune / bidirectional sync / push listing / LRU / store trim.
+## [1.6.0] — 2026-09-29
+
+Phase 16 closeout — `FallbackSource` / CLI `--fallback` (Missing-only;
+Cache wraps whole chain); human `--cache-max-bytes` suffixes; `store stats`
+`bytes_plaintext` / `--decode`; `demo_fallback_bytes_suffix.sh`;
+`check_compat_1_5.sh`; P1 `diff --path`/`--exclude`/`--exclude-from` + thin
+docs. Defaults remain ≡ **1.5.0**. No pack / write mount / aws-sdk / remote
+scrub / extract prune / bidirectional sync / push listing / LRU / store trim.
+P1 O3 `archive`/`extract`/`make --progress` not delivered.
 
 ### Added
 
@@ -36,13 +42,24 @@ extract prune / bidirectional sync / push listing / LRU / store trim.
   narrow both sides with `PathFilter` before compare; default no flags ≡ 1.5
   full diff; JSON field names unchanged. **Not** sync / prune.
 - **P1 O2 thin docs**: `docs/remote-layout.md` Phase tags → through 1.6;
-  README / stability already document `fallback` ≠ `cache` ≠ sync.
+  README / stability document `fallback` ≠ `cache` ≠ sync.
+- Workspace version **1.6.0** (Phase 16 M7 closeout).
 
-### Not delivered (Phase 16 P1, this milestone)
+### Not delivered / deferred (Phase 16)
 
-- **O3 `archive` / `extract` / `make --progress`** — not delivered (ProgressReporter
-  reuse deferred; default remains off ≡ 1.5)
-- Version bump to **1.6.0** — reserved for M7
+- **O3 `archive` / `extract` / `make --progress`** — P1 **not** delivered
+  (ProgressReporter reuse deferred; default remains off ≡ 1.5)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- Transient auto-switch to next `--fallback` / `--fallback` on `push --dest` —
+  non-goal
 
 ### Compatibility
 
@@ -50,11 +67,11 @@ extract prune / bidirectional sync / push listing / LRU / store trim.
   `--cache-max-bytes` ⇒ unbounded cache fill; plain integer cache-max still
   accepted; no `--decode` ⇒ zstd stats stay cheap; no diff path flags ⇒ full
   listing; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
-  `--progress` **off**, mount prefetch depth **1**
+  `--progress` **off**, mount prefetch depth **1** ≡ 1.5.0 / 1.4.0 / …
 - `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
 - Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
 - Additive opt-in only; JSON field names unchanged (only additive
-  `bytes_plaintext`)
+  `bytes_plaintext`); no silent break of 1.5.0 behaviour
 
 ## [1.5.0] — 2026-09-29
 
@@ -868,6 +885,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.6.0
 [1.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.5.0
 [1.4.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.4.0
 [1.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.3.0

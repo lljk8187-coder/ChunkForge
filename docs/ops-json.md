@@ -58,7 +58,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.
 
-## Read-path `--fallback` (Phase 16 / 1.6 Unreleased)
+## Read-path `--fallback` (Phase 16 / 1.6.0)
 
 Repeatable **`--fallback <PATH|URL>`** on read commands (`cat` / `verify` /
 `extract` / `mount` / `pull` / `doctor`) appends ordered extra origins behind
@@ -106,8 +106,8 @@ Phase 15 finalizes **`make`/`cat`** in this matrix and soft cache budget
 (`--cache-max-bytes`); gated by **`check_compat_1_4.sh`** (calls 1_3; no
 absolute perf SLA).
 Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).
-Phase 16 / **1.6.0 Unreleased** adds `--fallback`, human byte suffixes on
+Phase 16 / **1.6.0** adds `--fallback`, human byte suffixes on
 `--cache-max-bytes`, and `store stats` `bytes_plaintext` / `--decode` (all
-opt-in; defaults ≡ 1.5). Workspace remains **1.5.0** until M7.
-`check_compat_1_5.sh` lands in M6. Smoke:
+opt-in; defaults ≡ 1.5). Gated by **`check_compat_1_5.sh`** (calls 1_4; no
+absolute perf SLA). Workspace reports **1.6.0**. Smoke:
 [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).

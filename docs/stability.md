@@ -25,15 +25,15 @@ off). The workspace reports **1.5.0**. See [ops-json.md](ops-json.md) for
 the expanded matrix (incl. **archive** / **store stats** / **make** /
 **cat**).
 
-**1.6.0 Unreleased** (Phase 16; workspace still **1.5.0** until M7) adds
-further opt-in only: repeatable **`--fallback`** (Missing-only read failover;
-outer Cache wraps the whole chain), human-friendly **`--cache-max-bytes`**
-suffixes (`1M` / `64Mi` / …; plain integers still accepted ≡ 1.5),
-**`store stats` `bytes_plaintext`** (+ opt-in **`--decode`** for zstd),
-**`check_compat_1_5`**, and P1 **`diff --path` / `--exclude` /
-`--exclude-from`**. Defaults stay ≡ **1.5.0** (no `--fallback` ⇒ single
-origin; no cache-max ⇒ unbounded fill; no `--decode` ⇒ zstd does not force
-full-store `get`; no diff path flags ⇒ full listing). Version bump is M7.
+**1.6.0** adds further opt-in only: repeatable **`--fallback`**
+(Missing-only read failover; outer Cache wraps the whole chain),
+human-friendly **`--cache-max-bytes`** suffixes (`1M` / `64Mi` / …; plain
+integers still accepted ≡ 1.5), **`store stats` `bytes_plaintext`** (+ opt-in
+**`--decode`** for zstd), **`check_compat_1_5`**, and P1 **`diff --path` /
+`--exclude` / `--exclude-from`**. Defaults stay ≡ **1.5.0** (no `--fallback`
+⇒ single origin; no cache-max ⇒ unbounded fill; no `--decode` ⇒ zstd does not
+force full-store `get`; no diff path flags ⇒ full listing). The workspace
+reports **1.6.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -58,10 +58,10 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 --format json`, `--fallback`, cache-max human suffixes, `store stats`
 `bytes_plaintext` / `--decode`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, **1.4.0**, and **1.5.0** are such minors: all new flags
-default off / text / jobs=1 / depth 1 / no path filter / no cache-max ≡ prior
-release. Soft budget is **refuse-fill only** (≠ LRU ≠ trim ≠ GC ≠ sync).
-**1.6.0 Unreleased** continues the same pattern (defaults ≡ 1.5.0).
+**1.3.0**, **1.4.0**, **1.5.0**, and **1.6.0** are such minors: all new
+flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
+no `--fallback` ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
+trim ≠ GC ≠ sync).
 
 ## Breaking-change policy
 
@@ -105,7 +105,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / Phase 16 (**1.6 Unreleased**) still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |

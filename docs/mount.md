@@ -59,7 +59,7 @@ chunkforge mount \
   / `--fallback`. Smoke:
   [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh),
   [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
-- **`--fallback <PATH|URL>`** (Phase 16 / 1.6 Unreleased): repeatable; ordered
+- **`--fallback <PATH|URL>`** (Phase 16 / 1.6.0): repeatable; ordered
   Missing-only failover behind `--source`/`--store`. Zero times ≡ **1.5**
   single origin. With `--cache`, outer Cache wraps the **whole** Fallback
   chain. **≠ cache ≠ sync ≠ prune ≠ write-back** (see below).
