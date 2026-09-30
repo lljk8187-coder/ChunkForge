@@ -1,7 +1,7 @@
 # Doctor / GC / Scrub
 
 Phase 3 optional CLI utilities for store hygiene, plus Phase 7 CAS bitrot scrub.
-**`doctor`**, **`gc`**, **`store scrub`**, and **`store stats`** (`du`) are implemented. Phase 19 also adds **`store create`** (empty CAS lifecycle; **≠** recompress) — see [store.md](store.md). Stable JSON fields:
+**`doctor`**, **`gc`**, **`store scrub`**, and **`store stats`** (`du`) are implemented. Phase 19 also adds **`store create`** (empty CAS lifecycle; **≠** recompress) — see [store.md](store.md). Phase 20 adds **`doctor`/`verify` path scope** + **`--path-from`** (opt-in; **≠** `gc --path`) — see below. Stable JSON fields:
 [ops-json.md](ops-json.md).
 
 ## `chunkforge doctor`
@@ -50,6 +50,31 @@ chunkforge doctor --store ./store --format json hello.cfidx
 # → {"ok":true,"listings":1,"checked":N,"missing":0,"deep":false,"retries":0}
 ```
 
+### Path filter on `doctor` / `verify` (Phase 20 / 1.10 opt-in)
+
+Phase 20 adds the same **`--path` / `--path-from` / `--exclude` /
+`--exclude-from`** quartet to **`doctor`** and **`verify`** (symmetric with
+archive/extract/push/pull/diff). Only **File** entries that pass the filter
+contribute chunk ids (Dir never contribute). Default (no path/exclude flags)
+≡ **1.9.0** full reference set / full tree. `.cfidx` + any path/exclude flag
+→ clear **non-zero** (same as push/pull). JSON **field names unchanged**;
+`checked` / `missing` (doctor) and `files` / `chunks` (verify) **may shrink**
+under a filter (additive semantics). Orthogonal to `--deep` / `--fallback` /
+`--cache*` / `--jobs` / `--progress` / `--format`.
+
+**`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack:** doctor/verify path only
+**checks fewer** chunks — never deletes, never rewrites the store, and never
+narrows `gc`'s reference set.
+
+```bash
+# Subset presence / integrity
+chunkforge doctor --store ./store --path packages/foo tree.cfdir
+chunkforge doctor --store ./store --path-from include.txt --format json tree.cfdir
+chunkforge verify --store ./store --path packages/foo --format json tree.cfdir
+chunkforge verify --store ./store --path-from include.txt tree.cfdir
+# No flags → full set ≡ 1.9
+```
+
 ## `chunkforge gc`
 
 Local-only garbage collection of loose `.cnk` files that are **not** referenced by any of the given `.cfidx` / `.cfdir` listings.
@@ -80,7 +105,7 @@ chunkforge gc --store ./store --apply --format json --jobs 4 hello.cfidx
 
 | Rule | Behaviour |
 |---|---|
-| Reference set | Union of chunk ids from all given `.cfidx` / `.cfdir` listings |
+| Reference set | Union of chunk ids from all given `.cfidx` / `.cfdir` listings (always **full** listing refs — **no** `--path` / `--path-from`; shrinking the keep-set would mis-mark still-referenced chunks as unreferenced) |
 | Scan | Walk local `store/chunks/**/*.cnk` via `Store::list_chunk_ids()` (layout-conforming only) |
 | Dry-run (default) | Print absolute paths of unreferenced `.cnk` files to **stdout** (ordered/serial); summary on stderr; **no deletes** |
 | `--apply` | `Store::remove` each unreferenced id; referenced chunks retained |
@@ -171,7 +196,7 @@ chunkforge store stats --store ./store --format json
 
 | Tool | Question it answers |
 |---|---|
-| **`doctor`** | Are chunks **referenced by listings** present? (`has`, optional `--deep` = `get`) |
+| **`doctor`** | Are chunks **referenced by listings** present? (`has`, optional `--deep` = `get`; optional path filter ⊆ refs; **≠** `gc --path`) |
 | **`store scrub`** | Are **objects already in the local CAS** bit-rot free? (re-BLAKE3; optional `--listing` scopes to refs; **not** remote) |
 | **`store stats` / `du`** | How many loose chunks / how many **on-disk** bytes? (observation; not trim) |
 | **`gc`** | Which loose chunks are **unreferenced** and can be reclaimed? (dry-run / `--apply`) |

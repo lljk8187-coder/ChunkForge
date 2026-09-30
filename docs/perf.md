@@ -58,6 +58,12 @@ now.
 > product defaults (`jobs=1`, `retries=0`, create compression **none**,
 > progress **off**). Promotion checklist condition 1 stays unmet; pack stays
 > deferred.
+>
+> **Phase 20 / 1.10 still does not implement pack.** `--path-from` and
+> `doctor`/`verify` path scope are additive opt-in only (defaults ≡ 1.9;
+> workspace still **1.9.0** until M7). They keep the loose `.cnk` layout and
+> do not change product defaults. Promotion checklist condition 1 stays unmet;
+> pack stays deferred.
 
 ## What we measure
 

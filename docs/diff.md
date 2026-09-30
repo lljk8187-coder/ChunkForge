@@ -3,24 +3,29 @@
 Compare two directory listings (`.cfdir`), or a live source tree against a
 listing (`--tree`). **Read-only**: never writes a local store or a `.cfdir`.
 
-Phase 7 (+ Phase 8 `--format json`; Phase 16 P1 `--path` / `--exclude` / `--exclude-from`; Phase 19 `--progress`). See also [`doctor-gc.md`](doctor-gc.md)
+Phase 7 (+ Phase 8 `--format json`; Phase 16 P1 `--path` / `--exclude` / `--exclude-from`; Phase 19 `--progress`; Phase 20 `--path-from`). See also [`doctor-gc.md`](doctor-gc.md)
 for presence / GC tooling, [`dir-format.md`](dir-format.md) for `.cfdir`
 layout, [`http-retry.md`](http-retry.md) for HTTP retries / error classes,
 and [`sigv4.md`](sigv4.md) for optional `--aws-sigv4`.
 
-## Path filter (`--path` / `--exclude` / `--exclude-from`)
+## Path filter (`--path` / `--path-from` / `--exclude` / `--exclude-from`)
 
-Phase 16 P1 (O1). Optional repeatable **`--path`** / **`--exclude`** /
-**`--exclude-from`** narrow **both** sides' File/Dir entry sets with the same
+Phase 16 P1 (O1) + Phase 20 **`--path-from`**. Optional repeatable
+**`--path`** / **`--path-from`** / **`--exclude`** / **`--exclude-from`**
+narrow **both** sides' File/Dir entry sets with the same
 [`PathFilter`](../crates/chunkforge-index/src/path_filter.rs) used by
-`archive` / `extract` / `push` / `pull` **before** compare.
+`archive` / `extract` / `push` / `pull` / `doctor` / `verify` **before**
+compare. `--path-from` loads include prefixes from a UTF-8 file (discipline ≡
+`--exclude-from`; merged OR with `--path`).
 
-- Default (no path/exclude flags) ≡ **1.5** full-listing / full-tree diff.
+- Default (no path/exclude flags) ≡ **1.9** / **1.5** full-listing / full-tree diff.
 - JSON field **names** unchanged; arrays / chunk counts reflect the narrowed set.
-- **Not** sync / prune / `--delete`. Filtering only reduces what is compared.
+- **`path-from` ≠ sync ≠ prune ≠ `--delete` ≠ gc-path ≠ pack**. Filtering only
+  reduces what is compared.
 
 ```bash
 chunkforge diff --path keep/ left.cfdir right.cfdir
+chunkforge diff --path-from includes.txt left.cfdir right.cfdir
 chunkforge diff --exclude skip/ --exclude '*.tmp' left.cfdir right.cfdir
 chunkforge diff --exclude-from excludes.txt --tree ./src listing.cfdir
 ```
@@ -32,7 +37,7 @@ only. Default **off** ≡ **1.8.0** quiet.
 
 | Rule | Detail |
 |---|---|
-| Granularity | One tick per **File** path in the **union** of both sides after `--path` / `--exclude` / `--exclude-from` (TOTAL = \|left ∪ right\| filtered File paths) |
+| Granularity | One tick per **File** path in the **union** of both sides after `--path` / `--path-from` / `--exclude` / `--exclude-from` (TOTAL = \|left ∪ right\| filtered File paths) |
 | JSON | **Orthogonal** — progress never enters the `--format json` object (stdout stays the single diff object) |
 | Default | Flag omitted ⇒ no `progress:` lines (≡ 1.8) |
 

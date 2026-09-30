@@ -71,6 +71,17 @@ retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
 origin). The workspace reports **1.9.0**. **`check_compat_1_8.sh`** gates
 1.9 flags (calls 1_7).
 
+**1.10.0** (Phase 20; **Unreleased** until M7 — workspace still **1.9.0**)
+adds further **opt-in** only: repeatable **`--path-from FILE`** (UTF-8 one
+include prefix per line; discipline ≡ `--exclude-from`; library
+`load_path_file`; merged OR with `--path`) on **archive / extract / push /
+pull / diff / doctor / verify**, and full path quartet on **`doctor` /
+`verify`** (default no flags ≡ **1.9** full set; `.cfidx` + any path flag →
+non-zero; JSON field names unchanged, counts may shrink). **Hard ban:**
+**`gc --path`** (shrinking the keep-set would mis-delete). Defaults stay ≡
+**1.9.0**. Responsibility: **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
+Gate **`check_compat_1_9.sh`** lands in M5.
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -94,17 +105,21 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 --format json`, `--fallback`, cache-max human suffixes, `store stats`
 `bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
 `pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
-`store create`, `pull --compression`, `diff --progress`, `make --jobs`) may ship in
+`store create`, `pull --compression`, `diff --progress`, `make --jobs`,
+`--path-from`, `doctor`/`verify` path scope) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18), and
-**1.9.0** (Phase19) are such minors: all new
+**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
+**1.9.0** (Phase19), and **1.10.0** (Phase20; Unreleased until M7) are such
+minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
 omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release /
-`make --jobs` default **1**. Soft budget is **refuse-fill only** (≠ LRU ≠
+`make --jobs` default **1** / no `--path-from` / no doctor·verify path flags ≡
+1.9 full set. Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 **`store create` ≠ recompress ≠ default zstd ≠ pack**.
+**`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
 
 ## Breaking-change policy
 
@@ -148,7 +163,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** / **1.8.0** / Phase19 **1.9.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.9.0** / Phase20 **1.10** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -158,9 +173,9 @@ At 1.0, ChunkForge promises:
 
 | Command | Role |
 |---|---|
-| `verify` | Listing structure + referenced chunk integrity (incl. HTTP `verify_hash`) |
-| `doctor` | Presence check (optional `--deep` = `get`) |
-| `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
+| `verify` | Listing structure + referenced chunk integrity (incl. HTTP `verify_hash`); optional path filter (Phase20; ≠ prune) |
+| `doctor` | Presence check (optional `--deep` = `get`; optional path filter Phase20; ≠ `gc --path`) |
+| `gc` | Local unreferenced loose chunks (dry-run / `--apply`); **no** `--path` (hard ban) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
 | `store stats` / `du` | Local chunk count + on-disk bytes (observation; not trim) |
 | `diff` | Listing↔listing (+ `--tree`); optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); not sync |

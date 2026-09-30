@@ -127,18 +127,25 @@ chunkforge pull --store ./store-z2 --source ./store-src \
   --compression zstd ./blob.cfidx
 ```
 
-### `--path` / `--exclude` / `--exclude-from` (Phase 13 M4 / Phase 14 M4)
+### `--path` / `--path-from` / `--exclude` / `--exclude-from` (Phase 13–14 + Phase 20)
 
-**`path` ≠ prune ≠ sync; `fallback` ≠ cache ≠ sync:** pull path/exclude only **shrinks the fetch set**. `--fallback` only adds Missing-only read origins for the fetch (still one-way into `--store`). It does not extract a tree, does not delete local extras, and does not rewrite the listing. Extract path filtering is likewise non-prune — see [extract.md](extract.md).
+**`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack; `fallback` ≠ cache ≠ sync:**
+pull path/exclude only **shrinks the fetch set**. `--fallback` only adds
+Missing-only read origins for the fetch (still one-way into `--store`). It
+does not extract a tree, does not delete local extras, does not rewrite the
+listing, and does **not** shrink `gc`'s reference set. Extract path filtering
+is likewise non-prune — see [extract.md](extract.md).
 
-Optional, repeatable, **opt-in**. Default (no `--path` / `--exclude` / `--exclude-from`) ≡ **1.2.0** full reference set.
+Optional, repeatable, **opt-in**. Default (no path/exclude flags) ≡ **1.9.0** /
+**1.2.0** full reference set.
 
 | Rule | Detail |
 |---|---|
 | `--path P` | Hit iff `path == P` or `path` starts with `P/` (subtree) |
+| `--path-from FILE` | Phase 20 opt-in: UTF-8 one include prefix per line (≡ `--path`); blank/`#`/trim; merged with `--path` (OR) via `load_path_file`. Missing file → non-zero |
 | `--exclude` | Exact; trailing `/` directory prefix; single edge `*` only (`*.o`, `temp*`) — **no** `**` / middle `*` |
-| `--exclude-from` | Same patterns from a file; merged with `--exclude`. No `--path-from` |
-| Combine | If any `--path` is given: must hit include first, then excludes reject |
+| `--exclude-from` | Same patterns from a file; merged with `--exclude`. May combine with `--path-from` |
+| Combine | If any `--path` / `--path-from` is given: must hit include first, then excludes reject |
 | Scope | Only `.cfdir` **File** entries contribute chunk ids; **Dir** entries never do |
 | Listing | Full listing is read locally; pull still does **not** download or rewrite the listing |
 | Orthogonal | `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 do **not** change match rules |

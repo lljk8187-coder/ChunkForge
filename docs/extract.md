@@ -7,8 +7,8 @@ on Unix when recorded. Empty matching `Dir` entries create directories.
 Phase 9 adds opt-in **`--skip-unchanged`** and **`--dry-run`**; Phase 11 adds
 opt-in **`--skip-trust-mtime`** (requires `--skip-unchanged`) and
 **`--format text|json`** (default **text** ≡ 1.0.0). Phase 13 adds opt-in
-**`--path`** / **`--exclude`** / **`--exclude-from`** (default: full tree ≡ **1.2.0**). Without those
-flags, behaviour matches **1.2.0** / **1.0.0** / **0.8.0** (full write /
+**`--path`** / **`--path-from`** / **`--exclude`** / **`--exclude-from`** (default: full tree ≡ **1.9.0** / **1.2.0**). Without those
+flags, behaviour matches **1.9.0** / **1.2.0** / **1.0.0** / **0.8.0** (full write /
 conflict-fail; `--force` overwrites existing regular files). See also
 [archive.md](archive.md), [dir-format.md](dir-format.md),
 [http-retry.md](http-retry.md).
@@ -20,7 +20,7 @@ chunkforge extract \
   --store <cas> | --source <PATH|URL> \
   [--fallback <PATH|URL>]... \
   -o <out-dir> \
-  [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
+  [--path P]... [--path-from FILE]... [--exclude PAT]... [--exclude-from FILE]... \
   [--force] \
   [--skip-unchanged] \
   [--skip-trust-mtime] \
@@ -42,6 +42,7 @@ chunkforge extract \
 | `--path P` | Repeatable include prefix (OR). With any `--path`, listing paths must match at least one (`==` or `P/…`) before excludes. Omit all ⇒ include-all (≡ **1.2.0** full tree) |
 | `--exclude PAT` | Repeatable exclude: exact, trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. **Not** prune |
 | `--exclude-from FILE` | Repeatable UTF-8 file: one pattern per line (blank / `#` skipped, trim). Merged with `--exclude` into one `PathFilter`. Missing file or illegal line → clear non-zero. **Not** prune |
+| `--path-from FILE` | Phase 20 opt-in: UTF-8 one include prefix per line (≡ `--path`); blank/`#`/trim; merged with `--path` (OR). Missing file → non-zero. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack** |
 | `--force` | Overwrite existing **regular files**. Type mismatches (file↔directory) still fail. Default **off** ≡ 0.8.0 conflict-fail |
 | `--skip-unchanged` | Opt-in: if dest exists as a regular file, **size** matches the listing, and **content BLAKE3 ≡ `blob_blake3`**, skip chunk fetch and write (mode/mtime untouched). Default **off** ≡ 0.8.0 / 1.0.0 |
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |

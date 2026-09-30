@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Phase 20 toward **1.10.0** (workspace / CLI still **1.9.0** until M7). Additive
+opt-in only; defaults ≡ **1.9.0**.
+
+### Added
+
+- **`--path-from`** (Phase 20 M1–M2): repeatable UTF-8 include-prefix file
+  (discipline ≡ `--exclude-from`; library `load_path_file`; merged OR with
+  `--path`) on **archive / extract / push / pull / diff** (+ doctor/verify in
+  M3). Missing / bad UTF-8 → clear non-zero. See `docs/archive.md` /
+  `docs/pull.md` / `docs/push.md` / `docs/diff.md`.
+- **`doctor` / `verify` path scope** (Phase 20 M3): `--path` / `--exclude` /
+  `--exclude-from` / `--path-from`; File-only filtered refs; default no flags
+  ≡ 1.9 full set; `.cfidx` + any path flag → non-zero; JSON field **names**
+  unchanged (`checked` / `files` / `chunks` may shrink). See
+  `docs/doctor-gc.md` / `docs/ops-json.md`.
+- **Docs + `demo_path_from_doctor_verify.sh`** (Phase 20 M4): ops-json /
+  stability / archive / pull / push / diff / doctor-gc / extract / perf /
+  README Phase 20 narrative; local smoke for path-from archive, doctor/verify
+  subset, quiet full default, exclude-from+path-from, missing file non-zero,
+  `.cfidx`+path non-zero, `gc` has no `--path`.
+
+### Pending (later Phase 20 milestones)
+
+- **`check_compat_1_9.sh`** (M5) — not in tree yet at M4.
+- Version bump **1.10.0** (M7).
+- P1: `push` local/`file://` dest / docs brush (M6; optional).
+
+### Not delivered / deferred (Phase 20)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Cache LRU / store trim / **default** zstd / HTTP wire compression /
+  `store recompress` / `push --fallback` — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.9.0**: no `--path-from` / no doctor·verify path flags
+  ⇒ full set; create compression **none**; `jobs=1`, `http-retries=0`, SigV4
+  **off**, ops default **text**, progress **off**, mount prefetch depth **1**
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged
+- **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**
 
 ## [1.9.0] — 2026-09-30
 

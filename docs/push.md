@@ -78,20 +78,25 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 {"ok":true,"skipped":0,"uploaded":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
 ```
 
-### `--path` / `--exclude` / `--exclude-from` (Phase 14 M3–M4)
+### `--path` / `--path-from` / `--exclude` / `--exclude-from` (Phase 14 + Phase 20)
 
-**`path` ≠ listing upload ≠ sync:** push path/exclude only **shrinks the upload set**. It does not upload or rewrite the listing, and does not delete remote extras. Symmetric to [pull.md](pull.md) path filtering.
+**`path-from` ≠ listing upload ≠ prune ≠ gc-path ≠ sync ≠ pack:** push
+path/exclude only **shrinks the upload set**. It does not upload or rewrite
+the listing, does not delete remote extras, and does **not** shrink `gc`'s
+reference set. Symmetric to [pull.md](pull.md) path filtering.
 
-Optional, repeatable, **opt-in**. Default (no `--path` / `--exclude` / `--exclude-from`) ≡ **1.3.0** full reference set.
+Optional, repeatable, **opt-in**. Default (no path/exclude flags) ≡ **1.9.0** /
+**1.3.0** full reference set.
 
 | Rule | Detail |
 |---|---|
 | `--path P` | Hit iff `path == P` or `path` starts with `P/` (subtree) |
+| `--path-from FILE` | Phase 20 opt-in: UTF-8 one include prefix per line (≡ `--path`); blank/`#`/trim; merged with `--path` (OR). Missing file → non-zero |
 | `--exclude` | Exact; trailing `/` directory prefix; single edge `*` only (`*.o`, `temp*`) — **no** `**` / middle `*` |
-| `--exclude-from` | Same patterns from a file; merged with `--exclude`. No `--path-from` |
-| Combine | If any `--path` is given: must hit include first, then excludes reject |
+| `--exclude-from` | Same patterns from a file; merged with `--exclude`. May combine with `--path-from` |
+| Combine | If any `--path` / `--path-from` is given: must hit include first, then excludes reject |
 | Scope | Only `.cfdir` **File** entries contribute chunk ids; **Dir** entries never do |
-| `.cfidx` | Any `--path` / `--exclude` / `--exclude-from` → **non-zero clear error** (no File paths; no silent full upload) |
+| `.cfidx` | Any path/exclude flag (incl. `--path-from`) → **non-zero clear error** (no File paths; no silent full upload) |
 | Listing | Full listing is read locally; push still does **not** upload the listing |
 | Orthogonal | `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 / `--verify` do **not** change match rules |
 | JSON | Field names unchanged; `unique_chunks` = filtered unique id count |
@@ -116,7 +121,7 @@ FUSE `mount` is unchanged (no per-read thread storm).
 |---|---|
 | ❌ Upload `.cfidx` / `.cfdir` | Listings stay local / are published by the user separately |
 | ❌ Silent full upload on `.cfidx` + `--path` | Clear non-zero error instead |
-| ❌ `--path-from` | Not in this phase |
+| ❌ `gc --path` / prune / pack | Path filter is **not** GC scope, prune, or pack |
 | ❌ Remote GC / delete | Extra remote objects are left alone |
 | ❌ Bidirectional sync | Explicit one-way publish only |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |

@@ -157,32 +157,41 @@ chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
 # stderr: … would_seed_reuse=…, would_rechunk=1 …; no store/.cfdir written …
 ```
 
-## Path filter (`--path` / `--exclude` / `--exclude-from`)
+## Path filter (`--path` / `--path-from` / `--exclude` / `--exclude-from`)
 
 Phase 13 opt-in. Repeatable `--path P` and `--exclude PAT` build a
 `PathFilter` (same rules as `chunkforge-index::PathFilter`). Phase 14 M4 adds
 repeatable **`--exclude-from FILE`**: UTF-8, one pattern per line, blank lines
 and `#` comments skipped, trim; lines are merged with every `--exclude` into
 the **same** filter. Illegal pattern → same error as `--exclude`. Unreadable
-file → clear non-zero error. No `--path-from`.
+file → clear non-zero error.
+
+Phase 20 / **1.10** (opt-in; workspace still **1.9.0** until M7) adds
+repeatable **`--path-from FILE`**: UTF-8, one include prefix per line (same
+rules as `--path`); blank / `#` / trim ≡ exclude-from discipline; merged with
+every `--path` (OR) via `load_path_file`. May combine with `--exclude` /
+`--exclude-from`. Missing / bad UTF-8 → clear non-zero.
 
 - **`--path P`**: keep iff `path == P` or `path` is under `P/` (OR across flags).
+- **`--path-from FILE`**: load include prefixes from a file; merged with `--path`.
 - **`--exclude PAT`**: exact match; trailing `/` → directory prefix; single `*`
   only at start (`*.o`) or end (`temp*`). Illegal middle `*` / `**` → non-zero
   with a clear error.
-- If any `--path` is given, a candidate must hit an include **before** excludes.
-- **No** `--path` / `--exclude` / `--exclude-from` ⇒ full tree (≡ **1.2.0** / **1.3.0**).
+- If any `--path` / `--path-from` include is given, a candidate must hit an
+  include **before** excludes.
+- **No** path/exclude flags ⇒ full tree (≡ **1.9.0** / **1.2.0**).
 - Orthogonal to `--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` /
   `--format`.
 
 Filtered-out regular files are **not** chunked and **do not** appear in the
 written `.cfdir`; they increment `excluded` in the text summary / JSON.
 
-**`path` ≠ prune ≠ sync:** archive path/exclude only **shrinks the listing**
-(fewer entries written). It does not delete anything on disk, does not prune
-an extract destination, and is not bidirectional sync. See
-[extract.md](extract.md) (non-prune materialize) and [pull.md](pull.md)
-(subset CAS fill).
+**`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack:** archive path/exclude only
+**shrinks the listing** (fewer entries written). It does not delete anything
+on disk, does not prune an extract destination, does **not** shrink `gc`'s
+reference set (`gc` has **no** `--path`), and is not bidirectional sync or
+pack. See [extract.md](extract.md) (non-prune materialize), [pull.md](pull.md)
+(subset CAS fill), and [doctor-gc.md](doctor-gc.md).
 
 ### Walk order vs symlink / special
 
