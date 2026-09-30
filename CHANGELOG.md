@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase13-M1 `PathFilter`** (library, CLI not wired): `chunkforge-index::PathFilter` /
+  `ExcludePat` — `--path` prefix include (OR) + `--exclude` exact / trailing-`/`
+  directory / edge `*` wildcards (`*.o`, `temp*`); no `ignore`/`globset`; illegal
+  middle `*` / `**` → `Error::InvalidExcludePattern`. Unit tests in-crate.
+
 ## [1.2.0] — 2026-09-29
 
 Phase 12 closeout — `gc --jobs`; `gc`/`store scrub --format json`;

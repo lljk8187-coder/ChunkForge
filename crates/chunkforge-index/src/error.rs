@@ -26,6 +26,9 @@ pub enum Error {
     #[error("invalid archive path: {0}")]
     InvalidPath(String),
 
+    #[error("invalid exclude pattern: {0}")]
+    InvalidExcludePattern(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
