@@ -4,6 +4,8 @@
 //! - [`DirFs`]: directory-tree mount from a `.cfdir` [`DirArchive`] (Phase 5 M4)
 //! - Phase 21 M1: [`chunkforge_index::filter_dir_archive`] subsets a listing
 //!   (matching Files + ancestor Dirs) before [`DirFs::new`]; empty filter ≡ 1.10 full tree.
+//! - Phase22-M4: [`DirFs`] exposes Symlink via [`DirFs::readlink_at_path`] /
+//!   FUSE `readlink` (still RO; write-side remains `EROFS`).
 //!
 //! Kernel mounts are forced [`MountOption::RO`]; write-side FUSE ops return
 //! `EROFS` / `EACCES`. Sequential forward reads prefetch subsequent chunk(s) into a
@@ -18,8 +20,9 @@
 //! # Testing without `/dev/fuse`
 //!
 //! [`BlobFs::read_at`] / [`read_range`] / [`DirFs::read_at_path`] /
-//! [`DirFs::lookup_path`] exercise the offset→chunk→splice path with an
-//! in-memory [`ChunkSource`]. Real mount tests are `#[ignore]`.
+//! [`DirFs::lookup_path`] / [`DirFs::readlink_at_path`] exercise the
+//! offset→chunk→splice and symlink paths with an in-memory [`ChunkSource`].
+//! Real mount tests are `#[ignore]`.
 
 mod dir_fs;
 mod fs;
@@ -978,6 +981,152 @@ mod tests {
             full.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(),
             via_filter.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap()
         );
+    }
+
+    // --- Phase22-M4: DirFs Symlink + readlink (library; no real FUSE) ---
+
+    fn symlink_sample_tree() -> (DirArchive, MemSource, Vec<u8>) {
+        let a = b"hello-link-target\n".to_vec();
+        let x = b"x".to_vec();
+        let mut src = MemSource::default();
+        let a_chunks = chunks_from_cuts(&a, &[a.len()], &mut src);
+        let x_chunks = chunks_from_cuts(&x, &[x.len()], &mut src);
+        let arch = DirArchive::new(
+            0,
+            vec![
+                DirEntry {
+                    path: "pkgs".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "pkgs/foo".into(),
+                    kind: DirEntryKind::Dir { mode: 0o755 },
+                },
+                DirEntry {
+                    path: "pkgs/foo/a.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: a.len() as u64,
+                        mtime_secs: 1,
+                        blob_blake3: ChunkId::hash(&a),
+                        chunks: a_chunks,
+                    },
+                },
+                DirEntry {
+                    path: "pkgs/foo/link.txt".into(),
+                    kind: DirEntryKind::Symlink {
+                        mode: 0o777,
+                        target: "a.txt".into(),
+                    },
+                },
+                DirEntry {
+                    path: "pkgs/bar".into(),
+                    kind: DirEntryKind::Dir { mode: 0o700 },
+                },
+                DirEntry {
+                    path: "pkgs/bar/slink".into(),
+                    kind: DirEntryKind::Symlink {
+                        mode: 0o777,
+                        target: "../foo/a.txt".into(),
+                    },
+                },
+                DirEntry {
+                    path: "other/x.txt".into(),
+                    kind: DirEntryKind::File {
+                        mode: 0o644,
+                        size: x.len() as u64,
+                        mtime_secs: 0,
+                        blob_blake3: ChunkId::hash(&x),
+                        chunks: x_chunks,
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        (arch, src, a)
+    }
+
+    #[test]
+    fn dir_fs_symlink_lookup_readlink_readdir() {
+        let (arch, src, a) = symlink_sample_tree();
+        let fs = DirFs::new(arch, src);
+
+        assert!(fs.is_file_path("pkgs/foo/a.txt"));
+        assert!(fs.is_symlink_at_path("pkgs/foo/link.txt"));
+        assert!(!fs.is_file_path("pkgs/foo/link.txt"));
+        assert!(!fs.is_dir_path("pkgs/foo/link.txt"));
+        assert!(fs.is_symlink_at_path("pkgs/bar/slink"));
+
+        assert_eq!(fs.readlink_at_path("pkgs/foo/link.txt").unwrap(), "a.txt");
+        assert_eq!(
+            fs.readlink_at_path("pkgs/bar/slink").unwrap(),
+            "../foo/a.txt"
+        );
+
+        // File content still readable; symlink is not followed for read.
+        assert_eq!(fs.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(), a);
+        let err = fs.read_at_path("pkgs/foo/link.txt", 0, 64).unwrap_err();
+        assert!(matches!(err, DirFsError::IsSymlink));
+
+        // Wrong-kind readlink
+        let err = fs.readlink_at_path("pkgs/foo/a.txt").unwrap_err();
+        assert!(matches!(err, DirFsError::NotASymlink));
+        let err = fs.readlink_at_path("pkgs/foo").unwrap_err();
+        assert!(matches!(err, DirFsError::NotASymlink));
+        let err = fs.readlink_at_path("missing").unwrap_err();
+        assert!(matches!(err, DirFsError::NotFound));
+
+        // Path through a symlink segment is not followed.
+        assert!(fs.lookup_path("pkgs/foo/link.txt/nope").is_none());
+
+        let foo = fs.readdir_path("pkgs/foo").unwrap();
+        let names: Vec<_> = foo.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+        assert_eq!(names, vec![("a.txt", false), ("link.txt", false)]);
+
+        let bar = fs.readdir_path("pkgs/bar").unwrap();
+        let names: Vec<_> = bar.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+        assert_eq!(names, vec![("slink", false)]);
+
+        // readdir on symlink → NotADirectory
+        let err = fs.readdir_path("pkgs/foo/link.txt").unwrap_err();
+        assert!(matches!(err, DirFsError::NotADirectory));
+    }
+
+    #[test]
+    fn filter_path_keeps_symlink_then_dirfs_readlink() {
+        use chunkforge_index::{PathFilter, filter_dir_archive};
+
+        let (arch, src, _) = symlink_sample_tree();
+        assert_eq!(arch.format_version, chunkforge_index::DIR_FORMAT_VERSION_V2);
+
+        // --path pkgs/foo keeps file + symlink + ancestors.
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let fs = DirFs::new(filtered, src.clone());
+
+        assert!(fs.is_file_path("pkgs/foo/a.txt"));
+        assert!(fs.is_symlink_at_path("pkgs/foo/link.txt"));
+        assert_eq!(fs.readlink_at_path("pkgs/foo/link.txt").unwrap(), "a.txt");
+        assert!(fs.lookup_path("pkgs/bar").is_none());
+        assert!(fs.lookup_path("pkgs/bar/slink").is_none());
+        assert!(fs.lookup_path("other/x.txt").is_none());
+
+        let foo = fs.readdir_path("pkgs/foo").unwrap();
+        let names: Vec<_> = foo.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["a.txt", "link.txt"]);
+
+        // Empty filter ≡ full archive including symlinks.
+        let empty = PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).unwrap();
+        let full_filtered = filter_dir_archive(&arch, &empty);
+        assert_eq!(full_filtered, arch);
+        let full_fs = DirFs::new(full_filtered, src);
+        assert!(full_fs.is_symlink_at_path("pkgs/foo/link.txt"));
+        assert!(full_fs.is_symlink_at_path("pkgs/bar/slink"));
+        assert_eq!(
+            full_fs.readlink_at_path("pkgs/bar/slink").unwrap(),
+            "../foo/a.txt"
+        );
+        assert!(full_fs.is_file_path("other/x.txt"));
     }
 
     /// Real DirFs FUSE mount — needs fuse3 + /dev/fuse; skipped by default.

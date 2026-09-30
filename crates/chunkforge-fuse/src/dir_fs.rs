@@ -1,4 +1,7 @@
 //! Read-only directory-tree FUSE [`Filesystem`] backed by a `.cfdir` [`DirArchive`].
+//!
+//! Phase22-M4: [`DirEntryKind::Symlink`] nodes are exposed as [`FileType::Symlink`]
+//! with [`Filesystem::readlink`]; write-side ops remain `EROFS`.
 
 use crate::prefetch::PrefetchCache;
 use crate::read::read_entries_cached;
@@ -30,6 +33,10 @@ pub enum DirFsError {
     IsDirectory,
     #[error("path is not a directory")]
     NotADirectory,
+    #[error("path is a symbolic link, not a regular file")]
+    IsSymlink,
+    #[error("path is not a symbolic link")]
+    NotASymlink,
     #[error(transparent)]
     Source(#[from] SourceError),
 }
@@ -47,6 +54,8 @@ enum NodeKind {
         mtime_secs: u64,
         chunks: Vec<IndexEntry>,
     },
+    /// Symbolic link: target string as stored in the listing (not followed).
+    Symlink { mode: u32, target: String },
 }
 
 #[derive(Debug)]
@@ -121,9 +130,8 @@ impl<S: ChunkSource> DirFs<S> {
                 } => {
                     fs.insert_file(&entry.path, mode, size, mtime_secs, chunks);
                 }
-                DirEntryKind::Symlink { .. } => {
-                    // Phase22-M4: Symlink / readlink
-                    // M1: skip Symlink entries when building the tree (do not panic).
+                DirEntryKind::Symlink { mode, target } => {
+                    fs.insert_symlink(&entry.path, mode, target);
                 }
             }
         }
@@ -180,7 +188,8 @@ impl<S: ChunkSource> DirFs<S> {
                 NodeKind::Dir { children, .. } => {
                     ino = *children.get(seg)?;
                 }
-                NodeKind::File { .. } => return None,
+                // Do not follow symlinks when resolving paths.
+                NodeKind::File { .. } | NodeKind::Symlink { .. } => return None,
             }
         }
         Some(ino)
@@ -198,6 +207,13 @@ impl<S: ChunkSource> DirFs<S> {
         self.lookup_path(path)
             .and_then(|ino| self.nodes.get(&ino))
             .is_some_and(|n| matches!(n.kind, NodeKind::File { .. }))
+    }
+
+    /// Whether `path` resolves to a symbolic link (does not follow).
+    pub fn is_symlink_at_path(&self, path: &str) -> bool {
+        self.lookup_path(path)
+            .and_then(|ino| self.nodes.get(&ino))
+            .is_some_and(|n| matches!(n.kind, NodeKind::Symlink { .. }))
     }
 
     /// List direct child names of a directory path (no `.` / `..`).
@@ -218,7 +234,7 @@ impl<S: ChunkSource> DirFs<S> {
                 }
                 Ok(out)
             }
-            NodeKind::File { .. } => Err(DirFsError::NotADirectory),
+            NodeKind::File { .. } | NodeKind::Symlink { .. } => Err(DirFsError::NotADirectory),
         }
     }
 
@@ -228,10 +244,21 @@ impl<S: ChunkSource> DirFs<S> {
         self.read_at_ino(ino, offset, size)
     }
 
+    /// Read the symlink target string at `path` (library helper; no FUSE / no follow).
+    pub fn readlink_at_path(&self, path: &str) -> Result<String, DirFsError> {
+        let ino = self.lookup_path(path).ok_or(DirFsError::NotFound)?;
+        let node = self.nodes.get(&ino).ok_or(DirFsError::NotFound)?;
+        match &node.kind {
+            NodeKind::Symlink { target, .. } => Ok(target.clone()),
+            NodeKind::Dir { .. } | NodeKind::File { .. } => Err(DirFsError::NotASymlink),
+        }
+    }
+
     fn read_at_ino(&self, ino: u64, offset: u64, size: u32) -> Result<Vec<u8>, DirFsError> {
         let node = self.nodes.get(&ino).ok_or(DirFsError::NotFound)?;
         match &node.kind {
             NodeKind::Dir { .. } => Err(DirFsError::IsDirectory),
+            NodeKind::Symlink { .. } => Err(DirFsError::IsSymlink),
             NodeKind::File {
                 size: file_size,
                 chunks,
@@ -289,7 +316,7 @@ impl<S: ChunkSource> DirFs<S> {
             .get(&parent_ino)
             .and_then(|node| match &node.kind {
                 NodeKind::Dir { children, .. } => children.get(name).copied(),
-                NodeKind::File { .. } => None,
+                NodeKind::File { .. } | NodeKind::Symlink { .. } => None,
             });
         if let Some(child) = existing {
             if let Some(Node {
@@ -344,7 +371,7 @@ impl<S: ChunkSource> DirFs<S> {
         // Replace existing child with same name if present (should not happen for valid archives).
         let old_ino = self.nodes.get(&parent).and_then(|node| match &node.kind {
             NodeKind::Dir { children, .. } => children.get(*file_name).copied(),
-            NodeKind::File { .. } => None,
+            NodeKind::File { .. } | NodeKind::Symlink { .. } => None,
         });
         if let Some(old) = old_ino {
             self.nodes.remove(&old);
@@ -372,6 +399,41 @@ impl<S: ChunkSource> DirFs<S> {
         }
         self.total_bytes = self.total_bytes.saturating_add(size);
         self.file_count = self.file_count.saturating_add(1);
+    }
+
+    fn insert_symlink(&mut self, path: &str, mode: u32, target: String) {
+        let path = path.trim_matches('/');
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        assert!(!segments.is_empty(), "symlink path must be non-empty");
+        let (link_name, parents) = segments.split_last().unwrap();
+        let mut parent = ROOT_INO;
+        for seg in parents {
+            parent = self.ensure_child_dir(parent, seg, SYNTH_DIR_MODE);
+        }
+
+        let old_ino = self.nodes.get(&parent).and_then(|node| match &node.kind {
+            NodeKind::Dir { children, .. } => children.get(*link_name).copied(),
+            NodeKind::File { .. } | NodeKind::Symlink { .. } => None,
+        });
+        if let Some(old) = old_ino {
+            self.nodes.remove(&old);
+        }
+
+        let ino = self.alloc_ino();
+        self.nodes.insert(
+            ino,
+            Node {
+                parent,
+                kind: NodeKind::Symlink { mode, target },
+            },
+        );
+        if let Some(Node {
+            kind: NodeKind::Dir { children, .. },
+            ..
+        }) = self.nodes.get_mut(&parent)
+        {
+            children.insert((*link_name).to_string(), ino);
+        }
     }
 
     fn attr_for(&self, ino: u64) -> Option<FileAttr> {
@@ -423,6 +485,26 @@ impl<S: ChunkSource> DirFs<S> {
                     ctime: mtime,
                     crtime: UNIX_EPOCH,
                     kind: FileType::RegularFile,
+                    perm: (*mode & 0o7777) as u16,
+                    nlink: 1,
+                    uid: self.uid,
+                    gid: self.gid,
+                    rdev: 0,
+                    blksize: BLKSIZE,
+                    flags: 0,
+                })
+            }
+            NodeKind::Symlink { mode, target } => {
+                let size = target.len() as u64;
+                Some(FileAttr {
+                    ino,
+                    size,
+                    blocks: size.div_ceil(u64::from(BLKSIZE)),
+                    atime: self.atime,
+                    mtime: self.ctime,
+                    ctime: self.ctime,
+                    crtime: UNIX_EPOCH,
+                    kind: FileType::Symlink,
                     perm: (*mode & 0o7777) as u16,
                     nlink: 1,
                     uid: self.uid,
@@ -487,6 +569,17 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
         match self.attr_for(ino) {
             Some(attr) => reply.attr(&TTL, &attr),
             None => reply.error(ENOENT),
+        }
+    }
+
+    fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
+        let Some(node) = self.nodes.get(&ino) else {
+            reply.error(ENOENT);
+            return;
+        };
+        match &node.kind {
+            NodeKind::Symlink { target, .. } => reply.data(target.as_bytes()),
+            NodeKind::Dir { .. } | NodeKind::File { .. } => reply.error(EINVAL),
         }
     }
 
@@ -599,6 +692,8 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
                 }
             }
             NodeKind::Dir { .. } => reply.error(EISDIR),
+            // Kernel normally resolves via readlink; direct open of symlink inode → EINVAL.
+            NodeKind::Symlink { .. } => reply.error(EINVAL),
         }
     }
 
@@ -622,6 +717,8 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
             Err(DirFsError::NotFound) => reply.error(ENOENT),
             Err(DirFsError::IsDirectory) => reply.error(EISDIR),
             Err(DirFsError::NotADirectory) => reply.error(ENOTDIR),
+            Err(DirFsError::IsSymlink) => reply.error(EINVAL),
+            Err(DirFsError::NotASymlink) => reply.error(EINVAL),
             Err(DirFsError::Source(_)) => reply.error(libc::EIO),
         }
     }
@@ -683,7 +780,7 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
         };
         match &node.kind {
             NodeKind::Dir { .. } => reply.opened(0, 0),
-            NodeKind::File { .. } => reply.error(ENOTDIR),
+            NodeKind::File { .. } | NodeKind::Symlink { .. } => reply.error(ENOTDIR),
         }
     }
 
@@ -707,7 +804,7 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
                     .collect::<Vec<_>>(),
                 node.parent,
             ),
-            NodeKind::File { .. } => {
+            NodeKind::File { .. } | NodeKind::Symlink { .. } => {
                 reply.error(ENOTDIR);
                 return;
             }
@@ -721,6 +818,7 @@ impl<S: ChunkSource + 'static> Filesystem for DirFs<S> {
             let kind = match self.nodes.get(&child_ino).map(|n| &n.kind) {
                 Some(NodeKind::Dir { .. }) => FileType::Directory,
                 Some(NodeKind::File { .. }) => FileType::RegularFile,
+                Some(NodeKind::Symlink { .. }) => FileType::Symlink,
                 None => continue,
             };
             entries.push((child_ino, kind, name));
