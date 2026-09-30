@@ -41,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Phase13-M5 ops-json archive + `demo_path_filter` + README**: `docs/ops-json.md` adds **archive** write/dry-run rows (`ok` / `dry_run` / `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse` / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` / `skipped_special` / `excluded`); removes stale "archive has no format json" scope note; documents that extract/pull path filter does **not** rename fields (`unique_chunks` = filtered). Docs proofread: `archive`/`extract`/`pull` path≠prune≠sync; `stability` 1.3 opt-in; `perf` Phase13 still no pack. Smoke: `scripts/demo_path_filter.sh` (exclude → archive json → extract `--path` non-prune → pull `--path` subset). README Phase 13 / 1.3 draft. **Not** bumping 1.3.0; **not** `check_compat_1_2` (M6).
 
+- **Phase13-M6 `check_compat_1_2` + 1.2 regression gate**:
+  `scripts/check_compat_1_2.sh` runs `check_compat_1_1.sh` (keeps 1_0 / 1_1
+  independently runnable), then asserts 1.3 help flags (`archive --format` +
+  `--path`/`--exclude`, `extract --path`, `pull --path`); thin non-goals: no
+  `--delete`/prune on extract, no pack subcommand / `--pack*` (aws-sdk already
+  gated by 1_0). Invokes `demo_path_filter.sh` (O4). No absolute perf SLA; does
+  not run `bench_loose_http.sh`. **P1 O3** thin docs: `docs/remote-layout.md`
+  Phase tag → through 1.3; README responsibility table notes path filter ≠
+  prune. **Not** bumping 1.3.0 (M7). **Not delivered (P1 deferred):** `push
+  --path` / `store du` / `--exclude-from`.
+
+
 ## [1.2.0] — 2026-09-29
 
 Phase 12 closeout — `gc --jobs`; `gc`/`store scrub --format json`;

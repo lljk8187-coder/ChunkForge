@@ -107,5 +107,7 @@ Path filter on extract/pull does **not** rename fields (`unique_chunks` =
 filtered set).
 
 Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
-(1.0 defaults) and [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
-(1.1/1.2 additive flags; calls 1_0). No absolute perf SLA.
+(1.0 defaults), [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
+(1.1/1.2 additive flags; calls 1_0), and
+[`scripts/check_compat_1_2.sh`](../scripts/check_compat_1_2.sh)
+(1.3 path/archive flags; calls 1_1). No absolute perf SLA.

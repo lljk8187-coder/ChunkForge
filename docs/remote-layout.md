@@ -272,7 +272,7 @@ chunkforge verify --source http://127.0.0.1:8766 hello.cfidx
 Full smoke: [`scripts/demo_push.sh`](../scripts/demo_push.sh) / `make demo-push`.
 Details: [push.md](push.md).
 
-## Explicit non-goals (this layout / Phase 3–8)
+## Explicit non-goals (this layout / Phase 3–13 / through 1.3)
 
 | Non-goal | Status |
 |---|---|

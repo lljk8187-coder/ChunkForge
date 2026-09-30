@@ -18,7 +18,7 @@
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
-| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` (M1–M5; compat_1_2 still open); path **≠** prune **≠** sync; **not** pack / write mount |
+| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2` (M1–M6; **1.3.0** bump still M7); path **≠** prune **≠** sync; **not** pack / write mount |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -536,7 +536,7 @@ Phase 13 (toward **1.3.0**, **not** bumped yet) adds opt-in **path scope** on
 tree ops. Defaults stay ≡ **1.2.0**: no `--path`/`--exclude` ⇒ full tree /
 full reference set; `archive --format` default **text**.
 
-**Delivered so far (M1–M5):**
+**Delivered so far (M1–M6):**
 
 - **`PathFilter`** (`chunkforge-index`): `--path` prefix include (OR) +
   `--exclude` exact / trailing-`/` / edge `*` — no `ignore`/`globset`.
@@ -553,26 +553,45 @@ full reference set; `archive --format` default **text**.
 - Smoke: [`scripts/demo_path_filter.sh`](scripts/demo_path_filter.sh)
   (exclude → archive json → extract `--path` → pull `--path`; local
   `put_stub` only).
+- **Compat gate**: [`scripts/check_compat_1_2.sh`](scripts/check_compat_1_2.sh)
+  — runs `check_compat_1_1.sh`, then asserts 1.3 help flags
+  (`archive --format` + `--path`/`--exclude`, `extract --path`, `pull --path`);
+  thin no-`--delete` / no-pack; invokes `demo_path_filter.sh`. No absolute
+  perf SLA.
+
+**Responsibility split (path filter ≠ prune ≠ sync):**
+
+| Command | Role |
+|---|---|
+| `archive --path` / `--exclude` | Write a **smaller** `.cfdir` listing (subset of tree) |
+| `extract --path` / `--exclude` | Materialize **fewer** dest paths; **never** deletes extras |
+| `pull --path` / `--exclude` | Fetch a **subset** of referenced chunk ids into local CAS |
+| `diff` | Listing↔listing; **not** sync |
+| `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
 **Explicit non-goals (still):** packfile; write mount / COW; bidirectional
 sync; extract prune / `--delete`; remote scrub; aws-sdk; bumping **1.3.0**
-(this milestone). Pack remains measured-only in [docs/perf.md](docs/perf.md)
+(M7). **P1 not delivered this milestone:** `push --path` / `store du` /
+`--exclude-from`. Pack remains measured-only in [docs/perf.md](docs/perf.md)
 — **Phase 13 still does not implement pack**.
 
 ```bash
-# Phase 13 path-filter smoke (~minutes; local put_stub only)
+# Phase 13 path-filter smoke + compat gate (~minutes; local put_stub only)
 cargo build -p chunkforge-cli
 bash scripts/demo_path_filter.sh
 # A: source with packages/foo + junk/.git → archive --exclude --format json
 # B: extract --path packages/foo (extra dest file kept; no prune)
 # C: push → pull --path → unique_chunks is subset
+bash scripts/check_compat_1_2.sh   # includes 1_1 → 1_0 + 1.3 flags + demo
 
 ./target/debug/chunkforge --version   # still chunkforge 1.2.0 until M7
 ```
 
 Details: [docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md),
 [docs/pull.md](docs/pull.md), [docs/ops-json.md](docs/ops-json.md),
-[docs/stability.md](docs/stability.md).
+[docs/stability.md](docs/stability.md),
+[docs/remote-layout.md](docs/remote-layout.md). Gate:
+[`scripts/check_compat_1_2.sh`](scripts/check_compat_1_2.sh).
 
 ## Incremental dedup demo
 
