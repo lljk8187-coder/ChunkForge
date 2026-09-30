@@ -13,7 +13,7 @@ in a minor are allowed when defaults stay compatible; this matrix lists the
 Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` / `doctor`),
 [store.md](store.md) (`store create`), [diff.md](diff.md), [archive.md](archive.md),
 [extract.md](extract.md), [push.md](push.md), [pull.md](pull.md),
-[filter.md](filter.md) (`filter`).
+[filter.md](filter.md) (`filter`), [ls.md](ls.md) (`ls` / `cat --path`).
 
 ## Matrix (command × minimum stable fields)
 
@@ -35,8 +35,9 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`store list`** | `ok`, `chunks`, `ids` (sorted string array of hex ids) | Phase 21 M6 / P1 O2. Read-only via `Store::list_chunk_ids`; default **text**: one hex id per line (**stably sorted**); empty → no lines. **json**: one object; no text dual-write; exit format-independent. Field set **orthogonal** (does **not** rename prior fields). **≠** GC / scrub / trim / LRU. See [store.md](store.md). |
 | **`make`** (write) | `ok`, `bytes`, `chunks`, `new`, `reused`; **additive with `--seed`:** `seed_reused` (`bool`) | Phase 15 + Phase24-M6. Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). Omit `--seed` ⇒ field set unchanged (no `seed_reused`; ≡ 1.13). With **`--seed`**: additive `seed_reused` (`true` = copied prior chunk table / skipped FastCDC; `false` = rechunked). Reuse requires prior chunks `has()` in store else clear non-zero. **≠** pack / **≠** recompress / **≠** path. |
 | **`make`** (dry-run) | `ok`, `dry_run` (`true`), `bytes`, `chunks`, `would_write`, `would_reuse`; **additive with `--seed`:** `seed_reused` | Phase22-M7 / P1 + Phase24-M6. Plan-only: FastCDC (rechunk path) + `has()` accounting; no store create/put; no `.cfidx` write. Uses **`would_write` / `would_reuse`** (not `new` / `reused`). Missing store → all unique chunks `would_write` on rechunk; seed Reuse with missing chunks → clear non-zero. With `--seed`, additive `seed_reused`. Omit `--seed` ⇒ no `seed_reused` (≡ 1.13). **≠** pack / **≠** recompress / **≠** path. |
-| **`cat`** | `ok`, `bytes`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Phase 15 + Phase18-M3. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Without `--cache`, omit `cache_*` (1.7 baseline). With `--cache`, three numeric fields from the same `CacheStatsRef` (even if `--cache-stats` off). Orthogonal to `--cache-max-bytes` / `--jobs` / `--cache-stats` / `--progress`. Failure paths do not require a full JSON object. Prior field names **frozen**. |
+| **`cat`** | `ok`, `bytes`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Phase 15 + Phase18-M3 + Phase25 `cat --path`. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`.cfidx` = `index.total_size`; `.cfdir --path` = matched File size). Without `--cache`, omit `cache_*` (1.7 baseline). With `--cache`, three numeric fields from the same `CacheStatsRef` (even if `--cache-stats` off). Orthogonal to `--cache-max-bytes` / `--jobs` / `--cache-stats` / `--progress` / `--path`. Failure paths do not require a full JSON object. Prior field names **frozen** (`.cfdir --path` does **not** rename). **`cat --path` ≠ extract ≠ prune ≠ sync**. See [ls.md](ls.md). |
 | **`filter`** | `ok`, `dry_run`, `input`, `output`, `files`, `dirs`, `symlinks`, `excluded` | Phase24 / **1.14.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ stderr summary. **json**: one object on stdout; no text dual-write; exit format-independent. `dry_run` true under `--dry-run` (no `-o` write). `excluded` = input File+Symlink leaves that failed PathFilter (Dirs that drop as non-ancestors not counted — same leaf accounting as archive). Empty path 四件套 ⇒ `excluded=0` (identity). **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**. See [filter.md](filter.md). |
+| **`ls`** | `ok`, `entries` (array of `{kind, path, size?, target?, chunks?}`) | Phase25 / toward **1.15.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ tab columns on stdout. **json**: one object on stdout; no text dual-write; exit format-independent. Each entry: `kind` = `"file"`\|`"dir"`\|`"symlink"`; `path` always; `size` on File; `target` on Symlink; `chunks` (hex string array) only when `--chunks` and kind=file. **Never** opens a store. **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**. See [ls.md](ls.md). |
 
 ## Conventions
 
@@ -46,7 +47,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | JSON shape | Single compact **object** on stdout |
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
-| Path filter | `extract` / `pull` / `push` / `archive` / `diff` / `doctor` / `verify` `--path`/`--path-from`/`--exclude`/`--exclude-from` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set; doctor `checked` / verify `files`/`chunks` may shrink. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`mount` path** (Phase21) is the same PathFilter but **outside** this JSON matrix (no mount JSON). **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`filter`** (Phase24) is a **new** command with its own field set (`ok`/`dry_run`/`input`/`output`/`files`/`dirs`/`symlinks`/`excluded`); same PathFilter semantics; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`** |
+| Path filter | `extract` / `pull` / `push` / `archive` / `diff` / `doctor` / `verify` `--path`/`--path-from`/`--exclude`/`--exclude-from` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set; doctor `checked` / verify `files`/`chunks` may shrink. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`mount` path** (Phase21) is the same PathFilter but **outside** this JSON matrix (no mount JSON). **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`filter`** (Phase24) is a **new** command with its own field set (`ok`/`dry_run`/`input`/`output`/`files`/`dirs`/`symlinks`/`excluded`); same PathFilter semantics; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**. **`ls`** (Phase25) is a **new** command with field set `ok`/`entries`[{`kind`,`path`,`size?`,`target?`,`chunks?`}]; same PathFilter on `.cfdir`; **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**. **`cat --path`** (Phase25) does **not** rename `ok`/`bytes` |
 | Cache soft budget | **`--cache-max-bytes N`** (with `--cache` on `cat`/`verify`/`extract`/`mount`) = **refuse-fill** when `bytes_on_disk + plaintext_len > N`; still serves primary. **≠ LRU ≠ trim ≠ GC ≠ sync**. Accepts plain decimal **or** human suffixes `K`/`M`/`G`/`Ki`/`Mi`/`Gi` (1024-base; Phase 16). Omit ≡ 1.4 unbounded fill. See [mount.md](mount.md). Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh). |
 | Cache observation JSON | Phase18-M3 / G3: on `cat` / `verify` / `extract` (write) / `pull` / `doctor`, **`--cache` + `--format json`** adds `cache_hits` / `cache_miss_fills` / `cache_miss_refused` (numbers from the same `CacheStatsRef` as `--cache-stats`). **No `--cache` → omit** the three keys (do not emit `null`). Orthogonal to `--cache-stats` (stderr) and `--progress` (stderr). **≠ LRU ≠ trim**. `mount` has no `--format json` (stderr stats only, M2). |
 | Read-path `--fallback` | Repeatable on `cat`/`verify`/`extract`/`mount`/`pull`/`doctor`. Missing-only failover; **≠ cache ≠ sync**. Outer Cache wraps the whole Fallback chain. Zero times ≡ 1.5 single origin. Smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh). |
@@ -63,6 +64,8 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | `store create` | Create an **empty** local CAS (`meta.toml` + `chunks/`). Opt-in `--compression`; omit ≡ none. **≠** recompress / trim / pack. Existing store → non-zero. |
 | `store list` | Which loose chunk **ids** are present? (sorted hex; observation only — **≠** GC / scrub / trim / LRU) |
 | `filter` | Persist a path-scoped **subset listing** from an existing `.cfdir` (no store / no source-tree walk). **≠** prune / **≠** `gc --path` / **≠** sync / **≠** write mount / **≠** pack / **≠** `archive --path` |
+| `ls` | Which paths are in this listing? (File/Dir/Symlink inventory; optional `--chunks` ids from decode only; **no store**). **≠** mount / **≠** extract / **≠** verify / **≠** pack / **≠** filter |
+| `cat --path` | Reassemble **one** `.cfdir` File to `-o` (field names `ok`/`bytes` frozen). **≠** extract whole tree / **≠** prune / **≠** sync |
 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.
@@ -169,6 +172,14 @@ make `--seed` additive **`seed_reused`**. Gated by **`check_compat_1_13.sh`**
 [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
 **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**.
 **`make --seed` ≠ pack ≠ recompress ≠ path**.
+Phase 25 / toward **1.15.0** (workspace still **1.14.0** until M7) adds
+**`ls`** (new command field set: `ok`/`entries`[{`kind`,`path`,`size?`,
+`target?`,`chunks?`}]) and documents **`cat --path`** (same `ok`/`bytes`
+names; `.cfdir` single File). Gate **`check_compat_1_14.sh`** lands in **M5**
+(note-only until then; calls 1_13; no absolute perf SLA). Smoke:
+[`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
+**`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
+**`cat --path` ≠ extract ≠ prune ≠ sync**.
 
 
 

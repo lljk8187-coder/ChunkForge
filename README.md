@@ -30,6 +30,7 @@
 | **Phase 22** | **1.12.0** | **`.cfdir` Symlink opt-in** (`archive --symlinks skip\|record`; default **skip** ≡ 1.11 + write v1; record → `KIND_SYMLINK` / `format_version=2`; extract materialize; DirFs `readlink`; still RO) + docs + `demo_symlink` + **`check_compat_1_11`** + P1 **`make --dry-run`**; **`record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 | **Phase 23** | **1.13.0** | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12; **record** → ephemeral Symlink; clap requires `--tree`) + docs + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh) + **`check_compat_1_12`** + P1 extract dry-run **`would_symlinks`** (`would_write` still includes symlink ≡ 1.12); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 | **Phase 24** | **1.14.0** | **`chunkforge filter`** persist path-scoped subset `.cfdir` + docs + [`demo_filter_listing`](scripts/demo_filter_listing.sh) + **`check_compat_1_13`** + P1 **`make --seed`** / mount help File+Symlink honesty; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
+| **Phase 25** | **toward 1.15.0** (CLI still **1.14.0** until M7) | **`chunkforge ls`** listing inventory (`.cfidx`/`.cfdir`; path 四件套; text/json; `--chunks`; File+Symlink+Dir; **no store**) + **`cat --path`** single File from `.cfdir` + docs + [`demo_ls_cat_path`](scripts/demo_ls_cat_path.sh); **`check_compat_1_14`** lands in **M5** (note-only); P1 `archive --empty-dirs` / thin UX in **M6**; version bump **1.15.0** in **M7**; **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**; **`cat --path` ≠ extract ≠ prune ≠ sync**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -62,6 +63,7 @@ Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount
 **Phase 22 closed at 1.12.0**: `.cfdir` Symlink opt-in (`--symlinks record`; default skip ≡ 1.11) + extract/DirFs wiring + `demo_symlink` + `check_compat_1_11` + P1 `make --dry-run` — see [docs/dir-format.md](docs/dir-format.md) / [docs/archive.md](docs/archive.md) / [docs/stability.md](docs/stability.md); **`record` ≠ write mount ≠ follow ≠ pack ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / **`gc --path`** / mount `--progress` / default zstd / default record.
 **Phase 23 closed at 1.13.0**: `diff --tree --symlinks skip|record` (default skip ≡ 1.12) + docs + `demo_diff_tree_symlink` + `check_compat_1_12` + P1 extract dry-run `would_symlinks` — see [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
 **Phase 24 closed at 1.14.0**: first-class **`chunkforge filter`** + docs + `demo_filter_listing` + **`check_compat_1_13`** + P1 **`make --seed <prior.cfidx>`** / mount help File+Symlink honesty — see [docs/filter.md](docs/filter.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/stability.md](docs/stability.md); **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
+**Phase 25 (in progress toward 1.15.0; version still 1.14.0 until M7)**: first-class **`chunkforge ls`** (listing inventory; path 四件套; text/json; `--chunks`; no store) + **`cat --path`** (`.cfdir` single File) + docs + `demo_ls_cat_path`; **`check_compat_1_14`** in M5 (note-only until then); P1 `archive --empty-dirs` / thin UX in M6 — see [docs/ls.md](docs/ls.md) / [docs/stability.md](docs/stability.md); **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**; **`cat --path` ≠ extract ≠ prune ≠ sync**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
 
 ## Quick start (local CAS)
 
@@ -1350,6 +1352,69 @@ bash scripts/check_compat_1_13.sh
 Details: [docs/filter.md](docs/filter.md), [docs/stability.md](docs/stability.md),
 [docs/ops-json.md](docs/ops-json.md), [docs/perf.md](docs/perf.md),
 [docs/dir-format.md](docs/dir-format.md).
+
+## Phase 25 / toward 1.15.0: `chunkforge ls` + `cat --path` (+ demo; version still 1.14.0)
+
+Phase 25 productizes listing **inventory** and **single-File fetch** from a
+tree listing: new subcommand **`chunkforge ls`** (magic-dispatch `.cfidx` /
+`.cfdir`; `.cfdir` path 四件套; `--format text|json`; optional `--chunks`;
+File / Symlink / Dir rows; **never** opens a store) and extended **`cat
+--path`** (`.cfdir` requires exact File path → single `-o`; `.cfidx` ≡ 1.14
+omit `--path`). Closes the post-filter "subset listing → human/script
+inventory + take one file" product gap without mount or whole-tree extract.
+
+**Version note:** `ls` / `cat --path` are present on `main` (M1–M4), but
+workspace / CLI version stays **1.14.0** until **M7** bumps **1.15.0**. Gate
+**`check_compat_1_14.sh`** lands in **M5** (note-only here).
+
+**Responsibility:** **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**
+(read-only inventory; no store; does not persist a subset). **`cat --path` ≠
+extract ≠ prune ≠ sync** (one File to `-o`; never deletes a dest tree).
+
+**Delivered so far:**
+
+- `ls` skeleton + decode wiring + text inventory (M1).
+- Path 四件套 + `--format json` + `--chunks` + `cat --path` for `.cfdir` (M2).
+- Correctness matrix (Symlink/Dir/error paths; no-store ls; ≡ extract bytes) (M3).
+- Docs + smoke: [`scripts/demo_ls_cat_path.sh`](scripts/demo_ls_cat_path.sh)
+  (M4); [docs/ls.md](docs/ls.md) / [docs/stability.md](docs/stability.md) /
+  [docs/ops-json.md](docs/ops-json.md) / [docs/perf.md](docs/perf.md).
+- Gate [`scripts/check_compat_1_14.sh`](scripts/check_compat_1_14.sh) (**M5**).
+- P1 `archive --empty-dirs` / thin UX (**M6**, best-effort); **1.15.0**
+  version bump + CHANGELOG (**M7**).
+
+**Non-goals (unchanged):** packfile; write mount / COW; bidirectional sync;
+extract prune / `--delete`; **`gc --path`**; remote scrub; full aws-sdk /
+multipart / IMDS / SSO / ListObjects; byte-range resume; push listing upload;
+cache LRU; **default** zstd; HTTP wire compression; `store recompress`;
+`push --fallback`; multi dest; mount `--progress`; **default record
+symlink**; follow directory symlink; fifo / socket / device / xattr / ACL;
+offline bundle; changing default jobs·retries·SigV4·progress·create
+compression; absolute perf SLA in CI; video analysis; re-litigating Phase24
+`filter` / Phase23 `diff --tree --symlinks`. Pack stance:
+[docs/perf.md](docs/perf.md) — **Phase25 / toward 1.15.0 still does not
+implement pack**.
+
+```bash
+# Phase 25 ls + cat --path smoke (~minutes; local only)
+cargo build -p chunkforge-cli
+bash scripts/demo_ls_cat_path.sh
+# A: archive --symlinks record full tree (pkgs/foo + pkgs/bar + symlink)
+# B: filter --path pkgs/foo -o foo.cfdir
+# C: ls shows retained File + Symlink (text + json; target / size)
+# D: cat --path pkgs/foo/a.txt ≡ source bytes
+# E: cat --path ≡ extract same File; ≠ prune
+# F: .cfidx ls/cat regression; path flags rejected on cfidx
+# G: help has ls; cat --help has --path; gc no --path; no pack
+# H: version 1.14.0; compat_1_14 note-only (lands M5)
+
+./target/debug/chunkforge --version   # → chunkforge 1.14.0 (until M7 → 1.15.0)
+# bash scripts/check_compat_1_14.sh   # lands Phase25-M5
+```
+
+Details: [docs/ls.md](docs/ls.md), [docs/stability.md](docs/stability.md),
+[docs/ops-json.md](docs/ops-json.md), [docs/perf.md](docs/perf.md),
+[docs/filter.md](docs/filter.md), [docs/dir-format.md](docs/dir-format.md).
 
 ## Incremental dedup demo
 
