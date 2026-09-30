@@ -1,6 +1,6 @@
 # ChunkForge
 
-**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, per-chunk HTTP **PUT** (`ChunkSink` / `push`), **directory-tree archive** (`.cfdir` / `archive` / `extract`), and **read-only** FUSE mount of a single blob **or** a directory tree.
+**ChunkForge**: FastCDC content-defined chunking + BLAKE3 content addressing to split large files/blobs into deduplicable chunks, write them into a local CAS store, and reassemble via a custom `.cfidx` index — with on-demand fetch (`ChunkSource`), object-store–friendly HTTP templates, per-chunk HTTP **PUT** (`ChunkSink` / `push`), **directory-tree archive** (`.cfdir` / `archive` / `extract`), and **read-only** FUSE mount of a single blob **or** a directory tree (with sequential prefetch).
 
 ## Status
 
@@ -15,27 +15,31 @@
 | **Phase 7** | **0.7.0** | `chunkforge diff` (+ `--tree`); `store scrub`; `archive --seed-trust-mtime`; `extract --force`; `scripts/demo_diff_scrub.sh` |
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
+| **Phase 10** | *(in progress → **1.0.0**)* | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`) |
 
-## Non-goals (current / Phase 9)
+## Non-goals (Phase 10 / 1.0)
 
 | Not this | Why |
 |---|---|
-| ❌ **Full AWS/S3 SDK** | No `aws-sdk-*` / `aws-config` / ListObjects / credential provider chain — HTTP stays **ureq**; optional minimal SigV4 via `--aws-sigv4` (env + shared credentials file; see `docs/sigv4.md`) |
-| ❌ **Complete S3 multipart upload API** | No InitiateMultipartUpload / UploadPart / Complete / Abort — chunks ≤256KiB; **single-object PUT** only |
-| ❌ **Write mount / COW** | FUSE stays `RO` (single blob **and** directory tree); writes return `EROFS` / `EACCES` |
-| ❌ **Bidirectional sync** | `archive` / `extract` / `push` / `pull` are explicit one-way — no watch directories, conflict resolution, or mutual sync |
-| ❌ **Extract prune / `--delete`** | `extract` never removes extra files under `-o`; incremental skip ≠ sync |
-| ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay local (git / release artifact / optional manual URL) |
-| ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` (not a binary drop-in) |
-| ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged; Phase 9 only documents a local perf baseline (`docs/perf.md`) |
-| ❌ **Remote GC / lifecycle** | `gc` only touches a **local** `--store` |
-| ❌ **Remote scrub** | `store scrub` only rehashes a **local** `--store`; no remote bitrot scan |
-| ❌ **Byte-range / partial-chunk resume** | Retries **whole chunks** only (chunks ≤256KiB) |
-| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
+| ❌ **Full AWS/S3 SDK** (`aws-sdk-*` / `aws-config` / ListObjects / IMDS / SSO) | HTTP stays **ureq**; optional minimal SigV4 via `--aws-sigv4` (env + shared credentials file; see `docs/sigv4.md`) |
+| ❌ **Complete S3 multipart upload API** | Chunks ≤256KiB; **single-object PUT** only |
+| ❌ **Packfile / multi-chunk single object** | Loose `.cnk` layout unchanged; [docs/perf.md](docs/perf.md) measures only — pack **not** implemented |
+| ❌ **Write mount / COW / writable FUSE** | FUSE stays `RO` (blob **and** tree); prefetch is **not** write-back; writes return `EROFS` / `EACCES` |
+| ❌ **Bidirectional sync / watch dirs / conflict resolution** | `diff` is **not** sync; `extract --skip-unchanged` is **not** sync |
+| ❌ **Extract prune / `--delete`** | `extract` never removes extra files under `-o` |
+| ❌ **Remote scrub / remote GC / bucket lifecycle** | Referenced remote integrity → `verify --source`; presence → `doctor`; `gc` / `store scrub` stay **local** `--store` only |
+| ❌ **Byte-range / partial-chunk HTTP resume** | Retries **whole chunks** only (chunks ≤256KiB) |
+| ❌ **`push` uploads listings** | Chunks only; `.cfdir` / `.cfidx` stay out-of-band (git / release artifact) |
+| ❌ **Change default `--jobs` / `--http-retries`** | Stay **jobs=1**, **retries=0** (≡ 0.9.0) |
+| ❌ **Tokio as default runtime** | Keep `std::thread` + ureq; mount prefetch may sync-get the next chunk on the call thread |
+| ❌ **Rewrite / abandon `.cfidx` v1 or `.cfdir` v1** | Prefetch / stability / optional JSON do **not** bump magic |
+| ❌ **Full POSIX fidelity / symlink recording** | Symlinks still skipped + warned |
+| ❌ **casync `.catar` / `.caibx` bit-compat** | Semantic alignment only; native `.cfdir` / `.cfidx` |
 | ❌ **P2P** / **GPU / LLM** / video analysis | Pure CPU data plane; no device discovery |
+| ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), and HTTP **`--http-retries`** / error-class summaries / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8). Phase 9 (**0.9.0**) adds **`extract --skip-unchanged`** / **`--dry-run`**, a loose HTTP perf baseline, and SigV4 shared-credentials fallback.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), and **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9). Phase 10 is **in progress toward 1.0.0**: FUSE sequential prefetch + 1.0 stability freeze — see [docs/stability.md](docs/stability.md).
 
 ## Quick start (local CAS)
 
@@ -332,7 +336,7 @@ Phase 8. Default extract (no new flags), retries=0, and SigV4 off stay
   implemented; defaults stay jobs=1 / retries=0)
 - **P1 O3** `--aws-sigv4` falls back to `~/.aws/credentials` when env keys are
   missing (still no IMDS/SSO/`aws-sdk-*`) — [docs/sigv4.md](docs/sigv4.md)
-- **P1 O2** FUSE sequential prefetch: **not** delivered this release
+- **P1 O2** FUSE sequential prefetch: delivered in **Phase 10** (see below)
 
 **Still not this Phase:** full AWS SDK / multipart / packfile / write mount /
 bidirectional sync / **extract prune (`--delete`)** / video analysis / remote
@@ -354,6 +358,42 @@ bash scripts/bench_loose_http.sh
 
 Details: [docs/extract.md](docs/extract.md), [docs/perf.md](docs/perf.md),
 [docs/sigv4.md](docs/sigv4.md).
+
+## Phase 10 / 1.0.0: FUSE prefetch + stability freeze *(in progress)*
+
+Phase 10 delivers the missing RO mount UX from Phase 9 **O2** — **sequential
+chunk prefetch** on read-only FUSE (default **on**; `--no-prefetch` ≡ 0.9.0
+on-demand `get`) — and freezes the **1.0 contract** in
+[docs/stability.md](docs/stability.md). Details:
+[docs/mount.md](docs/mount.md).
+
+The formal version bump to **1.0.0** is reserved for the Phase 10 closeout
+milestone. The workspace version remains **0.9.0** until then.
+
+**Non-goals (one line):** no full AWS SDK / multipart / packfile / write mount /
+bidirectional sync / extract prune / remote scrub / byte-range resume / push
+listing upload / changing default jobs·retries / tokio default runtime / video
+analysis — see **Non-goals (Phase 10 / 1.0)** above and `docs/stability.md`.
+
+| Command | Role (no remote scrub, no sync) |
+|---|---|
+| `verify` | Listing + referenced chunk integrity |
+| `doctor` | Presence (optional `--deep`) |
+| `gc` | Local unreferenced loose chunks |
+| `store scrub` | Local loose BLAKE3 rehash |
+| `diff` | Listing↔listing; **not** sync |
+| `extract --skip-unchanged` / `--dry-run` | Incremental / plan-only; **no** prune |
+| `mount` (+ prefetch / `--no-prefetch`) | RO FUSE; sequential prefetch only |
+
+```bash
+# Prefetch on (default) vs off (≡ 0.9.0 on-demand get)
+# chunkforge mount --store ./store release.cfdir ./mnt
+# chunkforge mount --store ./store --no-prefetch release.cfdir ./mnt
+# See docs/mount.md / docs/stability.md
+./target/debug/chunkforge --version   # still → chunkforge 0.9.0 until 1.0 closeout
+```
+
+Details: [docs/stability.md](docs/stability.md), [docs/mount.md](docs/mount.md).
 
 ## Incremental dedup demo
 

@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backward / non-contiguous reads cold-start the prefetch window. Docs:
   `docs/mount.md` prefetch semantics. (M1 delivered `PrefetchCache` +
   `BlobFs`/`DirFs` wiring.)
+- **Phase 10 M3**: `docs/stability.md` — 1.0 frozen surface (`.cfidx`/`.cfdir` v1
+  bytes, `ChunkSource`/`ChunkSink` signatures, loose CAS + HTTP layout, CLI
+  defaults vs 0.9.0, mount prefetch default), breaking-change policy, promises /
+  non-promises. README: Phase 10 status row, **Non-goals (Phase 10 / 1.0)**,
+  Phase 10 / 1.0.0 section (formal **1.0.0** bump deferred to closeout;
+  workspace remains 0.9.0).
 
 ## [0.9.0] — 2026-09-29
 
