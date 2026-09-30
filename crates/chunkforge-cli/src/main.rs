@@ -630,9 +630,12 @@ enum Commands {
     /// `diff: added=… removed=… changed=… meta_changed=… chunks_shared=… chunks_only_left=… chunks_only_right=…`
     /// **`--format json`**: one JSON object with the same path arrays and chunk
     /// stats fields (full arrays; `--max-paths` applies to text listings only).
-    /// Exit codes are format-independent: **0** when identical, **1** when any
-    /// path or chunk-set difference; usage / decode errors use the usual
-    /// non-zero clap/anyhow path. See `docs/diff.md`.
+    /// Optional repeatable `--path` / `--exclude` / `--exclude-from` narrow both
+    /// sides' File/Dir entry sets via [`PathFilter`] **before** compare (default
+    /// no flags ≡ 1.5 full-listing diff). JSON field names unchanged (arrays may
+    /// be shorter). **Not** sync / prune. Exit codes are format-independent:
+    /// **0** when identical, **1** when any path or chunk-set difference; usage /
+    /// decode errors use the usual non-zero clap/anyhow path. See `docs/diff.md`.
     Diff {
         /// Output format: `text` (default ≡ 0.7.0 path lists + `diff:` summary) or `json`
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
@@ -643,6 +646,23 @@ enum Commands {
         /// Source directory to compare as left (ephemeral DirArchive; no store/.cfdir writes)
         #[arg(long = "tree", value_name = "SRC_DIR")]
         tree: Option<PathBuf>,
+        /// Include only paths under this prefix (repeatable; OR). With any `--path`,
+        /// a candidate must match at least one before excludes apply. Omit all
+        /// `--path` ⇒ include-all (≡ 1.5 full listing). Applied to both sides
+        /// before compare. **Not** sync / prune.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude paths matching this pattern (repeatable): exact, trailing `/`
+        /// directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle
+        /// `*` / `**` → clear error. Applied after `--path` on both sides.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
         /// Left `.cfdir` (listing↔listing), or the listing `.cfdir` when `--tree` is set
         left: PathBuf,
         /// Right `.cfdir` (listing↔listing only). Must be omitted with `--tree`.
@@ -1093,9 +1113,24 @@ fn run() -> Result<()> {
             format,
             max_paths,
             tree,
+            paths,
+            excludes,
+            exclude_from,
             left,
             right,
-        } => cmd_diff_dispatch(tree.as_deref(), &left, right.as_deref(), max_paths, format),
+        } => {
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
+            cmd_diff_dispatch(
+                tree.as_deref(),
+                &left,
+                right.as_deref(),
+                max_paths,
+                format,
+                &path_filter,
+            )
+        }
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -2197,6 +2232,7 @@ fn cmd_diff_dispatch(
     right: Option<&Path>,
     max_paths: Option<usize>,
     format: CliFormat,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     match tree {
         Some(src_dir) => {
@@ -2206,7 +2242,7 @@ fn cmd_diff_dispatch(
                     extra.display()
                 );
             }
-            cmd_diff_tree(src_dir, left, max_paths, format)
+            cmd_diff_tree(src_dir, left, max_paths, format, path_filter)
         }
         None => {
             let Some(right) = right else {
@@ -2220,8 +2256,25 @@ fn cmd_diff_dispatch(
                     "diff without --tree expects two `.cfdir` files; got a directory.                      Use: chunkforge diff --tree <src-dir> <listing.cfdir>"
                 );
             }
-            cmd_diff_listings(left, right, max_paths, format)
+            cmd_diff_listings(left, right, max_paths, format, path_filter)
         }
+    }
+}
+
+/// Narrow a listing with [`PathFilter`] before compare (empty filter ≡ identity).
+fn filter_dir_archive_entries(arch: &DirArchive, filter: &PathFilter) -> DirArchive {
+    if filter.paths().is_empty() && filter.excludes().is_empty() {
+        return arch.clone();
+    }
+    DirArchive {
+        format_version: arch.format_version,
+        flags: arch.flags,
+        entries: arch
+            .entries
+            .iter()
+            .filter(|e| filter.allows(&e.path))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -2230,9 +2283,10 @@ fn cmd_diff_listings(
     right: &Path,
     max_paths: Option<usize>,
     format: CliFormat,
+    path_filter: &PathFilter,
 ) -> Result<()> {
-    let left_arch = load_cfdir_for_diff(left)?;
-    let right_arch = load_cfdir_for_diff(right)?;
+    let left_arch = filter_dir_archive_entries(&load_cfdir_for_diff(left)?, path_filter);
+    let right_arch = filter_dir_archive_entries(&load_cfdir_for_diff(right)?, path_filter);
     let report = diff_dir_archives(&left_arch, &right_arch);
     emit_diff_report(&report, max_paths, format)
 }
@@ -2243,6 +2297,7 @@ fn cmd_diff_tree(
     listing: &Path,
     max_paths: Option<usize>,
     format: CliFormat,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     if !src_dir.is_dir() {
         bail!(
@@ -2256,8 +2311,12 @@ fn cmd_diff_tree(
             listing.display()
         );
     }
-    let listing_arch = load_cfdir_for_diff(listing)?;
-    let tree_arch = build_ephemeral_tree_archive(src_dir, &listing_arch)?;
+    // Build ephemeral tree against the full listing (so in-scope matching paths
+    // still copy chunk tables), then narrow both sides with PathFilter.
+    let listing_full = load_cfdir_for_diff(listing)?;
+    let tree_full = build_ephemeral_tree_archive(src_dir, &listing_full)?;
+    let listing_arch = filter_dir_archive_entries(&listing_full, path_filter);
+    let tree_arch = filter_dir_archive_entries(&tree_full, path_filter);
     // Documented orientation: left=tree, right=listing.
     let report = diff_dir_archives(&tree_arch, &listing_arch);
     emit_diff_report(&report, max_paths, format)

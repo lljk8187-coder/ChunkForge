@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Phase 16 toward **1.6.0** (workspace / CLI still **1.5.0** until M7).
+Defaults remain ≡ **1.5.0**. No pack / write mount / aws-sdk / remote scrub /
+extract prune / bidirectional sync / push listing / LRU / store trim.
+
+### Added
+
+- **`FallbackSource` + CLI `--fallback`** (Phase 16 M1–M2): Missing-only
+  ordered failover behind primary; Transient/Corrupt fail fast; outer Cache
+  wraps the whole chain. Zero times ≡ 1.5 single origin. On `cat` / `verify` /
+  `extract` / `mount` / `pull` / `doctor`. **≠ cache ≠ sync ≠ prune**.
+- **Human `--cache-max-bytes` suffixes** (Phase 16 M3): `1M` / `64Mi` /
+  `K`/`G`/`Ki`/`Gi` (1024-base) alongside plain integers; refuse-fill unchanged.
+- **`store stats` / `du` `bytes_plaintext` + `--decode`** (Phase 16 M4):
+  `compression=none` ⇒ equals `bytes_on_disk`; zstd ⇒ `null` unless `--decode`.
+  Observation only — **≠ trim ≠ LRU**.
+- **Docs + `demo_fallback_bytes_suffix.sh`** (Phase 16 M5): ops-json /
+  mount/extract/pull/stability/perf; smoke for failover + suffixes +
+  `bytes_plaintext`.
+- **`check_compat_1_5.sh` + 1.5 regression gate** (Phase 16 M6): runs
+  `check_compat_1_4.sh` (keeps 1_0…1_4 independently runnable), then asserts
+  1.6 help flags (`--fallback` on read commands; `cat`/`mount
+  --cache-max-bytes`; `store stats` `--decode` / `bytes_plaintext`); thin
+  non-goals: no `--delete`/prune, no pack, no `--cache-lru` / `store trim`,
+  no `aws-sdk` in `Cargo.lock`. Asserts `demo_fallback_bytes_suffix.sh`
+  present + executable (does not force-run). No absolute perf SLA.
+- **P1 `diff --path` / `--exclude` / `--exclude-from`** (Phase 16 M6 / O1):
+  narrow both sides with `PathFilter` before compare; default no flags ≡ 1.5
+  full diff; JSON field names unchanged. **Not** sync / prune.
+- **P1 O2 thin docs**: `docs/remote-layout.md` Phase tags → through 1.6;
+  README / stability already document `fallback` ≠ `cache` ≠ sync.
+
+### Not delivered (Phase 16 P1, this milestone)
+
+- **O3 `archive` / `extract` / `make --progress`** — not delivered (ProgressReporter
+  reuse deferred; default remains off ≡ 1.5)
+- Version bump to **1.6.0** — reserved for M7
+
+### Compatibility
+
+- CLI defaults match **1.5.0**: no `--fallback` ⇒ single origin; no
+  `--cache-max-bytes` ⇒ unbounded cache fill; plain integer cache-max still
+  accepted; no `--decode` ⇒ zstd stats stay cheap; no diff path flags ⇒ full
+  listing; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  `--progress` **off**, mount prefetch depth **1**
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged (only additive
+  `bytes_plaintext`)
+
 ## [1.5.0] — 2026-09-29
 
 Phase 15 closeout — `CacheSource` soft budget / `--cache-max-bytes`

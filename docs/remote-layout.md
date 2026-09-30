@@ -272,7 +272,17 @@ chunkforge verify --source http://127.0.0.1:8766 hello.cfidx
 Full smoke: [`scripts/demo_push.sh`](../scripts/demo_push.sh) / `make demo-push`.
 Details: [push.md](push.md).
 
-## Explicit non-goals (this layout / Phase 3–13 / through 1.3)
+## Read failover (`--fallback`, Phase 16)
+
+CLI read commands may repeat **`--fallback <PATH|URL>`** behind a primary
+`--source` / `--store`. Failover is **Missing-only** (Transient/Corrupt fail
+fast). Recommended composition: outer **`--cache`** wraps the whole fallback
+chain. **`--fallback` ≠ cache fill ≠ sync ≠ prune ≠ write-back**. Templates /
+retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
+Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
+[extract.md](extract.md) / [pull.md](pull.md).
+
+## Explicit non-goals (this layout / Phase 3–16 / through 1.6)
 
 | Non-goal | Status |
 |---|---|

@@ -28,11 +28,12 @@ the expanded matrix (incl. **archive** / **store stats** / **make** /
 **1.6.0 Unreleased** (Phase 16; workspace still **1.5.0** until M7) adds
 further opt-in only: repeatable **`--fallback`** (Missing-only read failover;
 outer Cache wraps the whole chain), human-friendly **`--cache-max-bytes`**
-suffixes (`1M` / `64Mi` / …; plain integers still accepted ≡ 1.5), and
-**`store stats` `bytes_plaintext`** (+ opt-in **`--decode`** for zstd).
-Defaults stay ≡ **1.5.0** (no `--fallback` ⇒ single origin; no cache-max ⇒
-unbounded fill; no `--decode` ⇒ zstd does not force full-store `get`).
-`check_compat_1_5` lands in M6; version bump is M7.
+suffixes (`1M` / `64Mi` / …; plain integers still accepted ≡ 1.5),
+**`store stats` `bytes_plaintext`** (+ opt-in **`--decode`** for zstd),
+**`check_compat_1_5`**, and P1 **`diff --path` / `--exclude` /
+`--exclude-from`**. Defaults stay ≡ **1.5.0** (no `--fallback` ⇒ single
+origin; no cache-max ⇒ unbounded fill; no `--decode` ⇒ zstd does not force
+full-store `get`; no diff path flags ⇒ full listing). Version bump is M7.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -118,7 +119,7 @@ At 1.0, ChunkForge promises:
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
 | `store stats` / `du` | Local chunk count + on-disk bytes (observation; not trim) |
-| `diff` | Listing↔listing (+ `--tree`); not sync |
+| `diff` | Listing↔listing (+ `--tree`); optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU) |
@@ -148,6 +149,7 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 [`scripts/check_compat_1_3.sh`](../scripts/check_compat_1_3.sh)
 (1.4 push path / store stats / exclude-from; calls 1_2), and
 [`scripts/check_compat_1_4.sh`](../scripts/check_compat_1_4.sh)
-(1.5 cache-max / make·cat format; calls 1_3). Phase 16 / 1.6 Unreleased
-flags (`--fallback`, suffixes, `bytes_plaintext`/`--decode`) are documented
-here; **`check_compat_1_5.sh`** lands in M6. No absolute perf SLA.
+(1.5 cache-max / make·cat format; calls 1_3), and
+[`scripts/check_compat_1_5.sh`](../scripts/check_compat_1_5.sh)
+(1.6 `--fallback` / suffixes / `bytes_plaintext`/`--decode`; calls 1_4).
+No absolute perf SLA.

@@ -3,12 +3,30 @@
 Compare two directory listings (`.cfdir`), or a live source tree against a
 listing (`--tree`). **Read-only**: never writes a local store or a `.cfdir`.
 
-Phase 7 (+ Phase 8 `--format json`). See also [`doctor-gc.md`](doctor-gc.md)
+Phase 7 (+ Phase 8 `--format json`; Phase 16 P1 `--path` / `--exclude` / `--exclude-from`). See also [`doctor-gc.md`](doctor-gc.md)
 for presence / GC tooling, [`dir-format.md`](dir-format.md) for `.cfdir`
 layout, [`http-retry.md`](http-retry.md) for HTTP retries / error classes,
 and [`sigv4.md`](sigv4.md) for optional `--aws-sigv4`.
 
+## Path filter (`--path` / `--exclude` / `--exclude-from`)
+
+Phase 16 P1 (O1). Optional repeatable **`--path`** / **`--exclude`** /
+**`--exclude-from`** narrow **both** sides' File/Dir entry sets with the same
+[`PathFilter`](../crates/chunkforge-index/src/path_filter.rs) used by
+`archive` / `extract` / `push` / `pull` **before** compare.
+
+- Default (no path/exclude flags) ≡ **1.5** full-listing / full-tree diff.
+- JSON field **names** unchanged; arrays / chunk counts reflect the narrowed set.
+- **Not** sync / prune / `--delete`. Filtering only reduces what is compared.
+
+```bash
+chunkforge diff --path keep/ left.cfdir right.cfdir
+chunkforge diff --exclude skip/ --exclude '*.tmp' left.cfdir right.cfdir
+chunkforge diff --exclude-from excludes.txt --tree ./src listing.cfdir
+```
+
 ## Listing ↔ listing
+
 
 ```bash
 chunkforge diff [--format text|json] [--max-paths N] left.cfdir right.cfdir

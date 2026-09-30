@@ -5047,6 +5047,106 @@ fn diff_max_paths_truncates_listing() {
     );
 }
 
+// --- Phase 16 M6 / P1 O1: diff --path / --exclude / --exclude-from ---
+
+#[test]
+fn diff_path_exclude_narrows_before_compare() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep").join("a.txt"), b"keep-a-v1\n").unwrap();
+    fs::write(src.join("skip").join("b.txt"), b"skip-b-v1\n").unwrap();
+
+    let store = dir.path().join("store");
+    let v1 = dir.path().join("v1.cfdir");
+    let v2 = dir.path().join("v2.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v1.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Change only under skip/ — full diff sees changed; --path keep/ hides it.
+    fs::write(src.join("skip").join("b.txt"), b"skip-b-v2\n").unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        v2.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let full = run_fail(&["diff", v1.to_str().unwrap(), v2.to_str().unwrap()]);
+    let full_stdout = String::from_utf8_lossy(&full.stdout);
+    let full_summary = parse_diff_summary(&full_stdout);
+    assert!(
+        full_summary.contains("changed=1"),
+        "unfiltered diff should see skip change; summary={full_summary}"
+    );
+
+    let scoped = run_ok(&[
+        "diff",
+        "--path",
+        "keep",
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    let scoped_out = String::from_utf8_lossy(&scoped.stdout);
+    let scoped_summary = parse_diff_summary(&scoped_out);
+    assert_eq!(
+        scoped_summary,
+        "diff: added=0 removed=0 changed=0 meta_changed=0 chunks_shared=1 chunks_only_left=0 chunks_only_right=0",
+        "stdout={scoped_out}"
+    );
+
+    let excl = run_ok(&[
+        "diff",
+        "--exclude",
+        "skip/",
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    let excl_stdout = String::from_utf8_lossy(&excl.stdout);
+    let excl_summary = parse_diff_summary(&excl_stdout);
+    assert!(
+        excl_summary.contains("changed=0")
+            && excl_summary.contains("added=0")
+            && excl_summary.contains("removed=0"),
+        "--exclude skip/ should hide the change; summary={excl_summary}"
+    );
+
+    let from_file = dir.path().join("excludes.txt");
+    fs::write(&from_file, "skip/\n").unwrap();
+    let from = run_ok(&[
+        "diff",
+        "--exclude-from",
+        from_file.to_str().unwrap(),
+        v1.to_str().unwrap(),
+        v2.to_str().unwrap(),
+    ]);
+    let from_stdout = String::from_utf8_lossy(&from.stdout);
+    let from_summary = parse_diff_summary(&from_stdout);
+    assert!(
+        from_summary.contains("changed=0"),
+        "--exclude-from should match --exclude; summary={from_summary}"
+    );
+
+    let help = run_ok(&["diff", "--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("--path")
+            && help_s.contains("--exclude")
+            && help_s.contains("--exclude-from"),
+        "diff --help should list path filter flags:\n{help_s}"
+    );
+}
+
 // --- Phase 7 M3: diff --tree ---
 
 #[test]

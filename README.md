@@ -21,7 +21,7 @@
 | **Phase 13** | **1.3.0** | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2`; path **≠** prune **≠** sync; **not** pack / write mount |
 | **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
 | **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
-| **Phase 16** | **1.6.0 Unreleased** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` (M1–M5 landed; M6 `check_compat_1_5` / M7 bump pending). Workspace still **1.5.0**; defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
+| **Phase 16** | **1.6.0 Unreleased** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`; M7 bump pending). Workspace still **1.5.0**; defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -46,7 +46,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 / 1.6.0 Unreleased** (M1–M5 in tree; workspace still **1.5.0** until M7): `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` — defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 / 1.6.0 Unreleased** (M1–M6 in tree; workspace still **1.5.0** until M7): `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + `check_compat_1_5` (+ P1 `diff --path`/`--exclude`) — defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub.
 
 ## Quick start (local CAS)
 
@@ -397,7 +397,7 @@ analysis — see **Non-goals (Phase 10 / 1.0)** above and `docs/stability.md`.
 | `doctor` | Presence (optional `--deep`; `--format text\|json`) |
 | `gc` | Local unreferenced loose chunks |
 | `store scrub` | Local loose BLAKE3 rehash |
-| `diff` | Listing↔listing; **not** sync |
+| `diff` | Listing↔listing (+ optional `--path`/`--exclude`); **not** sync |
 | `extract --skip-unchanged` / `--skip-trust-mtime` / `--dry-run` | Incremental / plan-only; **no** prune |
 | `mount` (+ prefetch / `--no-prefetch`) | RO FUSE; sequential prefetch only |
 
@@ -576,7 +576,7 @@ Workspace / CLI version is **1.3.0**.
 | `extract --path` / `--exclude` | Materialize **fewer** dest paths; **never** deletes extras |
 | `pull --path` / `--exclude` | Fetch a **subset** of referenced chunk ids into local CAS |
 | `push --path` / `--exclude` / `--exclude-from` | Upload a **subset** of referenced chunk ids; **not** listing upload |
-| `diff` | Listing↔listing; **not** sync |
+| `diff` | Listing↔listing (+ optional `--path`/`--exclude`); **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
 **Not delivered in 1.3 / non-goals (carry forward):** packfile;
@@ -743,15 +743,16 @@ Details: [docs/ops-json.md](docs/ops-json.md), [docs/mount.md](docs/mount.md),
 ## Phase 16 / 1.6.0 Unreleased: `--fallback` + byte suffixes + `bytes_plaintext`
 
 Phase 16 lands **read-path Failover** and **ops sugar** toward **1.6.0**.
-**M1–M5 are in tree** (`FallbackSource`, CLI `--fallback`, human
+**M1–M6 are in tree** (`FallbackSource`, CLI `--fallback`, human
 `--cache-max-bytes` suffixes, `store stats` `bytes_plaintext`/`--decode`,
-docs + `demo_fallback_bytes_suffix`). **M6** (`check_compat_1_5`) and **M7**
-(version bump to **1.6.0**) are **not** done yet — the workspace / CLI still
-report **1.5.0**. All new behaviour is **opt-in**; **defaults ≡ 1.5.0** (no
-`--fallback` ⇒ single origin; plain-integer `--cache-max-bytes` still works;
-no `--decode` ⇒ zstd stats stay cheap).
+docs + `demo_fallback_bytes_suffix`, **`check_compat_1_5`**, P1
+`diff --path`/`--exclude`/`--exclude-from`). **M7** (version bump to
+**1.6.0**) is **not** done yet — the workspace / CLI still report **1.5.0**.
+All new behaviour is **opt-in**; **defaults ≡ 1.5.0** (no `--fallback` ⇒
+single origin; plain-integer `--cache-max-bytes` still works; no `--decode`
+⇒ zstd stats stay cheap; no diff path flags ⇒ full listing).
 
-**Delivered (M1–M5):**
+**Delivered (M1–M6):**
 
 - **`--fallback <PATH|URL>`** (repeatable) on `cat` / `verify` / `extract` /
   `mount` / `pull` / `doctor`: Missing-only failover behind primary; Transient /
@@ -770,6 +771,14 @@ no `--decode` ⇒ zstd stats stay cheap).
   [docs/stability.md](docs/stability.md) 1.6 Unreleased opt-in;
   [docs/perf.md](docs/perf.md) «Phase16 still does not implement pack».
 - Smoke: [`scripts/demo_fallback_bytes_suffix.sh`](scripts/demo_fallback_bytes_suffix.sh).
+- **`check_compat_1_5.sh`** (M6): runs `check_compat_1_4.sh`, then asserts 1.6
+  help flags (`--fallback` on read commands; `cat`/`mount --cache-max-bytes`;
+  `store stats` `--decode` / `bytes_plaintext`); thin non-goals (no pack /
+  `--delete` / LRU / aws-sdk); asserts demo script present + executable. No
+  absolute perf SLA. Keeps `check_compat_1_0`…`1_4` independently runnable.
+- **P1 `diff --path` / `--exclude` / `--exclude-from`**: narrow both sides with
+  `PathFilter` before compare; default no flags ≡ 1.5 full diff; JSON field
+  names unchanged. **Not** sync / prune.
 
 **`fallback` ≠ `cache` ≠ sync:**
 
@@ -796,7 +805,8 @@ bash scripts/demo_fallback_bytes_suffix.sh
 # C: store stats --format json → bytes_plaintext ≡ bytes_on_disk (none)
 # D: store stats --decode (none → no-op) smoke
 
-bash scripts/check_compat_1_4.sh   # still green; check_compat_1_5 is M6
+bash scripts/check_compat_1_5.sh   # includes 1_4 → … → 1_0 + 1.6 flags
+bash scripts/check_compat_1_4.sh   # still independently green
 ./target/debug/chunkforge --version   # → chunkforge 1.5.0 (bump is M7)
 
 # Manual sketch:
@@ -811,8 +821,8 @@ bash scripts/check_compat_1_4.sh   # still green; check_compat_1_5 is M6
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/mount.md](docs/mount.md),
 [docs/extract.md](docs/extract.md), [docs/pull.md](docs/pull.md),
 [docs/stability.md](docs/stability.md), [docs/perf.md](docs/perf.md).
-Prior gate: [`scripts/check_compat_1_4.sh`](scripts/check_compat_1_4.sh)
-(`check_compat_1_5` → M6).
+Gate: [`scripts/check_compat_1_5.sh`](scripts/check_compat_1_5.sh)
+(calls [`check_compat_1_4.sh`](scripts/check_compat_1_4.sh)).
 
 ## Incremental dedup demo
 
