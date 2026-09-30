@@ -11956,3 +11956,179 @@ fn extract_progress_ticks_skip_unchanged() {
         "both files should skip; stderr={err}"
     );
 }
+
+// --- Phase 18 M2: --cache-stats stderr ---
+
+#[test]
+fn help_lists_cache_stats_on_cached_read_commands() {
+    for cmd in ["cat", "verify", "extract", "mount", "pull", "doctor"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--cache-stats"),
+            "{cmd} --help must list --cache-stats:\n{s}"
+        );
+        assert!(
+            s.contains("--cache"),
+            "{cmd} --help must list --cache:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn cache_stats_requires_cache_flag() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let cases: Vec<Vec<&str>> = vec![
+        vec![
+            "cat",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-stats",
+            idx.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ],
+        vec![
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-stats",
+            idx.to_str().unwrap(),
+        ],
+    ];
+    for args in cases {
+        let fail = run_fail(&args);
+        let err = String::from_utf8_lossy(&fail.stderr);
+        assert!(
+            err.contains("--cache-stats") && err.contains("--cache"),
+            "args={args:?} stderr={err}"
+        );
+    }
+}
+
+#[test]
+fn cat_cache_stats_stderr_and_second_hit_increases() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out1 = dir.path().join("out1.bin");
+    let out2 = dir.path().join("out2.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // First cat: miss → fill. Expect miss_fills > 0, hits typically 0.
+    let first = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--cache-stats",
+        idx.to_str().unwrap(),
+        "-o",
+        out1.to_str().unwrap(),
+    ]);
+    let err1 = String::from_utf8_lossy(&first.stderr);
+    let line1 = err1
+        .lines()
+        .find(|l| l.starts_with("cache: hits="))
+        .unwrap_or_else(|| panic!("first cat missing cache: line; stderr={err1}"));
+    assert!(
+        line1.contains("miss_fills=") && line1.contains("miss_refused="),
+        "malformed cache line: {line1}"
+    );
+    let hits1 = parse_cache_hits(line1);
+
+    // Second cat (same cache dir): should hit cache → hits > 0 (and > first).
+    let second = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--cache-stats",
+        idx.to_str().unwrap(),
+        "-o",
+        out2.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&second.stderr);
+    let line2 = err2
+        .lines()
+        .find(|l| l.starts_with("cache: hits="))
+        .unwrap_or_else(|| panic!("second cat missing cache: line; stderr={err2}"));
+    let hits2 = parse_cache_hits(line2);
+    assert!(hits2 > 0, "second cat should report hits>0; line={line2}");
+    assert!(
+        hits2 > hits1,
+        "second cat hits ({hits2}) should exceed first ({hits1}); line1={line1} line2={line2}"
+    );
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out2).unwrap());
+}
+
+#[test]
+fn cat_without_cache_stats_is_quiet() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let result = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        !err.lines().any(|l| l.starts_with("cache:")),
+        "default without --cache-stats must stay quiet; stderr={err}"
+    );
+}
+
+fn parse_cache_hits(line: &str) -> u64 {
+    // cache: hits=H miss_fills=F miss_refused=R
+    let rest = line
+        .strip_prefix("cache: hits=")
+        .unwrap_or_else(|| panic!("bad cache line: {line}"));
+    let hits_str = rest.split_whitespace().next().unwrap_or("");
+    hits_str
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("bad hits in {line}"))
+}

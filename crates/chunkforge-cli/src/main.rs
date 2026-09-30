@@ -27,7 +27,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -217,6 +217,12 @@ enum Commands {
             value_parser = bytesize::parse_byte_size
         )]
         cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial)
@@ -321,6 +327,12 @@ enum Commands {
             value_parser = bytesize::parse_byte_size
         )]
         cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
@@ -370,6 +382,12 @@ enum Commands {
             value_parser = bytesize::parse_byte_size
         )]
         cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
@@ -418,6 +436,12 @@ enum Commands {
             value_parser = bytesize::parse_byte_size
         )]
         cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Override the virtual file name for `.cfidx` mounts (default: stem without `.cfidx`; ignored for `.cfdir`)
@@ -460,6 +484,27 @@ enum Commands {
         /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
         #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
         fallback: Vec<String>,
+        /// Optional local cache store (filled on miss; never writes primary)
+        #[arg(long, value_name = "DIR")]
+        cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
+        cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent presence checks (default 1 = serial / 0.3.0 behaviour)
@@ -619,6 +664,27 @@ enum Commands {
         /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
         #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
         fallback: Vec<String>,
+        /// Optional local cache store (filled on miss; never writes primary)
+        #[arg(long, value_name = "DIR")]
+        cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
+        cache_max_bytes: Option<u64>,
+        /// Emit `cache: hits=H miss_fills=F miss_refused=R` on stderr when the
+        /// command finishes (mount: after the FUSE session ends / before exit).
+        /// Requires `--cache`. Default **off** (≡ 1.7.0 quiet). Observation
+        /// only — **not** LRU / trim / eviction.
+        #[arg(long = "cache-stats")]
+        cache_stats: bool,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent has/get/put workers (default 1 = serial); also used for post-pull `--verify` fetches
@@ -927,6 +993,7 @@ fn run() -> Result<()> {
             fallback,
             cache,
             cache_max_bytes,
+            cache_stats,
             http_tmpl,
             jobs,
             archive,
@@ -945,9 +1012,10 @@ fn run() -> Result<()> {
             let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
             // Dry-run never opens store/source (no chunk get; G2 / §3.2).
             if dry_run {
-                cmd_extract(
+                let result = cmd_extract(
                     None,
                     &archive,
                     &output,
@@ -959,9 +1027,11 @@ fn run() -> Result<()> {
                     format,
                     &path_filter,
                     progress,
-                )
+                );
+                maybe_emit_cache_stats(&None, cache_stats);
+                result
             } else {
-                let src = open_chunk_source(
+                let (src, stats) = open_chunk_source(
                     store.as_deref(),
                     source.as_deref(),
                     cache.as_deref(),
@@ -969,7 +1039,7 @@ fn run() -> Result<()> {
                     &http_tmpl,
                     &fallback,
                 )?;
-                cmd_extract(
+                let result = cmd_extract(
                     Some(src.as_ref()),
                     &archive,
                     &output,
@@ -981,7 +1051,9 @@ fn run() -> Result<()> {
                     format,
                     &path_filter,
                     progress,
-                )
+                );
+                maybe_emit_cache_stats(&stats, cache_stats);
+                result
             }
         }
         Commands::Cat {
@@ -990,6 +1062,7 @@ fn run() -> Result<()> {
             fallback,
             cache,
             cache_max_bytes,
+            cache_stats,
             http_tmpl,
             jobs,
             format,
@@ -997,7 +1070,8 @@ fn run() -> Result<()> {
             output,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
@@ -1005,7 +1079,9 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            cmd_cat(src.as_ref(), &index, &output, jobs, format)
+            let result = cmd_cat(src.as_ref(), &index, &output, jobs, format);
+            maybe_emit_cache_stats(&stats, cache_stats);
+            result
         }
         Commands::Verify {
             store,
@@ -1013,13 +1089,15 @@ fn run() -> Result<()> {
             fallback,
             cache,
             cache_max_bytes,
+            cache_stats,
             http_tmpl,
             jobs,
             format,
             index,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
@@ -1027,7 +1105,9 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            cmd_verify(src.as_ref(), &index, jobs, format)
+            let result = cmd_verify(src.as_ref(), &index, jobs, format);
+            maybe_emit_cache_stats(&stats, cache_stats);
+            result
         }
         Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
         Commands::Mount {
@@ -1036,6 +1116,7 @@ fn run() -> Result<()> {
             fallback,
             cache,
             cache_max_bytes,
+            cache_stats,
             http_tmpl,
             name,
             no_prefetch,
@@ -1044,7 +1125,8 @@ fn run() -> Result<()> {
             mountpoint,
         } => {
             ensure_mount_supported()?;
-            let src = open_chunk_source(
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
@@ -1052,19 +1134,25 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            cmd_mount(
+            let result = cmd_mount(
                 src,
                 &index,
                 &mountpoint,
                 name.as_deref(),
                 !no_prefetch,
                 prefetch_chunks as usize,
-            )
+            );
+            // After FUSE session ends (unmount), emit once.
+            maybe_emit_cache_stats(&stats, cache_stats);
+            result
         }
         Commands::Doctor {
             store,
             source,
             fallback,
+            cache,
+            cache_max_bytes,
+            cache_stats,
             http_tmpl,
             jobs,
             deep,
@@ -1073,11 +1161,12 @@ fn run() -> Result<()> {
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
-                None,
-                None,
+                cache.as_deref(),
+                cache_max_bytes,
                 &http_tmpl,
                 &fallback,
             )?;
@@ -1086,7 +1175,7 @@ fn run() -> Result<()> {
                 (None, Some(s)) => s.to_string(),
                 _ => unreachable!("clap origin group requires exactly one of --store/--source"),
             };
-            cmd_doctor(
+            let result = cmd_doctor(
                 src.as_ref(),
                 &origin_spec,
                 &indexes,
@@ -1095,7 +1184,9 @@ fn run() -> Result<()> {
                 jobs,
                 http_tmpl.http_retries,
                 format,
-            )
+            );
+            maybe_emit_cache_stats(&stats, cache_stats);
+            result
         }
         Commands::Gc {
             store,
@@ -1143,6 +1234,9 @@ fn run() -> Result<()> {
             store,
             source,
             fallback,
+            cache,
+            cache_max_bytes,
+            cache_stats,
             http_tmpl,
             jobs,
             dry_run,
@@ -1158,10 +1252,14 @@ fn run() -> Result<()> {
             let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            require_cache_for_stats(cache.as_deref(), cache_stats)?;
             cmd_pull(
                 &store,
                 &source,
                 &fallback,
+                cache.as_deref(),
+                cache_max_bytes,
+                cache_stats,
                 &http_tmpl,
                 dry_run,
                 verify,
@@ -1304,15 +1402,84 @@ fn open_or_create_store(root: &Path, compression: Option<Compression>) -> Result
     }
 }
 
+/// Process-local handle to [`CacheSource`] observation counters (Phase18-M2).
+///
+/// Kept as an [`Arc`] twin of the boxed [`ChunkSource`] so counters remain
+/// readable after the source is moved into command / FUSE code. Observation
+/// only — **not** an LRU / trim / eviction control.
+#[derive(Clone)]
+struct CacheStatsRef {
+    inner: Arc<CacheSource<Box<dyn ChunkSource>>>,
+}
+
+impl CacheStatsRef {
+    fn hits(&self) -> u64 {
+        self.inner.hits()
+    }
+
+    fn miss_fills(&self) -> u64 {
+        self.inner.miss_fills()
+    }
+
+    fn miss_refused(&self) -> u64 {
+        self.inner.miss_refused()
+    }
+
+    fn emit_stderr(&self) {
+        eprintln!(
+            "cache: hits={} miss_fills={} miss_refused={}",
+            self.hits(),
+            self.miss_fills(),
+            self.miss_refused()
+        );
+    }
+}
+
+/// Bail when `--cache-stats` is set without `--cache` (same style as
+/// `--cache-max-bytes requires --cache`).
+fn require_cache_for_stats(cache: Option<&Path>, cache_stats: bool) -> Result<()> {
+    if cache_stats && cache.is_none() {
+        bail!("--cache-stats requires --cache <DIR>");
+    }
+    Ok(())
+}
+
+/// Emit the one-line cache summary when `--cache-stats` was requested.
+fn maybe_emit_cache_stats(stats: &Option<CacheStatsRef>, cache_stats: bool) {
+    if cache_stats {
+        if let Some(s) = stats {
+            s.emit_stderr();
+        } else {
+            // Flag pair validated, but no CacheSource was constructed (e.g.
+            // extract `--dry-run` never opens the origin). Report zeros.
+            eprintln!("cache: hits=0 miss_fills=0 miss_refused=0");
+        }
+    }
+}
+
+/// RAII helper: emit cache-stats on drop (success or failure exit paths).
+struct CacheStatsEmit<'a> {
+    stats: &'a Option<CacheStatsRef>,
+    enabled: bool,
+}
+
+impl Drop for CacheStatsEmit<'_> {
+    fn drop(&mut self) {
+        maybe_emit_cache_stats(self.stats, self.enabled);
+    }
+}
+
 /// Resolve `--store` / `--source` / repeatable `--fallback` / `--cache` (+ optional
-/// HTTP templates) into a boxed [`ChunkSource`].
+/// HTTP templates) into a boxed [`ChunkSource`] plus an optional [`CacheStatsRef`].
 ///
 /// `--store PATH` is a Phase 1 synonym for `--source PATH` (local only).
 /// Primary origin is still exactly one of `--store` / `--source` (mutually exclusive).
 /// Each `--fallback` is opened in CLI order and chained behind the primary via
 /// [`FallbackSource`] (Missing-only failover). Zero fallbacks ≡ 1.5 single-origin.
 /// With `--cache`, an outer [`CacheSource`] wraps the **whole** fallback chain
-/// (fill on miss; never write primary / fallbacks).
+/// (fill on miss; never write primary / fallbacks). The cache is wrapped in
+/// [`Arc`] so the returned [`CacheStatsRef`] can read `hits` / `miss_fills` /
+/// `miss_refused` after the boxed source is moved into command code (Phase18-M2).
 /// `--cache-max-bytes SIZE` sets a soft fill budget (requires `--cache`; plain int or K/M/G/Ki/Mi/Gi); omit ≡ 1.4 unbounded.
 /// `--url-template` / `--prefix` / `--header` / `--aws-sigv4` apply isomorphically to
 /// every `http(s)://` origin in the chain (primary and HTTP fallbacks). They are
@@ -1325,7 +1492,7 @@ fn open_chunk_source(
     cache_max_bytes: Option<u64>,
     http_tmpl: &HttpTemplateArgs,
     fallbacks: &[String],
-) -> Result<Box<dyn ChunkSource>> {
+) -> Result<(Box<dyn ChunkSource>, Option<CacheStatsRef>)> {
     if cache_max_bytes.is_some() && cache.is_none() {
         bail!("--cache-max-bytes requires --cache <DIR>");
     }
@@ -1352,16 +1519,21 @@ fn open_chunk_source(
     };
 
     match cache {
-        None => Ok(chain),
+        None => Ok((chain, None)),
         Some(cache_path) => {
             let cache_store = open_or_create_store(cache_path, None)?;
             // `None` ≡ CacheSource::new (1.4 unbounded); Some(N) soft-refuses fill.
             // Outer Cache wraps the whole Fallback chain (Phase16-M2).
-            Ok(Box::new(CacheSource::with_max_bytes(
+            // Arc keeps counter getters reachable after boxing (Phase18-M2).
+            let cached = Arc::new(CacheSource::with_max_bytes(
                 chain,
                 cache_store,
                 cache_max_bytes,
-            )))
+            ));
+            let stats = CacheStatsRef {
+                inner: Arc::clone(&cached),
+            };
+            Ok((Box::new(cached), Some(stats)))
         }
     }
 }
@@ -3927,6 +4099,9 @@ fn cmd_pull(
     store_path: &Path,
     source_spec: &str,
     fallbacks: &[String],
+    cache: Option<&Path>,
+    cache_max_bytes: Option<u64>,
+    cache_stats: bool,
     http_tmpl: &HttpTemplateArgs,
     dry_run: bool,
     verify: bool,
@@ -3936,8 +4111,19 @@ fn cmd_pull(
     progress: bool,
     path_filter: &PathFilter,
 ) -> Result<()> {
-    let source = open_chunk_source(None, Some(source_spec), None, None, http_tmpl, fallbacks)
-        .with_context(|| format!("open chunk source {source_spec:?}"))?;
+    let (source, stats) = open_chunk_source(
+        None,
+        Some(source_spec),
+        cache,
+        cache_max_bytes,
+        http_tmpl,
+        fallbacks,
+    )
+    .with_context(|| format!("open chunk source {source_spec:?}"))?;
+    let _cache_stats_emit = CacheStatsEmit {
+        stats: &stats,
+        enabled: cache_stats,
+    };
 
     let (referenced, listings_ok) = union_listing_chunk_ids_filtered(index_paths, path_filter)?;
 
