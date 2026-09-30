@@ -8750,10 +8750,7 @@ fn spawn_put_get_store_server_counting_gets(
 fn pull_help_lists_path_exclude() {
     let help = run_ok(&["pull", "--help"]);
     let s = String::from_utf8_lossy(&help.stdout);
-    assert!(
-        s.contains("--path"),
-        "pull --help should list --path:\n{s}"
-    );
+    assert!(s.contains("--path"), "pull --help should list --path:\n{s}");
     assert!(
         s.contains("--exclude"),
         "pull --help should list --exclude:\n{s}"
@@ -8768,8 +8765,16 @@ fn pull_path_subset_gets_only_filtered_chunks() {
     fs::create_dir_all(src.join("packages").join("bar")).unwrap();
     fs::create_dir_all(src.join("other")).unwrap();
     // Distinct content ⇒ distinct chunk ids (small files stay single-chunk).
-    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-a-unique\n").unwrap();
-    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-b-unique\n").unwrap();
+    fs::write(
+        src.join("packages").join("foo").join("a.txt"),
+        b"foo-a-unique\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("packages").join("bar").join("b.txt"),
+        b"bar-b-unique\n",
+    )
+    .unwrap();
     fs::write(src.join("other").join("c.txt"), b"other-c-unique\n").unwrap();
 
     let store = dir.path().join("store");

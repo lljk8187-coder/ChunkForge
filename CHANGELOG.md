@@ -7,51 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-29
+
+Phase 13 closeout — `PathFilter`; `archive`/`extract`/`pull --path`/`--exclude`;
+`archive --format json`; ops-json archive row; `demo_path_filter.sh`;
+`check_compat_1_2.sh`; defaults remain ≡ **1.2.0**. No pack / write mount /
+aws-sdk / remote scrub / extract prune / bidirectional sync / `push --path`.
+
 ### Added
 
-- **Phase13-M1 `PathFilter`** (library): `chunkforge-index::PathFilter` /
-  `ExcludePat` — `--path` prefix include (OR) + `--exclude` exact / trailing-`/`
-  directory / edge `*` wildcards (`*.o`, `temp*`); no `ignore`/`globset`; illegal
-  middle `*` / `**` → `Error::InvalidExcludePattern`. Unit tests in-crate.
-- **Phase13-M2 `archive --path` / `--exclude` + `--format json`**: repeatable
-  path/exclude → `PathFilter` (illegal exclude → clear error); walk order type
-  skip then filter; excluded files not chunked / not in `.cfdir`; orthogonal to
-  seed / dry-run / jobs. Default **`--format text`** ≡ 1.2.0 stderr summary
-  (includes `excluded=`); **`json`**: one stdout object (`ok` / `dry_run` /
-  `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse`
-  / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` /
+- **`PathFilter`** (Phase 13 M1): `chunkforge-index::PathFilter` / `ExcludePat`
+  — `--path` prefix include (OR) + `--exclude` exact / trailing-`/` directory /
+  edge `*` wildcards (`*.o`, `temp*`); no `ignore`/`globset`; illegal middle
+  `*` / `**` → `Error::InvalidExcludePattern`. Unit tests in-crate.
+- **`archive --path` / `--exclude` + `--format json`** (Phase 13 M2):
+  repeatable path/exclude → `PathFilter`; walk order type-skip then filter;
+  excluded files not chunked / not in `.cfdir`; orthogonal to seed / dry-run /
+  jobs. Default **`--format text`** ≡ 1.2.0 stderr summary (includes
+  `excluded=`); **`json`**: one stdout object (`ok` / `dry_run` / `files` /
+  `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse` /
+  `seed_reused_files` / `rechunked_files` / `skipped_symlinks` /
   `skipped_special` / `excluded`); no text dual-write; exit format-independent.
-  Docs: `docs/archive.md`. **Not** bumping 1.3.0 yet; ops-json matrix archive
-  row deferred to M5.
-- **Phase13-M3 `extract --path` / `--exclude` (non-prune)**: repeatable
-  path/exclude → `PathFilter` (illegal exclude → clear error); reads full
+  See `docs/archive.md`.
+- **`extract --path` / `--exclude` (non-prune)** (Phase 13 M3): reads full
   listing, materializes only matching File + necessary parent dirs; **never**
   deletes filtered-out listing paths or extra dest files; **no** `--delete`.
   Orthogonal to `--force` / `--skip-unchanged` / `--skip-trust-mtime` /
   `--dry-run` / `--format` / `--jobs`. Default (no path/exclude) ≡ 1.2.0 full
-  tree; dry-run / JSON `would_*` / counts reflect the filtered set. Docs:
-  `docs/extract.md` (path ≠ prune).
-- **Phase13-M4 `pull --path` / `--exclude`**: repeatable path/exclude →
-  `PathFilter` (illegal exclude → clear error); reads full listing, fetches
-  only chunk ids from matching **File** entries (Dir never contributes);
-  does **not** download or rewrite the listing. Orthogonal to `--dry-run` /
-  `--format` / `--jobs` / `--progress` / retries / SigV4. Default (no flags)
-  ≡ 1.2.0 full reference set. JSON field names unchanged; `unique_chunks` =
-  filtered unique id count. Docs: `docs/pull.md`.
+  tree. See `docs/extract.md`.
+- **`pull --path` / `--exclude`** (Phase 13 M4): fetches only chunk ids from
+  matching **File** entries; does **not** download or rewrite the listing.
+  Orthogonal to `--dry-run` / `--format` / `--jobs` / `--progress` / retries /
+  SigV4. Default ≡ 1.2.0 full reference set. JSON field names unchanged;
+  `unique_chunks` = filtered unique id count. See `docs/pull.md`.
+- **Ops-json archive + `demo_path_filter`** (Phase 13 M5): `docs/ops-json.md`
+  adds **archive** write/dry-run rows; smoke
+  `scripts/demo_path_filter.sh` (exclude → archive json → extract `--path`
+  non-prune → pull `--path` subset). README Phase 13 / **1.3.0**;
+  `docs/perf.md` notes **1.3.0** still does not implement pack.
+- **`check_compat_1_2.sh` + 1.2 regression gate** (Phase 13 M6): runs
+  `check_compat_1_1.sh` (keeps 1_0 / 1_1 independently runnable), then asserts
+  1.3 help flags (`archive --format` + `--path`/`--exclude`, `extract --path`,
+  `pull --path`); thin non-goals: no `--delete`/prune on extract, no pack
+  subcommand / `--pack*`. Invokes `demo_path_filter.sh`. No absolute perf SLA.
+  **P1 O3** thin docs: `docs/remote-layout.md` Phase tag → through 1.3;
+  README responsibility table notes path filter ≠ prune.
+- Workspace version **1.3.0** (Phase 13 M7 closeout).
 
-- **Phase13-M5 ops-json archive + `demo_path_filter` + README**: `docs/ops-json.md` adds **archive** write/dry-run rows (`ok` / `dry_run` / `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse` / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` / `skipped_special` / `excluded`); removes stale "archive has no format json" scope note; documents that extract/pull path filter does **not** rename fields (`unique_chunks` = filtered). Docs proofread: `archive`/`extract`/`pull` path≠prune≠sync; `stability` 1.3 opt-in; `perf` Phase13 still no pack. Smoke: `scripts/demo_path_filter.sh` (exclude → archive json → extract `--path` non-prune → pull `--path` subset). README Phase 13 / 1.3 draft. **Not** bumping 1.3.0; **not** `check_compat_1_2` (M6).
+### Not delivered / deferred (Phase 13)
 
-- **Phase13-M6 `check_compat_1_2` + 1.2 regression gate**:
-  `scripts/check_compat_1_2.sh` runs `check_compat_1_1.sh` (keeps 1_0 / 1_1
-  independently runnable), then asserts 1.3 help flags (`archive --format` +
-  `--path`/`--exclude`, `extract --path`, `pull --path`); thin non-goals: no
-  `--delete`/prune on extract, no pack subcommand / `--pack*` (aws-sdk already
-  gated by 1_0). Invokes `demo_path_filter.sh` (O4). No absolute perf SLA; does
-  not run `bench_loose_http.sh`. **P1 O3** thin docs: `docs/remote-layout.md`
-  Phase tag → through 1.3; README responsibility table notes path filter ≠
-  prune. **Not** bumping 1.3.0 (M7). **Not delivered (P1 deferred):** `push
-  --path` / `store du` / `--exclude-from`.
+- **`push --path` / `--exclude`** (P1) — not delivered
+- **`store du` / `store stats --format json`** (P1) — not delivered
+- **`--exclude-from <file>`** (P1) — not delivered
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
 
+### Compatibility
+
+- CLI defaults match **1.2.0**: no `--path`/`--exclude` ⇒ full tree / full
+  reference set; `archive --format` default **text**; `jobs=1`,
+  `http-retries=0`, SigV4 **off**, ops commands default **text**, `--progress`
+  **off**, mount prefetch default depth **1** ≡ 1.2.0 / 1.1.0 / 1.0.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; path filter ≠ prune ≠ sync; no silent break of 1.2.0
+  behaviour
 
 ## [1.2.0] — 2026-09-29
 
@@ -649,6 +674,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.3.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.3.0
 [1.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.1.0
 [1.0.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.0.0

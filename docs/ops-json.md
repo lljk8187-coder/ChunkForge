@@ -58,4 +58,4 @@ integrity use **`verify --source`**; for presence use **`doctor`**.
 Flag presence for ops JSON / 1.1+ CLIs is gated by
 [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh) (calls
 `check_compat_1_0.sh`; no absolute perf SLA). Phase 13 path / `archive --format`
-flags land in **`check_compat_1_2.sh`** (M6; not this milestone).
+flags are gated by **`check_compat_1_2.sh`** (calls 1_1; no absolute perf SLA).

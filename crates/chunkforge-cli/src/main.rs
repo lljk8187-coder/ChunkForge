@@ -2113,8 +2113,10 @@ fn peek_listing_kind(path: &Path) -> Result<ListingKind> {
 
 /// Collect chunk ids referenced by a `.cfidx` or `.cfdir` listing (validated).
 fn listing_chunk_ids(path: &Path) -> Result<Vec<ChunkId>> {
-    listing_chunk_ids_filtered(path, &PathFilter::new(Vec::<String>::new(), Vec::<String>::new())
-        .expect("empty PathFilter"))
+    listing_chunk_ids_filtered(
+        path,
+        &PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).expect("empty PathFilter"),
+    )
 }
 
 /// Collect chunk ids from a listing, applying [`PathFilter`] to `.cfdir` File

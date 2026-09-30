@@ -18,7 +18,7 @@
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
-| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2` (M1–M6; **1.3.0** bump still M7); path **≠** prune **≠** sync; **not** pack / write mount |
+| **Phase 13** | **1.3.0** | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2`; path **≠** prune **≠** sync; **not** pack / write mount |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -42,7 +42,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 is closed at 1.2.0**: `gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 is closed at 1.3.0**: `PathFilter` + `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + `check_compat_1_2` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
 
 ## Quick start (local CAS)
 
@@ -530,13 +530,16 @@ Details: [docs/doctor-gc.md](docs/doctor-gc.md), [docs/ops-json.md](docs/ops-jso
 [`scripts/check_compat_1_1.sh`](scripts/check_compat_1_1.sh).
 
 
-## Phase 13 / 1.3: path-scope filter (draft)
+## Phase 13 / 1.3: path-scope filter
 
-Phase 13 (toward **1.3.0**, **not** bumped yet) adds opt-in **path scope** on
-tree ops. Defaults stay ≡ **1.2.0**: no `--path`/`--exclude` ⇒ full tree /
-full reference set; `archive --format` default **text**.
+Phase 13 closes path-scope selectivity on tree ops at **1.3.0**: opt-in
+**`--path` / `--exclude`** on **`archive` / `extract` / `pull`**, plus
+**`archive --format json`**, ops-json archive rows, `demo_path_filter`, and
+**`check_compat_1_2`**. All additive; **defaults ≡ 1.2.0** (no path flags ⇒
+full tree / full reference set; `archive --format` default **text**).
+Workspace / CLI version is **1.3.0**.
 
-**Delivered so far (M1–M6):**
+**Delivered:**
 
 - **`PathFilter`** (`chunkforge-index`): `--path` prefix include (OR) +
   `--exclude` exact / trailing-`/` / edge `*` — no `ignore`/`globset`.
@@ -569,11 +572,12 @@ full reference set; `archive --format` default **text**.
 | `diff` | Listing↔listing; **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
-**Explicit non-goals (still):** packfile; write mount / COW; bidirectional
-sync; extract prune / `--delete`; remote scrub; aws-sdk; bumping **1.3.0**
-(M7). **P1 not delivered this milestone:** `push --path` / `store du` /
-`--exclude-from`. Pack remains measured-only in [docs/perf.md](docs/perf.md)
-— **Phase 13 still does not implement pack**.
+**Not delivered / non-goals (carry forward):** `push --path`; `store du`;
+`--exclude-from`; packfile; write mount / COW; bidirectional sync; extract
+prune / `--delete`; remote scrub; aws-sdk; byte-range resume; push listing
+upload; changing default jobs·retries; video analysis. Pack remains
+measured-only in [docs/perf.md](docs/perf.md) — **1.3.0 still does not
+implement pack**.
 
 ```bash
 # Phase 13 path-filter smoke + compat gate (~minutes; local put_stub only)
@@ -584,7 +588,7 @@ bash scripts/demo_path_filter.sh
 # C: push → pull --path → unique_chunks is subset
 bash scripts/check_compat_1_2.sh   # includes 1_1 → 1_0 + 1.3 flags + demo
 
-./target/debug/chunkforge --version   # still chunkforge 1.2.0 until M7
+./target/debug/chunkforge --version   # → chunkforge 1.3.0
 ```
 
 Details: [docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md),
