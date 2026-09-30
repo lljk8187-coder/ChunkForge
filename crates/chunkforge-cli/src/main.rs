@@ -311,7 +311,12 @@ enum Commands {
     /// (extra attempts after the first try); see also `--http-retry-backoff-ms`.
     /// With `--verify`, after a successful upload the same `--dest` is treated as a
     /// `ChunkSource` and each listing is verified (skip verify on `--dry-run` or
-    /// when push already failed).
+    /// when push already failed). Default **`--format text`** (≡ 1.0.0): summary
+    /// on stderr. **`--format json`**: one JSON object on stdout (`ok` /
+    /// `skipped` / `uploaded` / `failed` / `failed_transient` /
+    /// `failed_permanent` / `retries` / `unique_chunks` / `listings` /
+    /// `dry_run`); no duplicate stderr summary; exit codes are format-
+    /// independent.
     Push {
         /// Local CAS store providing plaintext chunks
         #[arg(long)]
@@ -330,6 +335,10 @@ enum Commands {
         /// After a successful push, verify each listing against `--dest` (same templates)
         #[arg(long = "verify")]
         verify: bool,
+        /// Output format: `text` (default ≡ 1.0.0 stderr summary) or `json`
+        /// (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -342,7 +351,12 @@ enum Commands {
     /// file tree, delete extras (`gc`), or download the listing itself.
     /// `--source` accepts a local path, `file://`, or `http(s)://` (same templates
     /// as `verify` / `cat`). `--http-retries N` (default 0) applies to HTTP sources
-    /// only. Symmetric to `push` (store→dest) but source→store.
+    /// only. Symmetric to `push` (store→dest) but source→store. Default
+    /// **`--format text`** (≡ 1.0.0): summary on stderr. **`--format json`**:
+    /// one JSON object on stdout (`ok` / `skipped` / `fetched` / `failed` /
+    /// `failed_transient` / `failed_permanent` / `retries` / `unique_chunks` /
+    /// `listings` / `dry_run`); no duplicate stderr summary; exit codes are
+    /// format-independent.
     Pull {
         /// Local CAS store to fill (created if missing; not written in `--dry-run`)
         #[arg(long)]
@@ -358,6 +372,10 @@ enum Commands {
         /// Probe and count only; do not write the local store
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Output format: `text` (default ≡ 1.0.0 stderr summary) or `json`
+        /// (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are fetched
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -422,10 +440,10 @@ enum StoreCommands {
     },
 }
 
-/// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract`
-/// (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2).
+/// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
+/// `push` / `pull` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
-/// `extract` ≡ 1.0.0).
+/// `extract` / `push` / `pull` ≡ 1.0.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -678,10 +696,13 @@ fn run() -> Result<()> {
             jobs,
             dry_run,
             verify,
+            format,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_push(&store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs)
+            cmd_push(
+                &store, &dest, &http_tmpl, dry_run, verify, &indexes, jobs, format,
+            )
         }
         Commands::Pull {
             store,
@@ -689,10 +710,11 @@ fn run() -> Result<()> {
             http_tmpl,
             jobs,
             dry_run,
+            format,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs)
+            cmd_pull(&store, &source, &http_tmpl, dry_run, &indexes, jobs, format)
         }
         Commands::Diff {
             format,
@@ -2851,6 +2873,7 @@ fn open_http_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Http
     builder.build().context("build HTTP chunk sink")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_push(
     store_path: &Path,
     dest: &str,
@@ -2859,6 +2882,7 @@ fn cmd_push(
     verify: bool,
     index_paths: &[PathBuf],
     jobs: usize,
+    format: CliFormat,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
@@ -2882,7 +2906,9 @@ fn cmd_push(
             Ok(bytes) => bytes,
             Err(e) => {
                 let msg = format!("local chunk {id} unavailable from store {store_display}: {e}");
-                eprintln!("push: fail {id}: {msg}");
+                if format == CliFormat::Text {
+                    eprintln!("push: fail {id}: {msg}");
+                }
                 // Local store miss / I/O → permanent (not an HTTP transient).
                 return (PushOne::Failed(SummaryFailureBucket::Permanent), Some(msg));
             }
@@ -2893,7 +2919,9 @@ fn cmd_push(
             Ok(false) => {}
             Err(e) => {
                 let msg = format!("remote has check failed for {id}: {e}");
-                eprintln!("push: fail {id}: {msg}");
+                if format == CliFormat::Text {
+                    eprintln!("push: fail {id}: {msg}");
+                }
                 let bucket = classify_sink_error(&e).summary_bucket();
                 return (PushOne::Failed(bucket), Some(msg));
             }
@@ -2908,7 +2936,9 @@ fn cmd_push(
             Ok(PutOutcome::SkippedExists) => (PushOne::Skipped, None),
             Err(e) => {
                 let msg = format!("put failed for {id}: {e}");
-                eprintln!("push: fail {id}: {msg}");
+                if format == CliFormat::Text {
+                    eprintln!("push: fail {id}: {msg}");
+                }
                 let bucket = classify_sink_error(&e).summary_bucket();
                 (PushOne::Failed(bucket), Some(msg))
             }
@@ -2938,16 +2968,36 @@ fn cmd_push(
     let failed = failed_transient + failed_permanent;
 
     let retries = http_tmpl.http_retries;
-    eprintln!(
-        "push: skipped={skipped} uploaded={uploaded} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
-        ids.len(),
-        if ids.len() == 1 { "" } else { "s" },
-        listings_ok,
-        if listings_ok == 1 { "" } else { "s" },
-    );
+    let unique_chunks = ids.len();
+    let ok = failed == 0;
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "push: skipped={skipped} uploaded={uploaded} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({unique_chunks} unique chunk id{}, {listings_ok} listing{}, dry_run={dry_run})",
+                if unique_chunks == 1 { "" } else { "s" },
+                if listings_ok == 1 { "" } else { "s" },
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": ok,
+                "skipped": skipped,
+                "uploaded": uploaded,
+                "failed": failed,
+                "failed_transient": failed_transient,
+                "failed_permanent": failed_permanent,
+                "retries": retries,
+                "unique_chunks": unique_chunks,
+                "listings": listings_ok,
+                "dry_run": dry_run,
+            });
+            println!("{obj}");
+        }
+    }
 
     if failed > 0 {
         // Push already failed: do not claim verify success; skip post-verify.
+        // Exit code is independent of `--format` (JSON already emitted above).
         bail!(
             "push: {failed} failure{}{}",
             if failed == 1 { "" } else { "s" },
@@ -2996,6 +3046,7 @@ fn cmd_pull(
     dry_run: bool,
     index_paths: &[PathBuf],
     jobs: usize,
+    format: CliFormat,
 ) -> Result<()> {
     let source = open_primary_source(source_spec, http_tmpl)
         .with_context(|| format!("open chunk source {source_spec:?}"))?;
@@ -3049,7 +3100,9 @@ fn cmd_pull(
             Ok(bytes) => bytes,
             Err(e) => {
                 let msg = format!("source get failed for {id} (store {store_display}): {e}");
-                eprintln!("pull: fail {id}: {msg}");
+                if format == CliFormat::Text {
+                    eprintln!("pull: fail {id}: {msg}");
+                }
                 let bucket = classify_source_error(&e).summary_bucket();
                 return (PullOne::Failed(bucket), Some(msg));
             }
@@ -3060,7 +3113,9 @@ fn cmd_pull(
             Ok(PutOutcome::SkippedExists) => (PullOne::Skipped, None),
             Err(e) => {
                 let msg = format!("store put failed for {id}: {e}");
-                eprintln!("pull: fail {id}: {msg}");
+                if format == CliFormat::Text {
+                    eprintln!("pull: fail {id}: {msg}");
+                }
                 let bucket = classify_sink_error(&e).summary_bucket();
                 (PullOne::Failed(bucket), Some(msg))
             }
@@ -3090,15 +3145,35 @@ fn cmd_pull(
     let failed = failed_transient + failed_permanent;
 
     let retries = http_tmpl.http_retries;
-    eprintln!(
-        "pull: skipped={skipped} fetched={fetched} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({} unique chunk id{}, {} listing{}, dry_run={dry_run})",
-        ids.len(),
-        if ids.len() == 1 { "" } else { "s" },
-        listings_ok,
-        if listings_ok == 1 { "" } else { "s" },
-    );
+    let unique_chunks = ids.len();
+    let ok = failed == 0;
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "pull: skipped={skipped} fetched={fetched} failed={failed}          failed_transient={failed_transient} failed_permanent={failed_permanent}          retries={retries} ({unique_chunks} unique chunk id{}, {listings_ok} listing{}, dry_run={dry_run})",
+                if unique_chunks == 1 { "" } else { "s" },
+                if listings_ok == 1 { "" } else { "s" },
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": ok,
+                "skipped": skipped,
+                "fetched": fetched,
+                "failed": failed,
+                "failed_transient": failed_transient,
+                "failed_permanent": failed_permanent,
+                "retries": retries,
+                "unique_chunks": unique_chunks,
+                "listings": listings_ok,
+                "dry_run": dry_run,
+            });
+            println!("{obj}");
+        }
+    }
 
     if failed > 0 {
+        // Exit code is independent of `--format` (JSON already emitted above).
         bail!(
             "pull: {failed} failure{}{}",
             if failed == 1 { "" } else { "s" },

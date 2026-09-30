@@ -7153,3 +7153,328 @@ fn extract_format_json_skip_unchanged_counts() {
     assert_eq!(v["wrote"], 0);
     assert!(v.get("dirs").is_some(), "dirs missing: {v}");
 }
+
+// --- Phase 11 M3: push / pull --format json ---
+
+#[test]
+fn push_help_lists_format() {
+    let help = run_ok(&["push", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--format"),
+        "push --help should list --format:\n{s}"
+    );
+    assert!(
+        s.contains("text") && s.contains("json"),
+        "push --help --format should mention text|json:\n{s}"
+    );
+}
+
+#[test]
+fn pull_help_lists_format() {
+    let help = run_ok(&["pull", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--format"),
+        "pull --help should list --format:\n{s}"
+    );
+    assert!(
+        s.contains("text") && s.contains("json"),
+        "pull --help --format should mention text|json:\n{s}"
+    );
+}
+
+#[test]
+fn push_format_json_ok_fields() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror.clone(), Arc::clone(&put_count));
+
+    // Default text keeps stderr summary.
+    let text = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let text_err = String::from_utf8_lossy(&text.stderr);
+    assert!(
+        text_err.contains("push: skipped=") || text_err.contains("uploaded="),
+        "default text must keep stderr summary; stderr={text_err}"
+    );
+
+    let json_out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("push: skipped=") && !stderr.contains("uploaded="),
+        "json mode must not duplicate summary on stderr; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("push json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["failed"], 0);
+    assert_eq!(v["failed_transient"], 0);
+    assert_eq!(v["failed_permanent"], 0);
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["listings"], 1);
+    assert!(
+        v["unique_chunks"].as_u64().unwrap() >= 1,
+        "unique_chunks={v}"
+    );
+    assert!(v["uploaded"].as_u64().unwrap() >= 1, "uploaded={v}");
+    assert!(v.get("skipped").is_some(), "skipped missing: {v}");
+    assert!(v.get("retries").is_some(), "retries missing: {v}");
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 1,
+        "expected at least one PUT"
+    );
+}
+
+#[test]
+fn push_format_json_dry_run() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let json_out = run_ok(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(put_count.load(Ordering::SeqCst), 0, "dry-run must not PUT");
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("push: skipped="),
+        "json dry-run must not duplicate summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("push dry-run json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["failed"], 0);
+    assert!(v["uploaded"].as_u64().unwrap() >= 1, "uploaded={v}");
+}
+
+#[test]
+fn push_format_json_failed_ok_false() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Delete all local chunks so push fails permanently.
+    let chunks = local.join("chunks");
+    if chunks.is_dir() {
+        fs::remove_dir_all(&chunks).unwrap();
+        fs::create_dir_all(&chunks).unwrap();
+    }
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let out = run_fail(&[
+        "push",
+        "--store",
+        local.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("push: fail "),
+        "json mode should omit per-id fail lines; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("push fail json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], false);
+    assert!(v["failed"].as_u64().unwrap() >= 1, "failed={v}");
+    assert!(
+        v["failed_permanent"].as_u64().unwrap() >= 1,
+        "failed_permanent={v}"
+    );
+    assert_eq!(v["failed_transient"], 0);
+}
+
+#[test]
+fn pull_format_json_ok_fields() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Default text.
+    let text = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    let text_err = String::from_utf8_lossy(&text.stderr);
+    assert!(
+        text_err.contains("pull: skipped=") || text_err.contains("fetched="),
+        "default text must keep stderr summary; stderr={text_err}"
+    );
+
+    let json_out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("pull: skipped=") && !stderr.contains("fetched="),
+        "json mode must not duplicate summary on stderr; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("pull json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["failed"], 0);
+    assert_eq!(v["failed_transient"], 0);
+    assert_eq!(v["failed_permanent"], 0);
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["listings"], 1);
+    assert!(
+        v["unique_chunks"].as_u64().unwrap() >= 1,
+        "unique_chunks={v}"
+    );
+    assert!(v["fetched"].as_u64().unwrap() >= 1, "fetched={v}");
+    assert!(v.get("skipped").is_some(), "skipped missing: {v}");
+    assert!(v.get("retries").is_some(), "retries missing: {v}");
+    // No `uploaded` on pull.
+    assert!(
+        v.get("uploaded").is_none(),
+        "pull must use fetched not uploaded: {v}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_format_json_dry_run() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let json_out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    assert!(
+        !newstore.join("meta.toml").exists(),
+        "dry-run must not create store"
+    );
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("pull dry-run json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["failed"], 0);
+    assert!(v["fetched"].as_u64().unwrap() >= 1, "fetched={v}");
+}

@@ -20,6 +20,7 @@ chunkforge push \
   [--http-retry-backoff-ms MS] \
   [--dry-run] \
   [--verify] \
+  [--format text|json] \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -33,6 +34,7 @@ chunkforge push \
 | `--http-retry-backoff-ms MS` | Base backoff for retries (default **100**; exponential + jitter, capped at 2s) |
 | `--dry-run` | Probe + count only; **no** PUT |
 | `--verify` | After a successful push (`failed=0`), treat `--dest` (+ same templates) as a `ChunkSource` and run verify for **each** listing (`.cfidx` / `.cfdir`). Any verify failure → overall non-zero. Skipped on `--dry-run` (nothing uploaded) and when push already failed. |
+| `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (`DirArchive::all_chunk_ids` for `.cfdir`) |
 
 Default URL template is `{base}/{path}` ≡ `{base}/chunks/<2hex>/<62hex>.cnk`,
@@ -43,13 +45,34 @@ identical to Phase 2/3 GET layout.
 1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s.
 2. For each id (sorted): read plaintext from the local store; remote `has`
    (HEAD, GET fallback) → skip; otherwise `PUT` the body.
-3. Print a summary on stderr:
-   `push: skipped=… uploaded=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md).
-4. Exit **non-zero** if `failed > 0`.
+3. Emit a summary (`--format text`, default ≡ **1.0.0**): stderr line
+   `push: skipped=… uploaded=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md). With **`--format json`**: one JSON object on **stdout** (no duplicate stderr summary; per-id `push: fail` lines omitted — counts are in the object).
+4. Exit **non-zero** if `failed > 0` (independent of `--format`).
 5. If `--verify` and push succeeded and not `--dry-run`: build `HttpChunkSource` from
    `--dest` (same templates) and run the same verify path as `verify --source` for
    each listing arg. Verify failure → non-zero (useful error includes listing path /
    chunk id). On success the user need not run a separate `verify --source`.
+
+### `--format json` (stdout; Phase 11 M3)
+
+One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exit). Field rename is **breaking**.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | bool | `failed == 0` |
+| `skipped` | number | Already present remotely (or PUT 409 → skip) |
+| `uploaded` | number | PUT written (or dry-run would-upload) |
+| `failed` | number | `failed_transient + failed_permanent` |
+| `failed_transient` | number | Transient HTTP class |
+| `failed_permanent` | number | Permanent / missing / corrupt |
+| `retries` | number | `--http-retries` value (configured max extra attempts) |
+| `unique_chunks` | number | Union of listing chunk ids |
+| `listings` | number | Listings successfully loaded |
+| `dry_run` | bool | `--dry-run` was set |
+
+```json
+{"ok":true,"skipped":0,"uploaded":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
+```
 
 ### Concurrency (`--jobs`)
 

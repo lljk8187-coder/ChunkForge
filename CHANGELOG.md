@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ok`/`skipped`/`wrote`/`dirs`, or dry-run `would_*` + `dry_run`); no
   duplicate stderr summary; exit codes format-independent. Shared
   `CliFormat`. See `docs/extract.md`.
+- **Phase11-M3:** `push` / `pull --format text|json` (default **text** ≡
+  1.0.0 stderr summary). JSON: one object on stdout with failure-class
+  fields (`ok`/`skipped`/`uploaded|fetched`/`failed`/
+  `failed_transient`/`failed_permanent`/`retries`/`unique_chunks`/
+  `listings`/`dry_run`); no duplicate stderr summary; exit codes
+  format-independent. Field rename is breaking. See `docs/push.md` /
+  `docs/pull.md`.
 
 ## [1.0.0] — 2026-09-29
 

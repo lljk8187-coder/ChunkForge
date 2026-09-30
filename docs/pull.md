@@ -19,6 +19,7 @@ chunkforge pull \
   [--jobs N] \
   [--http-retries N] \
   [--dry-run] \
+  [--format text|json] \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -30,6 +31,7 @@ chunkforge pull \
 | `--http-retries N` | Extra HTTP attempts for transient failures (default **0**; HTTP sources only; ignored for local/`file://`) |
 | `--jobs N` | Bounded concurrency for has/get/put (default **1** = serial) |
 | `--dry-run` | Probe + count only; **no** store writes (does not create `meta.toml`) |
+| `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** |
 
 ### What pull does
@@ -37,9 +39,30 @@ chunkforge pull \
 1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s.
 2. For each id (sorted): local `store.has` → **skip**; otherwise `source.get` →
    `store.put` (plaintext into the local CAS; hash checked on put).
-3. Print a summary on stderr:
-   `pull: skipped=… fetched=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md).
-4. Exit **non-zero** if `failed > 0`.
+3. Emit a summary (`--format text`, default ≡ **1.0.0**): stderr line
+   `pull: skipped=… fetched=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md). With **`--format json`**: one JSON object on **stdout** (no duplicate stderr summary; per-id `pull: fail` lines omitted — counts are in the object).
+4. Exit **non-zero** if `failed > 0` (independent of `--format`).
+
+### `--format json` (stdout; Phase 11 M3)
+
+One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exit). Same shape as `push` JSON except **`fetched`** replaces `uploaded`. Field rename is **breaking**.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | bool | `failed == 0` |
+| `skipped` | number | Already present in local `--store` |
+| `fetched` | number | Source get + store put (or dry-run would-fetch) |
+| `failed` | number | `failed_transient + failed_permanent` |
+| `failed_transient` | number | Transient HTTP class |
+| `failed_permanent` | number | Permanent / missing / corrupt |
+| `retries` | number | `--http-retries` value (configured max extra attempts) |
+| `unique_chunks` | number | Union of listing chunk ids |
+| `listings` | number | Listings successfully loaded |
+| `dry_run` | bool | `--dry-run` was set |
+
+```json
+{"ok":true,"skipped":0,"fetched":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
+```
 
 ### What pull does **not** do
 
