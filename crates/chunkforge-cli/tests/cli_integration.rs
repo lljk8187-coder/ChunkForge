@@ -10498,3 +10498,175 @@ fn cat_format_json_with_cache_max_bytes_smoke() {
     assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
     assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
 }
+
+// --- Phase16-M2: repeatable `--fallback` on read commands ---
+
+#[test]
+fn fallback_help_on_read_commands_not_on_push() {
+    for cmd in ["cat", "pull", "verify", "extract", "mount", "doctor"] {
+        let out = Command::new(bin())
+            .args([cmd, "--help"])
+            .output()
+            .expect("spawn");
+        assert!(out.status.success(), "{cmd} --help failed");
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("--fallback"),
+            "{cmd} --help missing --fallback:\n{s}"
+        );
+    }
+    let push = Command::new(bin())
+        .args(["push", "--help"])
+        .output()
+        .expect("spawn");
+    assert!(push.status.success());
+    let s = String::from_utf8_lossy(&push.stdout);
+    assert!(
+        !s.contains("--fallback"),
+        "push must not expose --fallback:\n{s}"
+    );
+}
+
+#[test]
+fn fallback_cat_primary_miss_fallback_hit() {
+    let dir = tempdir().unwrap();
+    let primary = dir.path().join("primary");
+    let fallback = dir.path().join("fallback");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        fallback.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Empty primary store (meta only) — chunks live only in fallback.
+    fs::create_dir_all(&primary).unwrap();
+    fs::write(
+        primary.join("meta.toml"),
+        "# ChunkForge local CAS store metadata\n\
+         magic = \"CFSTORE\"\n\
+         version = 1\n\
+         compression = \"none\"\n",
+    )
+    .unwrap();
+
+    // Without --fallback: missing chunks → fail.
+    run_fail(&[
+        "cat",
+        "--store",
+        primary.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    // With --fallback: Missing on primary, hit on fallback → success.
+    run_ok(&[
+        "cat",
+        "--store",
+        primary.to_str().unwrap(),
+        "--fallback",
+        fallback.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+
+    // verify / doctor also accept the chain.
+    run_ok(&[
+        "verify",
+        "--store",
+        primary.to_str().unwrap(),
+        "--fallback",
+        fallback.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "doctor",
+        "--store",
+        primary.to_str().unwrap(),
+        "--fallback",
+        fallback.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn fallback_zero_times_equiv_single_origin() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}
+
+#[test]
+fn fallback_local_primary_http_fallback_with_url_template() {
+    // Local primary + HTTP fallback + --url-template must not bail (templates
+    // apply to the HTTP fallback; no-op on local primary).
+    let dir = tempdir().unwrap();
+    let primary = dir.path().join("primary");
+    let mirror = dir.path().join("mirror");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        mirror.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    fs::create_dir_all(&primary).unwrap();
+    fs::write(
+        primary.join("meta.toml"),
+        "# ChunkForge local CAS store metadata\n\
+         magic = \"CFSTORE\"\n\
+         version = 1\n\
+         compression = \"none\"\n",
+    )
+    .unwrap();
+
+    let (base, _handle) = spawn_static_store_server(mirror);
+
+    run_ok(&[
+        "cat",
+        "--store",
+        primary.to_str().unwrap(),
+        "--fallback",
+        &base,
+        "--url-template",
+        "{base}/{path}",
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}

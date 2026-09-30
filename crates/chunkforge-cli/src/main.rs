@@ -16,7 +16,8 @@ use chunkforge_remote::{
     SummaryFailureBucket, classify_sink_error, classify_source_error,
 };
 use chunkforge_store::{
-    CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, PutOutcome, Store,
+    CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, FallbackSource,
+    PutOutcome, Store,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use progress::ProgressReporter;
@@ -163,6 +164,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: Option<String>,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
@@ -251,6 +256,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: Option<String>,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
@@ -289,6 +298,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: Option<String>,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
@@ -326,6 +339,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: Option<String>,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
@@ -372,6 +389,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: Option<String>,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent presence checks (default 1 = serial / 0.3.0 behaviour)
@@ -524,6 +545,10 @@ enum Commands {
         /// Chunk source: local path, `file://`, or `http(s)://`
         #[arg(long, value_name = "PATH|URL")]
         source: String,
+        /// Extra chunk origin tried only on Missing (repeatable; CLI order preserved).
+        /// Not a cache and not sync. Zero times ≡ 1.5 single-origin read path.
+        #[arg(long = "fallback", value_name = "PATH|URL", action = clap::ArgAction::Append)]
+        fallback: Vec<String>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent has/get/put workers (default 1 = serial)
@@ -673,8 +698,11 @@ enum CliFormat {
 /// `mount` / `doctor` / `push` / `pull` / `extract`.
 ///
 /// Template flags (`--url-template` / `--prefix` / `--header`) and `--aws-sigv4`
-/// are only meaningful with an `http(s)://` `--source` / `--dest`. Omitting them
-/// preserves the Phase 2 default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
+/// apply isomorphically to every `http(s)://` origin in a read chain (primary
+/// and each HTTP `--fallback`) and to `push --dest`. They are no-ops for
+/// non-HTTP origins; an error is raised only when those flags are set and the
+/// chain has no `http(s)://` source at all. Omitting them preserves the Phase 2
+/// default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
 ///
 /// `--http-retries` / `--http-retry-backoff-ms` apply only to HTTP(S) origins;
 /// local `--store` / `file://` paths ignore them (no-op).
@@ -780,6 +808,7 @@ fn run() -> Result<()> {
         Commands::Extract {
             store,
             source,
+            fallback,
             cache,
             cache_max_bytes,
             http_tmpl,
@@ -820,6 +849,7 @@ fn run() -> Result<()> {
                     cache.as_deref(),
                     cache_max_bytes,
                     &http_tmpl,
+                    &fallback,
                 )?;
                 cmd_extract(
                     Some(src.as_ref()),
@@ -838,6 +868,7 @@ fn run() -> Result<()> {
         Commands::Cat {
             store,
             source,
+            fallback,
             cache,
             cache_max_bytes,
             http_tmpl,
@@ -853,12 +884,14 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 cache_max_bytes,
                 &http_tmpl,
+                &fallback,
             )?;
             cmd_cat(src.as_ref(), &index, &output, jobs, format)
         }
         Commands::Verify {
             store,
             source,
+            fallback,
             cache,
             cache_max_bytes,
             http_tmpl,
@@ -873,6 +906,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 cache_max_bytes,
                 &http_tmpl,
+                &fallback,
             )?;
             cmd_verify(src.as_ref(), &index, jobs, format)
         }
@@ -880,6 +914,7 @@ fn run() -> Result<()> {
         Commands::Mount {
             store,
             source,
+            fallback,
             cache,
             cache_max_bytes,
             http_tmpl,
@@ -896,6 +931,7 @@ fn run() -> Result<()> {
                 cache.as_deref(),
                 cache_max_bytes,
                 &http_tmpl,
+                &fallback,
             )?;
             cmd_mount(
                 src,
@@ -909,6 +945,7 @@ fn run() -> Result<()> {
         Commands::Doctor {
             store,
             source,
+            fallback,
             http_tmpl,
             jobs,
             deep,
@@ -917,8 +954,14 @@ fn run() -> Result<()> {
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src =
-                open_chunk_source(store.as_deref(), source.as_deref(), None, None, &http_tmpl)?;
+            let src = open_chunk_source(
+                store.as_deref(),
+                source.as_deref(),
+                None,
+                None,
+                &http_tmpl,
+                &fallback,
+            )?;
             let origin_spec = match (store.as_deref(), source.as_deref()) {
                 (Some(path), None) => path.to_string_lossy().into_owned(),
                 (None, Some(s)) => s.to_string(),
@@ -980,6 +1023,7 @@ fn run() -> Result<()> {
         Commands::Pull {
             store,
             source,
+            fallback,
             http_tmpl,
             jobs,
             dry_run,
@@ -997,6 +1041,7 @@ fn run() -> Result<()> {
             cmd_pull(
                 &store,
                 &source,
+                &fallback,
                 &http_tmpl,
                 dry_run,
                 &indexes,
@@ -1084,18 +1129,27 @@ fn open_or_create_store(root: &Path) -> Result<Store> {
     }
 }
 
-/// Resolve `--store` / `--source` / `--cache` (+ optional HTTP templates) into a boxed [`ChunkSource`].
+/// Resolve `--store` / `--source` / repeatable `--fallback` / `--cache` (+ optional
+/// HTTP templates) into a boxed [`ChunkSource`].
 ///
 /// `--store PATH` is a Phase 1 synonym for `--source PATH` (local only).
-/// With `--cache`, reads go through [`CacheSource`] (fill on miss; never write primary).
+/// Primary origin is still exactly one of `--store` / `--source` (mutually exclusive).
+/// Each `--fallback` is opened in CLI order and chained behind the primary via
+/// [`FallbackSource`] (Missing-only failover). Zero fallbacks ≡ 1.5 single-origin.
+/// With `--cache`, an outer [`CacheSource`] wraps the **whole** fallback chain
+/// (fill on miss; never write primary / fallbacks).
 /// `--cache-max-bytes N` sets a soft fill budget (requires `--cache`); omit ≡ 1.4 unbounded.
-/// `--url-template` / `--prefix` / `--header` apply only to `http(s)://` sources.
+/// `--url-template` / `--prefix` / `--header` / `--aws-sigv4` apply isomorphically to
+/// every `http(s)://` origin in the chain (primary and HTTP fallbacks). They are
+/// no-ops for non-HTTP origins; an error is raised only when those flags are set
+/// and the chain has **no** `http(s)://` source at all.
 fn open_chunk_source(
     store: Option<&Path>,
     source: Option<&str>,
     cache: Option<&Path>,
     cache_max_bytes: Option<u64>,
     http_tmpl: &HttpTemplateArgs,
+    fallbacks: &[String],
 ) -> Result<Box<dyn ChunkSource>> {
     if cache_max_bytes.is_some() && cache.is_none() {
         bail!("--cache-max-bytes requires --cache <DIR>");
@@ -1108,19 +1162,56 @@ fn open_chunk_source(
         (None, None) => bail!("missing chunk origin: pass --store <path> or --source <PATH|URL>"),
     };
 
+    ensure_http_template_has_http_origin(&spec, fallbacks, http_tmpl)?;
+
     let primary = open_primary_source(&spec, http_tmpl)?;
+    let chain: Box<dyn ChunkSource> = if fallbacks.is_empty() {
+        primary
+    } else {
+        let mut sources = Vec::with_capacity(1 + fallbacks.len());
+        sources.push(primary);
+        for fb in fallbacks {
+            sources.push(open_primary_source(fb, http_tmpl)?);
+        }
+        Box::new(FallbackSource::new(sources).map_err(|e| anyhow::anyhow!("{e}"))?)
+    };
+
     match cache {
-        None => Ok(primary),
+        None => Ok(chain),
         Some(cache_path) => {
             let cache_store = open_or_create_store(cache_path)?;
             // `None` ≡ CacheSource::new (1.4 unbounded); Some(N) soft-refuses fill.
+            // Outer Cache wraps the whole Fallback chain (Phase16-M2).
             Ok(Box::new(CacheSource::with_max_bytes(
-                primary,
+                chain,
                 cache_store,
                 cache_max_bytes,
             )))
         }
     }
+}
+
+fn is_http_spec(spec: &str) -> bool {
+    let trimmed = spec.trim();
+    trimmed.starts_with("http://") || trimmed.starts_with("https://")
+}
+
+/// Bail when HTTP-only template / SigV4 flags are set but neither primary nor
+/// any `--fallback` is `http(s)://`. Retries alone are ignored for local origins.
+fn ensure_http_template_has_http_origin(
+    primary: &str,
+    fallbacks: &[String],
+    http_tmpl: &HttpTemplateArgs,
+) -> Result<()> {
+    if !http_template_flags_set(http_tmpl) {
+        return Ok(());
+    }
+    if is_http_spec(primary) || fallbacks.iter().any(|s| is_http_spec(s)) {
+        return Ok(());
+    }
+    bail!(
+        "--url-template / --prefix / --header / --aws-sigv4 require at least one http(s):// source (primary or --fallback); got only non-HTTP origins"
+    );
 }
 
 fn http_template_flags_set(http_tmpl: &HttpTemplateArgs) -> bool {
@@ -1184,13 +1275,11 @@ fn parse_header_flag(raw: &str) -> Result<(String, String)> {
 
 fn open_primary_source(spec: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn ChunkSource>> {
     let trimmed = spec.trim();
-    let is_http = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    let is_http = is_http_spec(trimmed);
 
-    if !is_http && http_template_flags_set(http_tmpl) {
-        bail!(
-            "--url-template / --prefix / --header / --aws-sigv4 apply only to http(s):// sources;              got non-HTTP source {trimmed:?}"
-        );
-    }
+    // Template / SigV4 flags are no-ops for a single non-HTTP origin so that
+    // `local primary + HTTP --fallback + --url-template` works. Chain-level
+    // validation lives in `ensure_http_template_has_http_origin`.
 
     if is_http {
         let mut builder = HttpChunkSource::builder(trimmed)
@@ -3597,6 +3686,7 @@ fn cmd_push(
 fn cmd_pull(
     store_path: &Path,
     source_spec: &str,
+    fallbacks: &[String],
     http_tmpl: &HttpTemplateArgs,
     dry_run: bool,
     index_paths: &[PathBuf],
@@ -3605,7 +3695,7 @@ fn cmd_pull(
     progress: bool,
     path_filter: &PathFilter,
 ) -> Result<()> {
-    let source = open_primary_source(source_spec, http_tmpl)
+    let source = open_chunk_source(None, Some(source_spec), None, None, http_tmpl, fallbacks)
         .with_context(|| format!("open chunk source {source_spec:?}"))?;
 
     let (referenced, listings_ok) = union_listing_chunk_ids_filtered(index_paths, path_filter)?;
