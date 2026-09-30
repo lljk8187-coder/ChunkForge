@@ -22,6 +22,7 @@ chunkforge pull \
   [--http-retries N] \
   [--dry-run] \
   [--verify] \
+  [--compression none|zstd] \
   [--progress] \
   [--format text|json] \
   [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
@@ -30,7 +31,7 @@ chunkforge pull \
 
 | Flag | Meaning |
 |---|---|
-| `--store` | Local CAS to **write** (created if missing; not written in `--dry-run`) |
+| `--store` | Local CAS to **write** (created if missing with omit/`--compression`; not written / not created in `--dry-run`) |
 | `--source` | Chunk source: local store path, `file://`, or `http(s)://` |
 | `--fallback` | Repeatable extra origin tried **only on Missing** (CLI order). Zero times ≡ **1.5** single origin. Fills **`--store`** from the failover chain; **≠ cache fill of a separate cache dir ≠ sync ≠ prune**. Does **not** apply to `push --dest` |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (HTTP sources only; see [remote-layout.md](remote-layout.md)) |
@@ -39,6 +40,7 @@ chunkforge pull \
 | `--dry-run` | Probe + count only; **no** store writes (does not create `meta.toml`) |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
 | `--verify` | After a **successful** pull (and not `--dry-run`), treat local `--store` as a `ChunkSource` and run the same verify path used by `chunkforge verify` on each listing (symmetric to `push --verify`, which verifies `--dest`). Default **off** ≡ 1.7. Dry-run or pull already failed → **skip** verify with a clear stderr note. Verify failure → **non-zero** even if fetch counts were ok. Does **not** reshape `--format json` fields (verify chatter stays on stderr). Orthogonal to `--jobs` / `--progress` / path filter / `--fallback` / `--cache` |
+| `--compression` | On-disk chunk compression for a **new** local `--store` only (`none`\|`zstd`). Same create semantics as `make` / `archive` / [`store create`](store.md): **omit ≡ create `none`** (≡ **1.8.0**); existing store opens by `meta.toml` (omit → no mismatch check; explicit value that differs from meta → clear non-zero). **Dry-run never creates** the store. Disk zstd ≠ HTTP wire compression. Orthogonal to `--verify` / `--fallback` / `--cache*` / `--jobs` / `--progress` / path scope. Does **not** rename `--format json` fields |
 | `--progress` | Opt-in stderr `progress: op=pull done=N/TOTAL` per chunk (default **off**) |
 | `--cache` / `--cache-max-bytes` / `--cache-stats` | Optional local cache ahead of `--source` (fill on miss; soft budget refuse-fill). `--cache-stats` emits `cache: hits=…` on stderr (requires `--cache`; ≠ LRU). With `--cache` + `--format json`, additive `cache_*` fields (see [ops-json.md](ops-json.md)) |
 | `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.2.0** full reference set). Does **not** download or alter the listing |
@@ -99,6 +101,30 @@ chunkforge pull --store ./store2 --source ./store --verify ./blob.cfidx
 # stderr: pull: verifying 1 listing against --store …
 #         verify: ok (…)
 #         pull: verify ok (1 listing)
+```
+
+### `--compression` (Phase 19 / 1.9.0 opt-in)
+
+Same create-time semantics as [`make` / `archive --compression`](archive.md) and
+[`store create --compression`](store.md):
+
+| Rule | Detail |
+|---|---|
+| Omit flag | New `--store` is created with **`none`** (≡ **1.8.0** hard-coded create) |
+| `--compression zstd` | New empty path → create zstd store, then pull into it |
+| Existing store | Opens by `meta.toml`; omit does not re-check; explicit value that **conflicts** with meta → **non-zero** |
+| Dry-run | **Never creates** `meta.toml` / store (≡ 1.8) |
+| JSON | Does **not** add/rename pull summary fields |
+| ≠ | Not wire Content-Encoding, not pack, not recompress, not default zstd |
+
+```bash
+# Pre-create zstd store, then pull (omit compression; store already exists)
+chunkforge store create --store ./store-z --compression zstd
+chunkforge pull --store ./store-z --source ./store-src ./blob.cfidx
+
+# Or create-on-pull with explicit zstd
+chunkforge pull --store ./store-z2 --source ./store-src \
+  --compression zstd ./blob.cfidx
 ```
 
 ### `--path` / `--exclude` / `--exclude-from` (Phase 13 M4 / Phase 14 M4)
@@ -192,3 +218,4 @@ Partial progress may leave some chunks in `--store`; re-run is safe (existing id
 - Fallback / suffix / `bytes_plaintext` smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh)
 - Ops JSON: [ops-json.md](ops-json.md)
 - Phase18 smoke (`pull --verify` / cache-stats / cat·verify `--progress`): [`scripts/demo_pull_verify_cache_stats.sh`](../scripts/demo_pull_verify_cache_stats.sh)
+- Phase19 smoke (`store create` / `pull --compression` / `diff --progress`): [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh)

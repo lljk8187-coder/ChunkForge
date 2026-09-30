@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Phase 19 toward **1.9.0** (workspace still **1.8.0** until M7). M1–M4 landed:
+`store create`, `pull --compression`, `diff --progress`, docs +
+`demo_store_create_pull_compression.sh`. Defaults remain ≡ **1.8.0**.
+`check_compat_1_8.sh` and version bump are **not** in this milestone.
+
+### Added
+
+- **`store create`** (Phase 19 M1): `chunkforge store create --store … [--compression none|zstd] [--format text|json]`; calls `Store::create`; existing → non-zero; omit ≡ none ≡ 1.8; json `ok` / `store` / `compression`. **≠** recompress / trim. See `docs/store.md`.
+- **`pull --compression`** (Phase 19 M2): create-time only (same as make/archive/`store create`); omit ≡ none ≡ 1.8; existing by meta / conflict → non-zero; dry-run never creates; does **not** rename pull JSON fields. See `docs/pull.md`.
+- **`diff --progress`** (Phase 19 M3): stderr `progress: op=diff done=N/TOTAL` (filtered File-path union); default off ≡ 1.8; orthogonal to `--format json`. See `docs/diff.md`.
+- **Docs + `demo_store_create_pull_compression.sh`** (Phase 19 M4): ops-json / stability / pull / store / diff / perf / README Phase 19 narrative; local smoke for create → pull zstd, omit≡none, pull `--compression zstd`, `diff --progress`, quiet defaults, repeat-create non-zero.
+
+### Not yet (later Phase 19 milestones)
+
+- **`check_compat_1_8.sh`** (M5)
+- Workspace / CLI version bump to **1.9.0** (M7)
+
+### Non-goals (unchanged)
+
+- packfile; write mount; bidirectional sync; extract prune; remote scrub; aws-sdk; cache LRU; **default** zstd; HTTP wire compression; `store recompress`; `push --fallback`
+
 
 ## [1.8.0] — 2026-09-30
 

@@ -50,6 +50,14 @@ now.
 > progress **off**, no pull `--verify`, no `--cache-stats`). Promotion
 > checklist condition 1 stays unmet on local stub evidence; pack stays
 > deferred.
+>
+> **1.9.0 / Phase 19 still does not implement pack.** `store create`,
+> `pull --compression` (create-time only; omit ≡ none ≡ 1.8), and
+> `diff --progress` are additive opt-in only; they keep the loose `.cnk`
+> layout and do not change product defaults (`jobs=1`, `retries=0`, create
+> compression **none**, progress **off**). Promotion checklist condition 1
+> stays unmet; pack stays deferred. Workspace still reports **1.8.0** until
+> M7.
 
 ## What we measure
 

@@ -55,6 +55,16 @@ P1 **`doctor --progress`**. Defaults stay ≡ **1.7.0** (no `--verify` on pull
 off, text, mount prefetch depth 1, no `--fallback` ⇒ single origin). The
 workspace reports **1.8.0**.
 
+**1.9.0** (Phase 19 target) adds further **opt-in** only: **`store create`**
+(`--compression none|zstd`, default omit ≡ **none** ≡ 1.8 create;
+**≠** recompress / trim / default zstd / pack), **`pull --compression`**
+(create-time only for a new `--store`; omit ≡ none ≡ 1.8; existing store
+opens by meta / explicit conflict → non-zero; dry-run never creates), and
+**`diff --progress`** (default **off** ≡ 1.8; stderr only; orthogonal to
+`--format json`; TOTAL = filtered File-path union). Defaults stay ≡
+**1.8.0**. Workspace still reports **1.8.0** until M7 (version bump).
+**`check_compat_1_8.sh` is not yet in tree** (M5).
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -77,13 +87,17 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `store stats`/`du`, `push --path`, `--cache-max-bytes`, `make`/`cat
 --format json`, `--fallback`, cache-max human suffixes, `store stats`
 `bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
-`pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`) may ship in
+`pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
+`store create`, `pull --compression`, `diff --progress`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, and **1.8.0** (Phase18) are such minors: all new
+**1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18), and
+**1.9.0** (Phase19 target) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
-`--verify` / no `--cache-stats` ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
+`--verify` / no `--cache-stats` / no `store create` side effects on old paths /
+omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
+**`store create` ≠ recompress ≠ default zstd ≠ pack**.
 
 ## Breaking-change policy
 
@@ -127,7 +141,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** / **1.8.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** / **1.8.0** / Phase19 **1.9.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -154,6 +168,9 @@ At 1.0, ChunkForge promises:
 | `pull --verify` | Opt-in post-success verify of each listing against local `--store` (symmetric to `push --verify`); dry-run / failed pull **skip**; default **off** ≡ 1.7; **≠** sync |
 | `--cache-stats` / ops-json `cache_*` | Opt-in CacheSource observation (`hits` / `miss_fills` / `miss_refused`); requires `--cache`; **≠ LRU ≠ trim**; default quiet ≡ 1.7 |
 | `cat` / `verify --progress` | Opt-in stderr `progress: op=cat|verify done=N/TOTAL` per listing chunk; default **off** ≡ 1.7; **orthogonal** to `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats` |
+| `store create` | Create empty local CAS (`Store::create`); `--compression none|zstd` (omit ≡ **none** ≡ 1.8); existing → non-zero; **≠** recompress / trim / default zstd / pack |
+| `pull --compression` | Create-time only for new `--store` (same as make/archive/`store create`); omit ≡ none ≡ 1.8; existing by meta / conflict → non-zero; dry-run never creates |
+| `diff --progress` | Opt-in stderr `progress: op=diff done=N/TOTAL` (filtered File-path union); default **off** ≡ 1.8; **orthogonal** to `--format json` |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
@@ -163,7 +180,7 @@ There is **no** remote-scrub first-class command and **no** bidirectional sync.
 Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
 `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` /
-`store stats` / **`make`** / **`cat`**).
+`store stats` / **`store create`** / **`make`** / **`cat`**).
 Default remains **text**. **Field rename → breaking** (same policy as above).
 Path filter on extract/pull/push does **not** rename fields (`unique_chunks` =
 filtered set). Prior command field names stay stable; **store stats** (1.4)
@@ -184,4 +201,4 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.7 `--compression` / archive·extract·make `--progress`; calls 1_5).
 [`scripts/check_compat_1_7.sh`](../scripts/check_compat_1_7.sh)
 (1.8 `pull --verify` / `--cache-stats` / cat·verify `--progress`; calls 1_6).
-No absolute perf SLA.
+**No `check_compat_1_8.sh` yet** (Phase19-M5). No absolute perf SLA.

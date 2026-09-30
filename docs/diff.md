@@ -3,7 +3,7 @@
 Compare two directory listings (`.cfdir`), or a live source tree against a
 listing (`--tree`). **Read-only**: never writes a local store or a `.cfdir`.
 
-Phase 7 (+ Phase 8 `--format json`; Phase 16 P1 `--path` / `--exclude` / `--exclude-from`). See also [`doctor-gc.md`](doctor-gc.md)
+Phase 7 (+ Phase 8 `--format json`; Phase 16 P1 `--path` / `--exclude` / `--exclude-from`; Phase 19 `--progress`). See also [`doctor-gc.md`](doctor-gc.md)
 for presence / GC tooling, [`dir-format.md`](dir-format.md) for `.cfdir`
 layout, [`http-retry.md`](http-retry.md) for HTTP retries / error classes,
 and [`sigv4.md`](sigv4.md) for optional `--aws-sigv4`.
@@ -25,11 +25,29 @@ chunkforge diff --exclude skip/ --exclude '*.tmp' left.cfdir right.cfdir
 chunkforge diff --exclude-from excludes.txt --tree ./src listing.cfdir
 ```
 
+## `--progress` (Phase 19 / 1.9.0 opt-in)
+
+Opt-in **`--progress`** emits `progress: op=diff done=N/TOTAL` on **stderr**
+only. Default **off** ≡ **1.8.0** quiet.
+
+| Rule | Detail |
+|---|---|
+| Granularity | One tick per **File** path in the **union** of both sides after `--path` / `--exclude` / `--exclude-from` (TOTAL = \|left ∪ right\| filtered File paths) |
+| JSON | **Orthogonal** — progress never enters the `--format json` object (stdout stays the single diff object) |
+| Default | Flag omitted ⇒ no `progress:` lines (≡ 1.8) |
+
+```bash
+chunkforge diff --progress left.cfdir right.cfdir
+# stderr: progress: op=diff done=1/N …
+chunkforge diff --format json --progress left.cfdir right.cfdir
+# stdout: JSON object; stderr: progress lines only
+```
+
 ## Listing ↔ listing
 
 
 ```bash
-chunkforge diff [--format text|json] [--max-paths N] left.cfdir right.cfdir
+chunkforge diff [--format text|json] [--progress] [--max-paths N] left.cfdir right.cfdir
 ```
 
 - Both arguments must be **`.cfdir`** files (`.cfidx` / bad magic → error).
