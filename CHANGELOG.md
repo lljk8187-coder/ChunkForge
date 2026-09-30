@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase14-M1** (`chunkforge-store`): `Store::stats` → `StoreStats { chunks, bytes_on_disk, compression }` — aggregates via `list_chunk_ids` + per-`.cnk` `metadata().len()` (no plaintext decode). Library only; **not** wired to CLI yet (M2).
+
 ## [1.3.0] — 2026-09-29
 
 Phase 13 closeout — `PathFilter`; `archive`/`extract`/`pull --path`/`--exclude`;

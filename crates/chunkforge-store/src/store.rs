@@ -13,6 +13,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Per-process counter so concurrent `put` calls never share a tmp path.
 static PUT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Aggregate on-disk statistics for a local CAS store.
+///
+/// `chunks` counts well-formed loose `.cnk` files (same as
+/// [`Store::list_chunk_ids`]). `bytes_on_disk` sums each `.cnk` file's
+/// `metadata().len()` — compressed size when the store uses zstd — without
+/// decoding plaintext. `compression` is the store-wide policy from `meta.toml`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct StoreStats {
+    /// Number of well-formed loose chunk files.
+    pub chunks: u64,
+    /// Sum of on-disk `.cnk` file lengths (not plaintext).
+    pub bytes_on_disk: u64,
+    /// Uniform compression policy for this store.
+    pub compression: Compression,
+}
+
 /// A local ChunkForge CAS store rooted at a directory.
 ///
 /// Layout:
@@ -231,6 +247,26 @@ impl Store {
             Err(e) => Err(Error::Io(e)),
         }
     }
+
+    /// Aggregate chunk count and on-disk bytes for this store.
+    ///
+    /// Uses [`list_chunk_ids`](Self::list_chunk_ids) for the count and each
+    /// chunk's `.cnk` [`metadata().len()`](std::fs::Metadata::len) for
+    /// `bytes_on_disk`. Does **not** decode plaintext (`get`). Empty stores
+    /// report `chunks = 0` and `bytes_on_disk = 0`.
+    pub fn stats(&self) -> Result<StoreStats, Error> {
+        let ids = self.list_chunk_ids()?;
+        let mut bytes_on_disk: u64 = 0;
+        for id in &ids {
+            let meta = fs::metadata(self.chunk_path(id))?;
+            bytes_on_disk = bytes_on_disk.saturating_add(meta.len());
+        }
+        Ok(StoreStats {
+            chunks: ids.len() as u64,
+            bytes_on_disk,
+            compression: self.compression(),
+        })
+    }
 }
 
 /// Parse a chunk id from an on-disk `.cnk` path if it matches the CAS layout.
@@ -446,6 +482,36 @@ mod tests {
         assert!(matches!(store.remove(&id), Err(Error::NotFound(_))));
     }
 
+    #[test]
+    fn stats_empty_store_is_zero() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::None).unwrap();
+        let s = store.stats().unwrap();
+        assert_eq!(s.chunks, 0);
+        assert_eq!(s.bytes_on_disk, 0);
+        assert_eq!(s.compression, Compression::None);
+    }
+
+    #[test]
+    fn stats_after_put_counts_chunks_and_bytes() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::None).unwrap();
+        let n = 5usize;
+        for i in 0..n {
+            store.put(format!("stats-chunk-{i}").as_bytes()).unwrap();
+        }
+        let s = store.stats().unwrap();
+        assert_eq!(s.chunks, n as u64);
+        assert!(s.bytes_on_disk > 0, "bytes_on_disk={}", s.bytes_on_disk);
+        assert_eq!(s.compression, Compression::None);
+        // bytes_on_disk equals sum of .cnk metadata lengths (no get/decode).
+        let mut expected: u64 = 0;
+        for id in store.list_chunk_ids().unwrap() {
+            expected += fs::metadata(store.chunk_path(&id)).unwrap().len();
+        }
+        assert_eq!(s.bytes_on_disk, expected);
+    }
+
     fn walkdir_cnk(root: PathBuf) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let mut stack = vec![root];
@@ -485,5 +551,18 @@ mod zstd_tests {
         let on_disk = std::fs::read(store.chunk_path(&id)).unwrap();
         assert_ne!(on_disk, data);
         assert_eq!(ChunkId::hash(data), id);
+    }
+
+    #[test]
+    fn stats_zstd_store_bytes_on_disk_positive() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::Zstd).unwrap();
+        store
+            .put(b"zzzzzzzzzzzzzzzz compressible payload for stats zzzzzzzzzzzz")
+            .unwrap();
+        let s = store.stats().unwrap();
+        assert_eq!(s.chunks, 1);
+        assert!(s.bytes_on_disk > 0);
+        assert_eq!(s.compression, Compression::Zstd);
     }
 }

@@ -39,7 +39,7 @@ pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
 pub use sink::{ChunkSink, SinkError};
 pub use source::{ChunkSource, SourceError};
-pub use store::Store;
+pub use store::{Store, StoreStats};
 
 // Re-export ChunkId so callers can depend only on chunkforge-store when convenient.
 pub use chunkforge_chunk::ChunkId;
