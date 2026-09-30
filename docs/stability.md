@@ -63,7 +63,7 @@ opens by meta / explicit conflict → non-zero; dry-run never creates), and
 **`diff --progress`** (default **off** ≡ 1.8; stderr only; orthogonal to
 `--format json`; TOTAL = filtered File-path union). Defaults stay ≡
 **1.8.0**. Workspace still reports **1.8.0** until M7 (version bump).
-**`check_compat_1_8.sh` is not yet in tree** (M5).
+**`check_compat_1_8.sh`** is in tree (Phase19-M5; calls 1_7 + 1.9 flag asserts).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -201,4 +201,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.7 `--compression` / archive·extract·make `--progress`; calls 1_5).
 [`scripts/check_compat_1_7.sh`](../scripts/check_compat_1_7.sh)
 (1.8 `pull --verify` / `--cache-stats` / cat·verify `--progress`; calls 1_6).
-**No `check_compat_1_8.sh` yet** (Phase19-M5). No absolute perf SLA.
+[`scripts/check_compat_1_8.sh`](../scripts/check_compat_1_8.sh)
+(1.9 `store create` / `pull --compression` / `diff --progress`; calls 1_7).
+No absolute perf SLA.
