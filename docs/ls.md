@@ -144,6 +144,6 @@ Cross-link nail: **`cat --path` ≠ extract ≠ prune ≠ sync**.
 Pack stance: [perf.md](perf.md) — **Phase25 / toward 1.15.0 still does not
 implement pack**.
 
-Compat gate **`check_compat_1_14.sh`** lands in **Phase25-M5** (note-only
-until then). Smoke:
+Compat gate **`check_compat_1_14.sh`** (Phase25-M5; calls 1_13; no absolute
+perf SLA). Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).

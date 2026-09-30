@@ -161,7 +161,7 @@ filter) and extended **`cat --path`** (`.cfdir` exact File → single `-o`;
 zstd, push `--fallback`, mount `--progress`, default record. Docs:
 [ls.md](ls.md) / [ops-json.md](ops-json.md); smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
-Gate **`check_compat_1_14.sh`** lands in **M5** (note-only until then).
+Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25-M5; calls 1_13).
 Defaults of existing commands stay ≡ **1.14.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
@@ -343,6 +343,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.13 `diff --symlinks` / demo_diff_tree_symlink; calls 1_11).
 **`check_compat_1_13.sh`** (Phase24; gates `filter` + 1.14 flags; calls
 1_12).
-**`check_compat_1_14.sh`** (Phase25-M5; note-only until then — gates `ls` /
-`cat --path` + 1.15 flags; calls 1_13).
+**[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25-M5;
+gates `ls` / `cat --path` + 1.15 flags; calls 1_13).
 No absolute perf SLA.

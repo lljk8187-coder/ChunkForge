@@ -175,8 +175,8 @@ make `--seed` additive **`seed_reused`**. Gated by **`check_compat_1_13.sh`**
 Phase 25 / toward **1.15.0** (workspace still **1.14.0** until M7) adds
 **`ls`** (new command field set: `ok`/`entries`[{`kind`,`path`,`size?`,
 `target?`,`chunks?`}]) and documents **`cat --path`** (same `ok`/`bytes`
-names; `.cfdir` single File). Gate **`check_compat_1_14.sh`** lands in **M5**
-(note-only until then; calls 1_13; no absolute perf SLA). Smoke:
+names; `.cfdir` single File). Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)**
+(Phase25-M5; calls 1_13; no absolute perf SLA). Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
 **`ls` ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter**.
 **`cat --path` ≠ extract ≠ prune ≠ sync**.
