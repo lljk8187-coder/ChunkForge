@@ -4419,6 +4419,7 @@ fn pull_help_lists_store_source_dry_run_templates() {
     assert!(s.contains("--store"), "{s}");
     assert!(s.contains("--source"), "{s}");
     assert!(s.contains("--dry-run"), "{s}");
+    assert!(s.contains("--verify"), "{s}");
     assert!(s.contains("--jobs"), "{s}");
     assert!(s.contains("--url-template"), "{s}");
     assert!(s.contains("--prefix"), "{s}");
@@ -4716,6 +4717,261 @@ fn pull_cfdir_from_mock_then_verify() {
         newstore.to_str().unwrap(),
         cfdir.to_str().unwrap(),
     ]);
+}
+
+// --- Phase 18 M1: pull --verify (symmetric to push --verify) ---
+
+#[test]
+fn pull_verify_cfidx_against_local_store_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        err.contains("pull: verify ok") || err.contains("verify: ok"),
+        "expected post-pull verify success; stderr={err}"
+    );
+    assert!(
+        err.contains("pull: verifying"),
+        "expected verifying notice; stderr={err}"
+    );
+}
+
+#[test]
+fn pull_verify_cfdir_against_local_store_succeeds() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"pull-verify-tree\n").unwrap();
+    fs::copy(
+        fixtures_dir().join("hello.txt"),
+        src.join("sub").join("b.txt"),
+    )
+    .unwrap();
+    let cfdir = dir.path().join("release.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--verify",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed=0"), "stderr={err}");
+    assert!(
+        err.contains("pull: verify ok") || err.contains("verify: ok"),
+        "expected post-pull verify success; stderr={err}"
+    );
+}
+
+#[test]
+fn pull_verify_fails_when_store_chunk_corrupt() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Fill newstore first (no --verify).
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    // Corrupt a present .cnk in place: has() stays true → pull skips fetch;
+    // post-pull --verify get() then fails hash check → non-zero.
+    let (cnk_path, _id) = first_cnk_id(&newstore.join("chunks"));
+    let len = fs::metadata(&cnk_path).unwrap().len() as usize;
+    fs::write(&cnk_path, vec![0u8; len.max(1)]).unwrap();
+
+    let out = run_fail(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("verify")
+            && (err.contains("mismatch")
+                || err.contains("corrupt")
+                || err.contains("fail")
+                || err.contains("unreadable")
+                || err.contains("hash")),
+        "expected verify failure about corrupt chunk; stderr={err}"
+    );
+}
+
+#[test]
+fn pull_verify_fails_when_path_filter_left_listing_incomplete() {
+    // path filter shrinks the fetch set, but --verify still runs full listing
+    // (same as push --verify over index_paths) → missing chunks → non-zero.
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep").join("a.txt"), b"keep-me-unique-aaa\n").unwrap();
+    fs::write(src.join("skip").join("b.txt"), b"skip-me-unique-bbb\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = run_fail(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--path",
+        "keep/",
+        "--verify",
+        cfdir.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("verify")
+            && (err.contains("missing") || err.contains("fail") || err.contains("chunk")),
+        "expected verify failure for unfetched path; stderr={err}"
+    );
+}
+
+#[test]
+fn pull_verify_skipped_on_dry_run() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--dry-run",
+        "--verify",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--verify skipped") || err.contains("verify skipped"),
+        "dry-run must skip verify; stderr={err}"
+    );
+    assert!(
+        !err.contains("pull: verify ok"),
+        "dry-run must not claim verify ok; stderr={err}"
+    );
+    assert!(
+        !newstore.join("meta.toml").is_file(),
+        "dry-run must not create store"
+    );
+}
+
+#[test]
+fn pull_without_verify_flag_is_quiet() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.to_ascii_lowercase().contains("verifying"),
+        "no --verify must stay quiet; stderr={err}"
+    );
+    assert!(
+        !err.contains("pull: verify ok"),
+        "no --verify must not emit verify ok; stderr={err}"
+    );
 }
 
 #[test]

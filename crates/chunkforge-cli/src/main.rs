@@ -595,7 +595,10 @@ enum Commands {
     /// contribute; listing file unchanged / not downloaded). Omit all path/exclude
     /// flags ⇒ full reference set (≡ 1.2.0). Orthogonal to `--dry-run` / `--format` /
     /// `--jobs` /
-    /// `--progress` / retries / SigV4. `--source` accepts a local path,
+    /// `--progress` / retries / SigV4 / `--verify`. With `--verify`, after a
+    /// successful fetch the local `--store` is treated as a `ChunkSource` and
+    /// each listing is verified (skip verify on `--dry-run` or when pull
+    /// already failed). `--source` accepts a local path,
     /// `file://`, or `http(s)://` (same templates as `verify` / `cat`).
     /// `--http-retries N` (default 0) applies to HTTP sources only. Symmetric
     /// to `push` (store→dest) but source→store. Default **`--format text`**
@@ -618,12 +621,15 @@ enum Commands {
         fallback: Vec<String>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
-        /// Max concurrent has/get/put workers (default 1 = serial)
+        /// Max concurrent has/get/put workers (default 1 = serial); also used for post-pull `--verify` fetches
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
         /// Probe and count only; do not write the local store
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// After a successful pull, verify each listing against local `--store`
+        #[arg(long = "verify")]
+        verify: bool,
         /// Output format: `text` (default ≡ 1.0.0 stderr summary) or `json`
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
@@ -1140,6 +1146,7 @@ fn run() -> Result<()> {
             http_tmpl,
             jobs,
             dry_run,
+            verify,
             format,
             progress,
             paths,
@@ -1157,6 +1164,7 @@ fn run() -> Result<()> {
                 &fallback,
                 &http_tmpl,
                 dry_run,
+                verify,
                 &indexes,
                 jobs,
                 format,
@@ -3921,6 +3929,7 @@ fn cmd_pull(
     fallbacks: &[String],
     http_tmpl: &HttpTemplateArgs,
     dry_run: bool,
+    verify: bool,
     index_paths: &[PathBuf],
     jobs: usize,
     format: CliFormat,
@@ -4057,6 +4066,7 @@ fn cmd_pull(
     }
 
     if failed > 0 {
+        // Pull already failed: do not claim verify success; skip post-verify.
         // Exit code is independent of `--format` (JSON already emitted above).
         bail!(
             "pull: {failed} failure{}{}",
@@ -4064,6 +4074,40 @@ fn cmd_pull(
             first_error
                 .map(|m| format!(" (first: {m})"))
                 .unwrap_or_default()
+        );
+    }
+
+    if verify {
+        if dry_run {
+            eprintln!(
+                "pull: --verify skipped (dry-run; nothing was written — local store not verified)"
+            );
+            return Ok(());
+        }
+        let Some(store) = store.as_ref() else {
+            // Defensive: non-dry-run always opens/creates the store above.
+            eprintln!(
+                "pull: --verify skipped (no local store available — local store not verified)"
+            );
+            return Ok(());
+        };
+        eprintln!(
+            "pull: verifying {} listing{} against --store …",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
+        );
+        for path in index_paths {
+            cmd_verify(store, path, jobs, CliFormat::Text).with_context(|| {
+                format!(
+                    "pull --verify failed for {} (local store missing/corrupt chunk or hash mismatch)",
+                    path.display()
+                )
+            })?;
+        }
+        eprintln!(
+            "pull: verify ok ({} listing{})",
+            listings_ok,
+            if listings_ok == 1 { "" } else { "s" },
         );
     }
 
