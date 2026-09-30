@@ -19,12 +19,16 @@
 //! (and by remote / [`CacheSource`] backends) so `cat` / `verify` / FUSE share one
 //! fetch path without breaking the Phase 1 `put`/`get`/`has`/`create`/`open` API.
 //!
+//! Phase 16 adds [`FallbackSource`]: ordered multi-source read failover that
+//! advances only on [`SourceError::NotFound`] (Missing); Corrupt/Io/Backend fail fast.
+//!
 //! Phase 4 adds [`ChunkSink`]: a write-only trait implemented by [`Store`]
 //! (and later by HTTP PUT) so push pipelines share one write face without
 //! forcing `put` onto read-only [`ChunkSource`] backends.
 
 mod cache;
 mod error;
+mod fallback;
 mod meta;
 mod outcome;
 mod path;
@@ -34,6 +38,7 @@ mod store;
 
 pub use cache::CacheSource;
 pub use error::{Error, StoreError};
+pub use fallback::{FallbackError, FallbackSource};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
 pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
