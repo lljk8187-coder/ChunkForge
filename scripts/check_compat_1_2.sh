@@ -28,26 +28,26 @@ echo
 echo "==> 1.3 flag assertions (help text)"
 
 ARCHIVE_HELP="$("$BIN" archive --help)"
-if ! echo "$ARCHIVE_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$ARCHIVE_HELP"; then
   echo "error: archive --help missing --format" >&2
   exit 1
 fi
 # G7: --path **or** --exclude (either satisfies; both expected in practice)
-if ! echo "$ARCHIVE_HELP" | grep -Fq -- '--path' && ! echo "$ARCHIVE_HELP" | grep -Fq -- '--exclude'; then
+if ! grep -Fq -- '--path' <<<"$ARCHIVE_HELP" && ! grep -Fq -- '--exclude' <<<"$ARCHIVE_HELP"; then
   echo "error: archive --help missing both --path and --exclude" >&2
   exit 1
 fi
 echo "  archive: --format / --path|--exclude OK"
 
 EXTRACT_HELP="$("$BIN" extract --help)"
-if ! echo "$EXTRACT_HELP" | grep -Fq -- '--path'; then
+if ! grep -Fq -- '--path' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help missing --path" >&2
   exit 1
 fi
 echo "  extract: --path OK"
 
 PULL_HELP="$("$BIN" pull --help)"
-if ! echo "$PULL_HELP" | grep -Fq -- '--path'; then
+if ! grep -Fq -- '--path' <<<"$PULL_HELP"; then
   echo "error: pull --help missing --path" >&2
   exit 1
 fi
@@ -56,11 +56,11 @@ echo "  pull: --path OK"
 echo
 echo "==> thin non-goal asserts (no --delete on extract; no pack; aws-sdk via 1_0)"
 # extract must not advertise prune / --delete (path filter ≠ prune).
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
@@ -68,14 +68,14 @@ echo "  extract: no --delete / prune OK"
 
 # Help must not advertise a first-class `pack` subcommand / fake pack flags.
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
 PUSH_HELP="$("$BIN" push --help)"
 GC_HELP="$("$BIN" gc --help)"
 for cmd_help in "$PUSH_HELP" "$PULL_HELP" "$GC_HELP"; do
-  if echo "$cmd_help" | grep -Eiq -- '--pack(file)?([[:space:]=]|$)'; then
+  if grep -Eiq -- '--pack(file)?([[:space:]=]|$)' <<<"$cmd_help"; then
     echo "error: CLI help advertises --pack / --packfile (pack is deferred)" >&2
     exit 1
   fi

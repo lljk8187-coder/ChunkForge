@@ -30,7 +30,7 @@ echo "==> 1.8 flag assertions (help text)"
 
 # pull --verify (default off ≡ 1.7; symmetric to push --verify)
 PULL_HELP="$("$BIN" pull --help)"
-if ! echo "$PULL_HELP" | grep -Fq -- '--verify'; then
+if ! grep -Fq -- '--verify' <<<"$PULL_HELP"; then
   echo "error: pull --help missing --verify" >&2
   exit 1
 fi
@@ -40,7 +40,7 @@ echo "  pull: --verify OK"
 CACHE_STATS_OK=0
 for cmd in cat verify; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if echo "$CMD_HELP" | grep -Fq -- '--cache-stats'; then
+  if grep -Fq -- '--cache-stats' <<<"$CMD_HELP"; then
     CACHE_STATS_OK=1
     echo "  $cmd: --cache-stats OK"
     break
@@ -54,7 +54,7 @@ fi
 # cat / verify --progress (default off ≡ 1.7)
 for cmd in cat verify; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--progress'; then
+  if ! grep -Fq -- '--progress' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --progress" >&2
     exit 1
   fi
@@ -64,18 +64,18 @@ done
 echo
 echo "==> thin non-goal re-asserts (no --delete / no pack / no LRU / no aws-sdk / no default zstd)"
 EXTRACT_HELP="$("$BIN" extract --help)"
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
 echo "  extract: no --delete / prune OK"
 
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
@@ -83,13 +83,13 @@ echo "  no pack subcommand OK"
 
 for cmd in cat verify extract mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if echo "$CMD_HELP" | grep -Eiq -- '--cache-lru([[:space:]=]|$)'; then
+  if grep -Eiq -- '--cache-lru([[:space:]=]|$)' <<<"$CMD_HELP"; then
     echo "error: $cmd --help advertises --cache-lru (LRU is forbidden)" >&2
     exit 1
   fi
 done
 STORE_HELP="$("$BIN" store --help)"
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)' <<<"$STORE_HELP"; then
   echo "error: store --help advertises trim (store trim is forbidden)" >&2
   exit 1
 fi
@@ -103,18 +103,18 @@ echo "  Cargo.lock: no aws-sdk OK"
 
 # Compression remains create-time opt-in; default none (not silent default-zstd).
 MAKE_HELP="$("$BIN" make --help)"
-if ! echo "$MAKE_HELP" | grep -Fq -- '--compression'; then
+if ! grep -Fq -- '--compression' <<<"$MAKE_HELP"; then
   echo "error: make --help missing --compression" >&2
   exit 1
 fi
 # Help narrative must still describe default none / opt-in (not "default zstd").
-if echo "$MAKE_HELP" | grep -Eiq 'default[[:space:]]+zstd|defaults?[[:space:]]+to[[:space:]]+zstd'; then
+if grep -Eiq 'default[[:space:]]+zstd|defaults?[[:space:]]+to[[:space:]]+zstd' <<<"$MAKE_HELP"; then
   echo "error: make --help advertises default zstd (forbidden; create default is none)" >&2
   exit 1
 fi
-if ! echo "$MAKE_HELP" | grep -Eiq 'default[[:space:]]+none|≡[[:space:]]*1\.[56]|omit.*none'; then
+if ! grep -Eiq 'default[[:space:]]+none|≡[[:space:]]*1\.[56]|omit.*none' <<<"$MAKE_HELP"; then
   # Soft check: clap help usually carries "Default none" from the arg doc.
-  if ! echo "$MAKE_HELP" | grep -Fiq 'none'; then
+  if ! grep -Fiq 'none' <<<"$MAKE_HELP"; then
     echo "error: make --help compression narrative missing opt-in/none default hint" >&2
     exit 1
   fi

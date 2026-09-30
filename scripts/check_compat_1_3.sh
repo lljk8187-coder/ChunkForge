@@ -30,7 +30,7 @@ echo "==> 1.4 flag assertions (help text)"
 
 PUSH_HELP="$("$BIN" push --help)"
 # G6: --path **or** --exclude (either satisfies; both expected in practice)
-if ! echo "$PUSH_HELP" | grep -Fq -- '--path' && ! echo "$PUSH_HELP" | grep -Fq -- '--exclude'; then
+if ! grep -Fq -- '--path' <<<"$PUSH_HELP" && ! grep -Fq -- '--exclude' <<<"$PUSH_HELP"; then
   echo "error: push --help missing both --path and --exclude" >&2
   exit 1
 fi
@@ -40,10 +40,10 @@ echo "  push: --path|--exclude OK"
 STORE_HELP="$("$BIN" store --help)"
 HAS_STATS=0
 HAS_DU=0
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])stats([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])stats([[:space:]]|$)' <<<"$STORE_HELP"; then
   HAS_STATS=1
 fi
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])du([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])du([[:space:]]|$)' <<<"$STORE_HELP"; then
   HAS_DU=1
 fi
 if [[ "$HAS_STATS" -eq 0 && "$HAS_DU" -eq 0 ]]; then
@@ -56,7 +56,7 @@ if [[ "$HAS_STATS" -eq 1 ]]; then
 else
   STATS_HELP="$("$BIN" store du --help)"
 fi
-if ! echo "$STATS_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$STATS_HELP"; then
   echo "error: store stats/du --help missing --format" >&2
   exit 1
 fi
@@ -64,27 +64,27 @@ echo "  store stats|du: --format OK"
 
 # archive / extract / pull / push --help all contain --exclude-from
 ARCHIVE_HELP="$("$BIN" archive --help)"
-if ! echo "$ARCHIVE_HELP" | grep -Fq -- '--exclude-from'; then
+if ! grep -Fq -- '--exclude-from' <<<"$ARCHIVE_HELP"; then
   echo "error: archive --help missing --exclude-from" >&2
   exit 1
 fi
 echo "  archive: --exclude-from OK"
 
 EXTRACT_HELP="$("$BIN" extract --help)"
-if ! echo "$EXTRACT_HELP" | grep -Fq -- '--exclude-from'; then
+if ! grep -Fq -- '--exclude-from' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help missing --exclude-from" >&2
   exit 1
 fi
 echo "  extract: --exclude-from OK"
 
 PULL_HELP="$("$BIN" pull --help)"
-if ! echo "$PULL_HELP" | grep -Fq -- '--exclude-from'; then
+if ! grep -Fq -- '--exclude-from' <<<"$PULL_HELP"; then
   echo "error: pull --help missing --exclude-from" >&2
   exit 1
 fi
 echo "  pull: --exclude-from OK"
 
-if ! echo "$PUSH_HELP" | grep -Fq -- '--exclude-from'; then
+if ! grep -Fq -- '--exclude-from' <<<"$PUSH_HELP"; then
   echo "error: push --help missing --exclude-from" >&2
   exit 1
 fi
@@ -93,24 +93,24 @@ echo "  push: --exclude-from OK"
 echo
 echo "==> thin non-goal asserts (inherit 1_2: no --delete / no pack; aws-sdk via 1_0)"
 # Re-assert extract has no --delete / prune (1_2 already checked; keep local clarity).
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
 echo "  extract: no --delete / prune OK"
 
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
 GC_HELP="$("$BIN" gc --help)"
 for cmd_help in "$PUSH_HELP" "$PULL_HELP" "$GC_HELP"; do
-  if echo "$cmd_help" | grep -Eiq -- '--pack(file)?([[:space:]=]|$)'; then
+  if grep -Eiq -- '--pack(file)?([[:space:]=]|$)' <<<"$cmd_help"; then
     echo "error: CLI help advertises --pack / --packfile (pack is deferred)" >&2
     exit 1
   fi

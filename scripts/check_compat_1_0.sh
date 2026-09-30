@@ -27,28 +27,28 @@ echo
 echo "==> CLI help: extract / mount / diff / push|pull (key flags present)"
 EXTRACT_HELP="$("$BIN" extract --help)"
 for flag in --skip-unchanged --dry-run --force; do
-  if ! echo "$EXTRACT_HELP" | grep -Fq -- "$flag"; then
+  if ! grep -Fq -- "$flag" <<<"$EXTRACT_HELP"; then
     echo "error: extract --help missing $flag" >&2
     exit 1
   fi
 done
 # Default must stay off for skip-unchanged (≡ 0.8.0 / 0.9.0); help should not
 # claim it is enabled by default.
-if echo "$EXTRACT_HELP" | grep -Ei 'skip-unchanged.*default[[:space:]]*(on|true|enabled)' >/dev/null; then
+if grep -Ei 'skip-unchanged.*default[[:space:]]*(on|true|enabled)' <<<"$EXTRACT_HELP" >/dev/null; then
   echo "error: extract --help implies --skip-unchanged default on (breaking)" >&2
   exit 1
 fi
 echo "  extract: --skip-unchanged / --dry-run / --force OK (skip default off)"
 
 MOUNT_HELP="$("$BIN" mount --help)"
-if ! echo "$MOUNT_HELP" | grep -Fq -- '--no-prefetch'; then
+if ! grep -Fq -- '--no-prefetch' <<<"$MOUNT_HELP"; then
   echo "error: mount --help missing --no-prefetch" >&2
   exit 1
 fi
 echo "  mount: --no-prefetch OK"
 
 DIFF_HELP="$("$BIN" diff --help)"
-if ! echo "$DIFF_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$DIFF_HELP"; then
   echo "error: diff --help missing --format" >&2
   exit 1
 fi
@@ -56,11 +56,11 @@ echo "  diff: --format OK"
 
 PUSH_HELP="$("$BIN" push --help)"
 PULL_HELP="$("$BIN" pull --help)"
-if ! echo "$PUSH_HELP" | grep -Fq -- '--http-retries' && ! echo "$PULL_HELP" | grep -Fq -- '--http-retries'; then
+if ! grep -Fq -- '--http-retries' <<<"$PUSH_HELP" && ! grep -Fq -- '--http-retries' <<<"$PULL_HELP"; then
   echo "error: neither push nor pull --help mentions --http-retries" >&2
   exit 1
 fi
-if ! echo "$PUSH_HELP" | grep -Fq -- '--aws-sigv4' && ! echo "$PULL_HELP" | grep -Fq -- '--aws-sigv4'; then
+if ! grep -Fq -- '--aws-sigv4' <<<"$PUSH_HELP" && ! grep -Fq -- '--aws-sigv4' <<<"$PULL_HELP"; then
   echo "error: neither push nor pull --help mentions --aws-sigv4" >&2
   exit 1
 fi

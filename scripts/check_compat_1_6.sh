@@ -31,7 +31,7 @@ echo "==> 1.7 flag assertions (help text)"
 # --compression on make / archive (create-time opt-in; default none ≡ 1.6)
 for cmd in make archive; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--compression'; then
+  if ! grep -Fq -- '--compression' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --compression" >&2
     exit 1
   fi
@@ -41,7 +41,7 @@ done
 # --progress on archive / extract / make (default off ≡ 1.6)
 for cmd in archive extract make; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--progress'; then
+  if ! grep -Fq -- '--progress' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --progress" >&2
     exit 1
   fi
@@ -51,18 +51,18 @@ done
 echo
 echo "==> thin non-goal re-asserts (no --delete / no pack / no LRU / no aws-sdk)"
 EXTRACT_HELP="$("$BIN" extract --help)"
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
 echo "  extract: no --delete / prune OK"
 
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
@@ -70,13 +70,13 @@ echo "  no pack subcommand OK"
 
 for cmd in cat verify extract mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if echo "$CMD_HELP" | grep -Eiq -- '--cache-lru([[:space:]=]|$)'; then
+  if grep -Eiq -- '--cache-lru([[:space:]=]|$)' <<<"$CMD_HELP"; then
     echo "error: $cmd --help advertises --cache-lru (LRU is forbidden)" >&2
     exit 1
   fi
 done
 STORE_HELP="$("$BIN" store --help)"
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)' <<<"$STORE_HELP"; then
   echo "error: store --help advertises trim (store trim is forbidden)" >&2
   exit 1
 fi

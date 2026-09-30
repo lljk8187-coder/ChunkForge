@@ -29,7 +29,7 @@ echo "==> 1.1 / 1.2 flag assertions (help text)"
 
 EXTRACT_HELP="$("$BIN" extract --help)"
 for flag in --skip-trust-mtime --format; do
-  if ! echo "$EXTRACT_HELP" | grep -Fq -- "$flag"; then
+  if ! grep -Fq -- "$flag" <<<"$EXTRACT_HELP"; then
     echo "error: extract --help missing $flag" >&2
     exit 1
   fi
@@ -38,18 +38,18 @@ echo "  extract: --skip-trust-mtime / --format OK"
 
 PUSH_HELP="$("$BIN" push --help)"
 PULL_HELP="$("$BIN" pull --help)"
-if ! echo "$PUSH_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$PUSH_HELP"; then
   echo "error: push --help missing --format" >&2
   exit 1
 fi
-if ! echo "$PULL_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$PULL_HELP"; then
   echo "error: pull --help missing --format" >&2
   exit 1
 fi
 echo "  push/pull: --format OK"
 
 MOUNT_HELP="$("$BIN" mount --help)"
-if ! echo "$MOUNT_HELP" | grep -Fq -- '--prefetch-chunks'; then
+if ! grep -Fq -- '--prefetch-chunks' <<<"$MOUNT_HELP"; then
   echo "error: mount --help missing --prefetch-chunks" >&2
   exit 1
 fi
@@ -57,7 +57,7 @@ echo "  mount: --prefetch-chunks OK"
 
 GC_HELP="$("$BIN" gc --help)"
 for flag in --jobs --format; do
-  if ! echo "$GC_HELP" | grep -Fq -- "$flag"; then
+  if ! grep -Fq -- "$flag" <<<"$GC_HELP"; then
     echo "error: gc --help missing $flag" >&2
     exit 1
   fi
@@ -65,7 +65,7 @@ done
 echo "  gc: --jobs / --format OK"
 
 SCRUB_HELP="$("$BIN" store scrub --help)"
-if ! echo "$SCRUB_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$SCRUB_HELP"; then
   echo "error: store scrub --help missing --format" >&2
   exit 1
 fi
@@ -76,13 +76,13 @@ echo "==> thin non-goal asserts (no pack subcommand; aws-sdk covered by 1_0)"
 # Help must not advertise a first-class `pack` subcommand / fake pack flags.
 # (docs/perf.md may mention pack as deferred — that is fine; CLI must not.)
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
 # No --pack / --packfile style flags on push/pull/gc (false promises).
 for cmd_help in "$PUSH_HELP" "$PULL_HELP" "$GC_HELP"; do
-  if echo "$cmd_help" | grep -Eiq -- '--pack(file)?([[:space:]=]|$)'; then
+  if grep -Eiq -- '--pack(file)?([[:space:]=]|$)' <<<"$cmd_help"; then
     echo "error: CLI help advertises --pack / --packfile (pack is deferred)" >&2
     exit 1
   fi

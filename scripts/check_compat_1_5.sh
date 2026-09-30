@@ -31,7 +31,7 @@ echo "==> 1.6 flag assertions (help text)"
 # --fallback on read-side commands (at least cat / pull / verify; also extract/mount/doctor)
 for cmd in cat pull verify extract mount doctor; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--fallback'; then
+  if ! grep -Fq -- '--fallback' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --fallback" >&2
     exit 1
   fi
@@ -41,7 +41,7 @@ done
 # --cache-max-bytes still on cat / mount (suffixes are additive parsing; flag stays)
 for cmd in cat mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--cache-max-bytes'; then
+  if ! grep -Fq -- '--cache-max-bytes' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --cache-max-bytes" >&2
     exit 1
   fi
@@ -49,7 +49,7 @@ for cmd in cat mount; do
 done
 
 STATS_HELP="$("$BIN" store stats --help)"
-if ! echo "$STATS_HELP" | grep -Eq -- '(--decode|bytes_plaintext)'; then
+if ! grep -Eq -- '(--decode|bytes_plaintext)' <<<"$STATS_HELP"; then
   echo "error: store stats --help missing --decode or bytes_plaintext" >&2
   exit 1
 fi
@@ -58,18 +58,18 @@ echo "  store stats: --decode / bytes_plaintext OK"
 echo
 echo "==> thin non-goal asserts (no pack / no --delete / no LRU / optional no aws-sdk)"
 EXTRACT_HELP="$("$BIN" extract --help)"
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
 echo "  extract: no --delete / prune OK"
 
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
@@ -77,13 +77,13 @@ echo "  no pack subcommand OK"
 
 for cmd in cat verify extract mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if echo "$CMD_HELP" | grep -Eiq -- '--cache-lru([[:space:]=]|$)'; then
+  if grep -Eiq -- '--cache-lru([[:space:]=]|$)' <<<"$CMD_HELP"; then
     echo "error: $cmd --help advertises --cache-lru (LRU is forbidden)" >&2
     exit 1
   fi
 done
 STORE_HELP="$("$BIN" store --help)"
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)' <<<"$STORE_HELP"; then
   echo "error: store --help advertises trim (store trim is forbidden)" >&2
   exit 1
 fi

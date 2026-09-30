@@ -10,9 +10,9 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P20_DEMO_DIR (default /tmp/cf-p20-path-from-demo)
 #
-# Note (M5/M7): check_compat_1_9.sh does not exist yet at this milestone.
-# After M5, assert that script exists/executable; after M7, expect version
-# 1.10.0. Until then: require check_compat_1_8.sh + version 1.9.0.
+# Gate (M5+): require check_compat_1_9.sh present + executable (Phase19-M7b
+# lesson: do not leave a soft "not yet" note that M7 can trip on).
+# Version stays 1.9.0 until M7 bumps to 1.10.0; also require check_compat_1_8.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -280,12 +280,12 @@ echo "F: .cfidx + path → non-zero: OK"
 echo
 echo "==> G. path-from ≠ gc --path (gc --help has no --path)"
 GC_HELP="$("$BIN" gc --help)"
-if echo "$GC_HELP" | grep -E -- '--path\b' >/dev/null; then
+if grep -E -- '--path\b' <<<"$GC_HELP" >/dev/null; then
   echo "error: gc must NOT expose --path (path-from ≠ gc-path hard ban)" >&2
   echo "$GC_HELP" >&2
   exit 1
 fi
-if echo "$GC_HELP" | grep -F -- '--path-from' >/dev/null; then
+if grep -F -- '--path-from' <<<"$GC_HELP" >/dev/null; then
   echo "error: gc must NOT expose --path-from" >&2
   exit 1
 fi
@@ -308,7 +308,7 @@ for cmd in doctor verify; do
 done
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! echo "$VER" | grep -F '1.9.0' >/dev/null; then
+if ! grep -F '1.9.0' <<<"$VER" >/dev/null; then
   echo "error: expected chunkforge 1.9.0 (M7 bumps to 1.10.0); got $VER" >&2
   exit 1
 fi
@@ -321,15 +321,16 @@ if [[ ! -x "$COMPAT18" ]]; then
   echo "error: check_compat_1_8.sh must be executable" >&2
   exit 1
 fi
-# M5 will add check_compat_1_9.sh — do NOT require it yet (this is M4).
-# After M5/M7: assert COMPAT19 exists and is executable; drop this note.
 COMPAT19="$ROOT/scripts/check_compat_1_9.sh"
-if [[ -f "$COMPAT19" ]]; then
-  echo "note: check_compat_1_9.sh already present (post-M5 tree)"
-else
-  echo "note: check_compat_1_9.sh not yet present (expected until M5)"
+if [[ ! -f "$COMPAT19" ]]; then
+  echo "error: check_compat_1_9.sh must exist" >&2
+  exit 1
 fi
-echo "H: help / version 1.9.0 / compat_1_8: OK"
+if [[ ! -x "$COMPAT19" ]]; then
+  echo "error: check_compat_1_9.sh must be executable" >&2
+  exit 1
+fi
+echo "H: help / version 1.9.0 / compat_1_8 / compat_1_9: OK"
 
 echo
 echo "demo_path_from_doctor_verify: ALL OK"

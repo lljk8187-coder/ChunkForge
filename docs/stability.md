@@ -80,7 +80,7 @@ pull / diff / doctor / verify**, and full path quartet on **`doctor` /
 non-zero; JSON field names unchanged, counts may shrink). **Hard ban:**
 **`gc --path`** (shrinking the keep-set would mis-delete). Defaults stay ≡
 **1.9.0**. Responsibility: **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
-Gate **`check_compat_1_9.sh`** lands in M5.
+Gate **`check_compat_1_9.sh`** is **in-tree** (Phase20-M5; calls 1_8).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -226,4 +226,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.8 `pull --verify` / `--cache-stats` / cat·verify `--progress`; calls 1_6).
 [`scripts/check_compat_1_8.sh`](../scripts/check_compat_1_8.sh)
 (1.9 `store create` / `pull --compression` / `diff --progress`; calls 1_7).
+[`scripts/check_compat_1_9.sh`](../scripts/check_compat_1_9.sh)
+(1.10 `--path-from` / doctor·verify `--path`; no gc `--path`; calls 1_8).
 No absolute perf SLA.

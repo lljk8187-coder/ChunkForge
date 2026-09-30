@@ -29,14 +29,14 @@ echo
 echo "==> 1.5 flag assertions (help text)"
 
 MAKE_HELP="$("$BIN" make --help)"
-if ! echo "$MAKE_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$MAKE_HELP"; then
   echo "error: make --help missing --format" >&2
   exit 1
 fi
 echo "  make: --format OK"
 
 CAT_HELP="$("$BIN" cat --help)"
-if ! echo "$CAT_HELP" | grep -Fq -- '--format'; then
+if ! grep -Fq -- '--format' <<<"$CAT_HELP"; then
   echo "error: cat --help missing --format" >&2
   exit 1
 fi
@@ -45,7 +45,7 @@ echo "  cat: --format OK"
 # --cache-max-bytes on cat / verify / extract / mount (all four preferred)
 for cmd in cat verify extract mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if ! echo "$CMD_HELP" | grep -Fq -- '--cache-max-bytes'; then
+  if ! grep -Fq -- '--cache-max-bytes' <<<"$CMD_HELP"; then
     echo "error: $cmd --help missing --cache-max-bytes" >&2
     exit 1
   fi
@@ -55,18 +55,18 @@ done
 echo
 echo "==> thin non-goal asserts (inherit 1_3: no --delete / no pack / aws-sdk via 1_0; + no LRU)"
 EXTRACT_HELP="$("$BIN" extract --help)"
-if echo "$EXTRACT_HELP" | grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)'; then
+if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
   exit 1
 fi
-if echo "$EXTRACT_HELP" | grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])prune([[:space:]]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises prune (forbidden)" >&2
   exit 1
 fi
 echo "  extract: no --delete / prune OK"
 
 TOP_HELP="$("$BIN" --help)"
-if echo "$TOP_HELP" | grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])pack([[:space:]]|$)' <<<"$TOP_HELP"; then
   echo "error: top-level --help advertises a pack command (pack is deferred)" >&2
   exit 1
 fi
@@ -75,13 +75,13 @@ echo "  no pack subcommand OK"
 # No cache LRU / store trim advertising
 for cmd in cat verify extract mount; do
   CMD_HELP="$("$BIN" "$cmd" --help)"
-  if echo "$CMD_HELP" | grep -Eiq -- '--cache-lru([[:space:]=]|$)'; then
+  if grep -Eiq -- '--cache-lru([[:space:]=]|$)' <<<"$CMD_HELP"; then
     echo "error: $cmd --help advertises --cache-lru (LRU is forbidden)" >&2
     exit 1
   fi
 done
 STORE_HELP="$("$BIN" store --help)"
-if echo "$STORE_HELP" | grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)'; then
+if grep -Eiq '(^|[[:space:]])trim([[:space:]]|$)' <<<"$STORE_HELP"; then
   echo "error: store --help advertises trim (store trim is forbidden)" >&2
   exit 1
 fi

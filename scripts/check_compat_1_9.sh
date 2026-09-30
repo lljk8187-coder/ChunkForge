@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Phase 19 / 1.8+ compat gate (G5 / M5): runs the 1.7 gate, then asserts
-# 1.9 additive flags still appear in --help. Does **not** assert
+# Phase 20 / 1.9+ compat gate (G5 / M5): runs the 1.8 gate, then asserts
+# 1.10 additive flags still appear in --help. Does **not** assert
 # absolute throughput / SLA numbers and does **not** force-run long demos.
-# Local only — no real internet. Keeps check_compat_1_0.sh … 1_7
+# Local only — no real internet. Keeps check_compat_1_0.sh … 1_8
 # independently runnable.
-# Usage: ./scripts/check_compat_1_8.sh
-# Requires: cargo, python3 (demos via 1_0…1_7), bash.
+# Usage: ./scripts/check_compat_1_9.sh
+# Requires: cargo, python3 (demos via 1_0…1_8), bash.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> Phase 19 / 1.8+ compat gate"
-echo "==> building chunkforge-cli (shared binary for 1_7 + 1.9 assertions)"
+echo "==> Phase 20 / 1.9+ compat gate"
+echo "==> building chunkforge-cli (shared binary for 1_8 + 1.10 assertions)"
 cargo build -p chunkforge-cli --quiet
 BIN="${CHUNKFORGE_BIN:-$ROOT/target/debug/chunkforge}"
 if [[ ! -x "$BIN" ]]; then
@@ -22,49 +22,34 @@ fi
 export CHUNKFORGE_BIN="$BIN"
 
 echo
-echo "==> running check_compat_1_7.sh (CHUNKFORGE_BIN=$CHUNKFORGE_BIN)"
-bash "$ROOT/scripts/check_compat_1_7.sh"
+echo "==> running check_compat_1_8.sh (CHUNKFORGE_BIN=$CHUNKFORGE_BIN)"
+bash "$ROOT/scripts/check_compat_1_8.sh"
 
 echo
-echo "==> 1.9 flag assertions (help text)"
+echo "==> 1.10 flag assertions (help text)"
 
-# store create (store --help exposes create; store create --help runnable)
-STORE_HELP="$("$BIN" store --help)"
-if ! grep -Eiq '(^|[[:space:]])create([[:space:]]|$)' <<<"$STORE_HELP"; then
-  echo "error: store --help missing create subcommand" >&2
-  exit 1
-fi
-echo "  store: create subcommand OK"
+# --path-from on path-scoped commands (spot-check: archive + full set)
+for cmd in archive extract push pull diff doctor verify; do
+  CMD_HELP="$("$BIN" "$cmd" --help)"
+  if ! grep -Fq -- '--path-from' <<<"$CMD_HELP"; then
+    echo "error: $cmd --help missing --path-from" >&2
+    exit 1
+  fi
+  echo "  $cmd: --path-from OK"
+done
 
-CREATE_HELP="$("$BIN" store create --help)"
-if ! grep -Fq -- '--store' <<<"$CREATE_HELP"; then
-  echo "error: store create --help missing --store" >&2
-  exit 1
-fi
-if ! grep -Fq -- '--compression' <<<"$CREATE_HELP"; then
-  echo "error: store create --help missing --compression" >&2
-  exit 1
-fi
-echo "  store create: --store / --compression OK"
-
-# pull --compression (create-time; omit ≡ none ≡ 1.8)
-PULL_HELP="$("$BIN" pull --help)"
-if ! grep -Fq -- '--compression' <<<"$PULL_HELP"; then
-  echo "error: pull --help missing --compression" >&2
-  exit 1
-fi
-echo "  pull: --compression OK"
-
-# diff --progress (default off ≡ 1.8)
-DIFF_HELP="$("$BIN" diff --help)"
-if ! grep -Fq -- '--progress' <<<"$DIFF_HELP"; then
-  echo "error: diff --help missing --progress" >&2
-  exit 1
-fi
-echo "  diff: --progress OK"
+# doctor / verify expose --path (and --path-from already covered)
+for cmd in doctor verify; do
+  CMD_HELP="$("$BIN" "$cmd" --help)"
+  if ! grep -Eiq -- '(^|[[:space:]])--path([[:space:]=]|$)' <<<"$CMD_HELP"; then
+    echo "error: $cmd --help missing --path" >&2
+    exit 1
+  fi
+  echo "  $cmd: --path OK"
+done
 
 echo
-echo "==> thin non-goal re-asserts (no --delete / no pack / no LRU / no aws-sdk / no default zstd / no recompress / no push --fallback)"
+echo "==> thin non-goal re-asserts (no --delete / no pack / no LRU / no aws-sdk / no default zstd / no recompress / no push --fallback / no gc --path)"
 EXTRACT_HELP="$("$BIN" extract --help)"
 if grep -Eiq -- '(^|[[:space:]])--delete([[:space:]=]|$)' <<<"$EXTRACT_HELP"; then
   echo "error: extract --help advertises --delete (prune is forbidden)" >&2
@@ -105,6 +90,7 @@ echo "  Cargo.lock: no aws-sdk OK"
 
 # Compression remains create-time opt-in; default none (not silent default-zstd).
 MAKE_HELP="$("$BIN" make --help)"
+CREATE_HELP="$("$BIN" store create --help)"
 if ! grep -Fq -- '--compression' <<<"$MAKE_HELP"; then
   echo "error: make --help missing --compression" >&2
   exit 1
@@ -113,13 +99,12 @@ if grep -Eiq 'default[[:space:]]+zstd|defaults?[[:space:]]+to[[:space:]]+zstd' <
   echo "error: make --help advertises default zstd (forbidden; create default is none)" >&2
   exit 1
 fi
-if ! grep -Eiq 'default[[:space:]]+none|≡[[:space:]]*1\.[5678]|omit.*none' <<<"$MAKE_HELP"; then
+if ! grep -Eiq 'default[[:space:]]+none|≡[[:space:]]*1\.[56789]|omit.*none' <<<"$MAKE_HELP"; then
   if ! grep -Fiq 'none' <<<"$MAKE_HELP"; then
     echo "error: make --help compression narrative missing opt-in/none default hint" >&2
     exit 1
   fi
 fi
-# store create narrative: omit ≡ none, not default zstd
 if grep -Eiq 'default[[:space:]]+zstd|defaults?[[:space:]]+to[[:space:]]+zstd' <<<"$CREATE_HELP"; then
   echo "error: store create --help advertises default zstd (forbidden)" >&2
   exit 1
@@ -141,17 +126,29 @@ if grep -Eiq -- '(^|[[:space:]])--fallback([[:space:]=]|$)' <<<"$PUSH_HELP"; the
 fi
 echo "  push: no --fallback OK"
 
-echo
-echo "==> demo_store_create_pull_compression presence (P1 O3; do not force-run long demo)"
-if [[ ! -f "$ROOT/scripts/demo_store_create_pull_compression.sh" ]]; then
-  echo "error: scripts/demo_store_create_pull_compression.sh missing" >&2
+# gc has no --path / --path-from (hard ban: shrinking keep-set mis-deletes)
+GC_HELP="$("$BIN" gc --help)"
+if grep -Eiq -- '(^|[[:space:]])--path([[:space:]=]|$)' <<<"$GC_HELP"; then
+  echo "error: gc --help advertises --path (gc --path is hard-banned)" >&2
   exit 1
 fi
-if [[ ! -x "$ROOT/scripts/demo_store_create_pull_compression.sh" ]]; then
-  echo "error: scripts/demo_store_create_pull_compression.sh not executable" >&2
+if grep -Fq -- '--path-from' <<<"$GC_HELP"; then
+  echo "error: gc --help advertises --path-from (forbidden)" >&2
   exit 1
 fi
-echo "  demo_store_create_pull_compression.sh present + executable OK"
+echo "  gc: no --path / --path-from OK"
 
 echo
-echo "OK: check_compat_1_8"
+echo "==> demo_path_from_doctor_verify presence (P1 O3; do not force-run long demo)"
+if [[ ! -f "$ROOT/scripts/demo_path_from_doctor_verify.sh" ]]; then
+  echo "error: scripts/demo_path_from_doctor_verify.sh missing" >&2
+  exit 1
+fi
+if [[ ! -x "$ROOT/scripts/demo_path_from_doctor_verify.sh" ]]; then
+  echo "error: scripts/demo_path_from_doctor_verify.sh not executable" >&2
+  exit 1
+fi
+echo "  demo_path_from_doctor_verify.sh present + executable OK"
+
+echo
+echo "OK: check_compat_1_9"
