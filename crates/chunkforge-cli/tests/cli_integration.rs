@@ -698,6 +698,17 @@ fn mount_help_lists_source_cache_name() {
     assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
 }
 
+/// Phase24-M6 / P1: mount --help admits File+Symlink (matches docs/mount.md).
+#[test]
+fn mount_help_mentions_symlink_file_plus_symlink() {
+    let m = run_ok(&["mount", "--help"]);
+    let s = String::from_utf8_lossy(&m.stdout);
+    assert!(
+        s.contains("File+Symlink") || (s.contains("Symlink") && s.contains("File")),
+        "mount --help must mention Symlink / File+Symlink (path filter honesty):\n{s}"
+    );
+}
+
 /// Phase 21 M2: `.cfidx` + any path/exclude flag → clear non-zero (≡ doctor/verify).
 #[test]
 fn mount_cfidx_plus_path_nonzero() {
@@ -10968,8 +10979,431 @@ fn make_help_lists_dry_run() {
     );
     let lower = s.to_lowercase();
     assert!(
-        lower.contains("seed") || lower.contains("pack") || lower.contains("recompress"),
-        "make --help --dry-run should nail ≠ seed / ≠ pack / ≠ recompress:\n{s}"
+        lower.contains("pack") || lower.contains("recompress") || lower.contains("path"),
+        "make --help should nail ≠ pack / ≠ recompress / ≠ path:\n{s}"
+    );
+}
+
+// --- Phase24-M6 / P1: make --seed <prior.cfidx> ---
+
+#[test]
+fn make_help_lists_seed() {
+    let help = run_ok(&["make", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(s.contains("--seed"), "make --help should list --seed:\n{s}");
+    assert!(
+        s.contains("PRIOR.cfidx") || s.contains(".cfidx"),
+        "make --help --seed should mention prior .cfidx:\n{s}"
+    );
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("pack") && (lower.contains("recompress") || lower.contains("path")),
+        "make --help should nail ≠ pack / ≠ recompress / ≠ path:\n{s}"
+    );
+    assert!(
+        s.contains("--seed-trust-mtime"),
+        "make --help should list --seed-trust-mtime:\n{s}"
+    );
+    assert!(
+        lower.contains("mtime")
+            && (lower.contains("warn")
+                || lower.contains("forged")
+                || lower.contains("risk")
+                || lower.contains("miss")),
+        "make --help --seed-trust-mtime should warn about mtime risk:\n{s}"
+    );
+}
+
+#[test]
+fn make_seed_trust_mtime_requires_seed() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let fail = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed-trust-mtime",
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("seed-trust-mtime")
+            || err.contains("--seed")
+            || err.to_lowercase().contains("require"),
+        "without --seed, --seed-trust-mtime must error; stderr={err}"
+    );
+}
+
+#[test]
+fn make_seed_same_content_reuses_chunk_table() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfidx");
+    let out = dir.path().join("out.cfidx");
+    let input = dir.path().join("blob.bin");
+    // Multi-chunk-friendly payload (larger than default min).
+    let payload = b"phase24-make-seed-reuse-payload-aaaa".repeat(4000);
+    fs::write(&input, &payload).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let prior_bytes = fs::read(&prior).unwrap();
+    let prior_idx = chunkforge_index::Index::decode(&prior_bytes).unwrap();
+    assert!(
+        !prior_idx.entries.is_empty(),
+        "fixture should produce ≥1 chunk"
+    );
+    let chunk_count_before = walkdir_chunk_count(&store);
+
+    let seeded = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&seeded.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make --seed json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(
+        v["seed_reused"], true,
+        "same content must seed_reused; got {v}"
+    );
+    assert_eq!(v["new"].as_u64(), Some(0));
+    assert_eq!(
+        v["reused"].as_u64(),
+        Some(prior_idx.entries.len() as u64),
+        "reused should equal prior chunk count; got {v}"
+    );
+    assert_eq!(v["chunks"].as_u64(), Some(prior_idx.entries.len() as u64));
+
+    let out_bytes = fs::read(&out).unwrap();
+    let out_idx = chunkforge_index::Index::decode(&out_bytes).unwrap();
+    assert_eq!(
+        out_idx.entries, prior_idx.entries,
+        "Reuse must copy prior chunk table exactly"
+    );
+    assert_eq!(out_idx.blob_blake3, prior_idx.blob_blake3);
+    assert_eq!(out_idx.total_size, prior_idx.total_size);
+    assert_eq!(
+        walkdir_chunk_count(&store),
+        chunk_count_before,
+        "Reuse must not put new .cnk files"
+    );
+
+    // verify green
+    run_ok(&[
+        "verify",
+        "--store",
+        store.to_str().unwrap(),
+        out.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn make_seed_content_change_rechunks() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfidx");
+    let out = dir.path().join("out.cfidx");
+    let input = dir.path().join("blob.bin");
+    fs::write(&input, b"make-seed-v1-same-len!!").unwrap(); // 22 bytes
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Same size, different content → must Rechunk (seed_reused=false).
+    fs::write(&input, b"make-seed-v2-same-len!!").unwrap();
+    let seeded = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&seeded.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make --seed json invalid: {e}; stdout={stdout}"));
+    assert_eq!(
+        v["seed_reused"], false,
+        "changed content must rechunk; got {v}"
+    );
+    assert!(
+        v.get("new").is_some() && v.get("reused").is_some(),
+        "rechunk json keeps new/reused; got {v}"
+    );
+
+    let prior_idx = chunkforge_index::Index::decode(&fs::read(&prior).unwrap()).unwrap();
+    let out_idx = chunkforge_index::Index::decode(&fs::read(&out).unwrap()).unwrap();
+    assert_ne!(
+        out_idx.blob_blake3, prior_idx.blob_blake3,
+        "rechunk must change blob_blake3"
+    );
+}
+
+#[test]
+fn make_omit_seed_equiv_prior_behavior_no_seed_reused_field() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let seeded = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&seeded.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert!(
+        v.get("seed_reused").is_none(),
+        "omit --seed must not emit seed_reused (1.13 field set); got {v}"
+    );
+    assert!(v.get("bytes").is_some() && v.get("chunks").is_some());
+    assert!(v.get("new").is_some() && v.get("reused").is_some());
+}
+
+#[test]
+fn make_seed_missing_prior_or_bad_magic_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    // Missing prior path.
+    let fail_missing = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        dir.path().join("no-such.cfidx").to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail_missing.stderr);
+    assert!(
+        !err.is_empty(),
+        "missing prior must be non-zero with stderr"
+    );
+
+    // Bad magic (not CFIDX / CFDIR).
+    let bogus = dir.path().join("bogus.cfidx");
+    fs::write(&bogus, b"NOTMAGIC").unwrap();
+    let fail_magic = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        bogus.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail_magic.stderr);
+    assert!(
+        err.to_lowercase().contains("magic")
+            || err.contains("CFIDX")
+            || err.contains("cfidx")
+            || err.contains("unrecognized"),
+        "bad magic must clear-error; stderr={err}"
+    );
+
+    // .cfdir prior rejected for make --seed.
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    let store2 = dir.path().join("store2");
+    run_ok(&[
+        "archive",
+        "--store",
+        store2.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let fail_cfdir = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        cfdir.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail_cfdir.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx") || err.contains("cfdir"),
+        "make --seed with .cfdir must clear-error; stderr={err}"
+    );
+}
+
+#[test]
+fn make_seed_missing_chunk_in_store_errors() {
+    let dir = tempdir().unwrap();
+    let store_a = dir.path().join("store_a");
+    let store_b = dir.path().join("store_b");
+    let prior = dir.path().join("prior.cfidx");
+    let out = dir.path().join("out.cfidx");
+    let input = dir.path().join("blob.bin");
+    fs::write(&input, b"seed-missing-chunk-payload").unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store_a.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    // Fresh empty store B — prior chunks not present.
+    run_ok(&["store", "create", "--store", store_b.to_str().unwrap()]);
+
+    let fail = run_fail(&[
+        "make",
+        "--store",
+        store_b.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("missing") && (err.contains("chunk") || err.contains("store")),
+        "Reuse with missing store chunks must clear-error; stderr={err}"
+    );
+    assert!(!out.exists(), "failed seed reuse must not write -o");
+}
+
+#[test]
+fn make_seed_trust_mtime_same_size_mtime_reuses() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfidx");
+    let out = dir.path().join("out.cfidx");
+    let input = dir.path().join("blob.bin");
+    fs::write(&input, b"trust-mtime-make-seed!!").unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Align input mtime to prior.cfidx file mtime so trust hits without blake3.
+    let prior_mtime = fs::metadata(&prior)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    restore_mtime_secs(&input, prior_mtime);
+
+    let seeded = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--seed-trust-mtime",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&seeded.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make --seed-trust-mtime json invalid: {e}; stdout={stdout}"));
+    assert_eq!(
+        v["seed_reused"], true,
+        "size+mtime match must Reuse under trust; got {v}"
+    );
+}
+
+#[test]
+fn make_dry_run_with_seed_reports_reuse_without_writing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let prior = dir.path().join("prior.cfidx");
+    let out = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        prior.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let chunk_count_before = walkdir_chunk_count(&store);
+
+    let dry = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--seed",
+        prior.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make dry-run --seed json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["seed_reused"], true);
+    assert_eq!(v["would_write"].as_u64(), Some(0));
+    assert!(!out.exists(), "dry-run must not write .cfidx");
+    assert_eq!(
+        walkdir_chunk_count(&store),
+        chunk_count_before,
+        "dry-run must not touch store chunks"
     );
 }
 

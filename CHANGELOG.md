@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`make --seed <PRIOR.cfidx>`** + **`--seed-trust-mtime`** (Phase24-M6 / P1):
+  mirror archive seed for single-file `.cfidx`. Size fast-reject + content
+  BLAKE3 via library `decide_seed` / `decide_seed_trust_mtime`; **Reuse** copies
+  prior chunk table (skip FastCDC), still writes new `-o`; missing prior chunks
+  in store → clear non-zero (no silent invent). **`--seed-trust-mtime`**
+  (requires `--seed`): size + mtime match (input vs prior `.cfidx` **file**
+  mtime — `.cfidx` has no embedded mtime) → Reuse without content hash (same
+  warning honesty as archive). Omit `--seed` ≡ 1.13 make. Dry-run + seed plans
+  reuse/rechunk without writing. Additive ops-json `seed_reused` when seeding.
+  **≠** pack / **≠** recompress / **≠** path. See `docs/ops-json.md`.
+- **mount help Symlink honesty** (Phase24-M6 / P1): CLI `--help` path/exclude
+  copy now says **File+Symlink** (filtered File∪Symlink + ancestor Dirs),
+  matching `docs/mount.md`. Runtime defaults unchanged.
+
+### Changed
+
+- `make --help` / dry-run narrative: **≠** pack / **≠** recompress / **≠** path
+  (seed is now a first-class opt-in flag, no longer a dry-run exclusion).
+
 
 ## [1.13.0] — 2026-09-30
 

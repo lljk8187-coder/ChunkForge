@@ -135,15 +135,20 @@ subcommand: persist a path-scoped subset of an existing `.cfdir` via library
 (fields: `ok` / `dry_run` / `input` / `output` / `files` / `dirs` /
 `symlinks` / `excluded`). Symlink keep → encode **v2**; all Symlinks filtered
 → encode **v1**. **Does not** open a store, walk a source tree, prune, or
-rewrite the input in place. **Hard ban unchanged:** **`gc --path`**, write
-mount, prune, pack, default zstd, push `--fallback`, mount `--progress`,
-default record. Responsibility nail: **`filter` ≠ prune ≠ `gc --path` ≠ sync
-≠ write mount ≠ pack ≠ `archive --path`** (latter needs a source-tree walk).
-Warning: feeding a filtered listing to `gc` uses **that listing's** refs —
-still **no** `gc --path`. Docs: [filter.md](filter.md); smoke:
+rewrite the input in place. P1 (M6): **`make --seed <PRIOR.cfidx>`** /
+**`--seed-trust-mtime`** (omit `--seed` ≡ 1.13; Reuse copies prior chunk
+table / skips FastCDC; missing store chunks → clear non-zero; additive
+ops-json `seed_reused`; **≠** pack / **≠** recompress / **≠** path) + mount
+CLI help File+Symlink honesty (runtime unchanged). **Hard ban unchanged:**
+**`gc --path`**, write mount, prune, pack, default zstd, push `--fallback`,
+mount `--progress`, default record. Responsibility nail: **`filter` ≠ prune ≠
+`gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`** (latter needs a
+source-tree walk). Warning: feeding a filtered listing to `gc` uses **that
+listing's** refs — still **no** `gc --path`. Docs: [filter.md](filter.md) /
+[ops-json.md](ops-json.md); smoke:
 [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
-Gate **`check_compat_1_13.sh`** lands in **M5** (note-only until then).
-Defaults of existing commands stay ≡ **1.13.0**.
+Gate **`check_compat_1_13.sh`** (M5). Defaults of existing commands stay ≡
+**1.13.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [filter.md](filter.md), [perf.md](perf.md), [sigv4.md](sigv4.md),

@@ -9,9 +9,10 @@ use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
-    UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives_with_progress, entry_length,
-    filter_dir_archive, hash_reader, judge_extract_unchanged_opts, load_exclude_file,
-    load_path_file, seed_file_map, validate_archive_path,
+    UnchangedVerdict, decide_seed_for_entry_ex, decide_seed_trust_mtime,
+    diff_dir_archives_with_progress, entry_length, filter_dir_archive, hash_reader,
+    judge_extract_unchanged_opts, load_exclude_file, load_path_file, seed_file_map,
+    validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -51,10 +52,15 @@ enum Commands {
     /// (`make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`).
     /// **`--format json`**: one JSON object on stdout (`ok`, `bytes`, `chunks`,
     /// `new`, `reused`); no duplicate text summary; exit codes are
-    /// format-independent. With **`--dry-run`**, FastCDC still runs and
-    /// existing-store `has()` accounting produces `would_write`/`would_reuse`
-    /// (no store create/put, no `.cfidx` write). Omit `--dry-run` ≡ today's
-    /// real write path. **≠** seed / **≠** pack / **≠** recompress.
+    /// format-independent. Optional **`--seed <PRIOR.cfidx>`** reuses the prior
+    /// chunk table when size + content BLAKE3 match (skip FastCDC; still write
+    /// new `-o`); missing prior chunks in store → clear non-zero (no silent
+    /// invent). Optional **`--seed-trust-mtime`** (requires `--seed`): size +
+    /// mtime match (input file vs prior `.cfidx` **file** mtime — `.cfidx` has
+    /// no embedded mtime) → Reuse without content hash. Omit `--seed` ≡ 1.13
+    /// make. With **`--dry-run`**, plan-only (no store create/put, no `.cfidx`
+    /// write); with seed, reports reuse/rechunk without writing. Still **no**
+    /// path 四件套. **≠** pack / **≠** recompress / **≠** path.
     Make {
         /// Local CAS store directory (created if missing; not written in `--dry-run`)
         #[arg(long)]
@@ -91,16 +97,34 @@ enum Commands {
         progress: bool,
         /// Max concurrent store puts **after** FastCDC finishes (default 1 =
         /// serial ≡ 1.8). Speeds post-chunk store put / on-disk encoding
-        /// (zstd) only; FastCDC cut-points remain serial.
+        /// (zstd) only; FastCDC cut-points remain serial. Ignored on seed
+        /// **Reuse** (no FastCDC / no put).
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
-        /// Plan-only: always read input + FastCDC + count chunks/bytes. If the
-        /// store exists, open for `has()` accounting → `would_write` /
-        /// `would_reuse` (SkippedExists vs missing). If missing, do **not**
-        /// create; treat unique chunks as would_write. Does **not** put chunks
-        /// or write `.cfidx`. **≠** seed / **≠** pack / **≠** recompress.
+        /// Plan-only: read input (+ FastCDC on rechunk path) + count
+        /// chunks/bytes. With `--seed`, plan reuse/rechunk without writing. If
+        /// the store exists, open for `has()` accounting → `would_write` /
+        /// `would_reuse`. If missing, do **not** create; treat unique chunks as
+        /// would_write (seed Reuse with missing chunks → clear non-zero). Does
+        /// **not** put chunks or write `.cfidx`. **≠** pack / **≠** recompress /
+        /// **≠** path.
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Reuse an unchanged blob's chunk table from a prior `.cfidx` via
+        /// content fingerprint (BLAKE3) with size fast-reject; changed content
+        /// → rechunk (FastCDC + put). On Reuse: skip FastCDC, copy prior chunk
+        /// table into new `-o`; prior chunks must be `has()` in store or clear
+        /// non-zero (do not silently invent). Omit ≡ 1.13 make. **≠** pack /
+        /// **≠** recompress / **≠** path.
+        #[arg(long = "seed", value_name = "PRIOR.cfidx")]
+        seed: Option<PathBuf>,
+        /// With `--seed`: if size and mtime both match (input file mtime vs
+        /// prior `.cfidx` **file** mtime — `.cfidx` has no embedded mtime),
+        /// reuse without content BLAKE3. Default off (≡ 1.13 content path).
+        /// WARNING: forged or incorrectly preserved mtimes can miss content
+        /// changes — prefer content fingerprint unless you accept that risk.
+        #[arg(long = "seed-trust-mtime", requires = "seed")]
+        seed_trust_mtime: bool,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -506,9 +530,9 @@ enum Commands {
     /// Mount a `.cfidx` (single file) or `.cfdir` (directory tree) read-only (Linux + fuse3)
     ///
     /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from`
-    /// restrict which `.cfdir` File paths appear in the FUSE tree (filtered File
-    /// entries + ancestor Dirs). Default: no flags ⇒ full tree (≡ 1.10.0).
-    /// `.cfidx` + any path/exclude flag (including `--path-from` /
+    /// restrict which `.cfdir` **File+Symlink** paths appear in the FUSE tree
+    /// (filtered File∪Symlink + ancestor Dirs). Default: no flags ⇒ full tree
+    /// (≡ 1.10.0). `.cfidx` + any path/exclude flag (including `--path-from` /
     /// `--exclude-from`) → clear non-zero error. Still read-only; orthogonal to
     /// `--fallback` / `--cache*` / prefetch / SigV4. Not write-mount / prune /
     /// gc `--path` / sync.
@@ -563,17 +587,17 @@ enum Commands {
             value_parser = clap::value_parser!(u32).range(1..=2)
         )]
         prefetch_chunks: u32,
-        /// Include only `.cfdir` File paths under this prefix (repeatable; OR).
+        /// Include only `.cfdir` File+Symlink paths under this prefix (repeatable; OR).
         /// With any `--path`, a candidate must match at least one before
         /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.10.0 full tree).
-        /// Ancestor Dir entries retained for kept Files. With `.cfidx` → clear
-        /// non-zero error.
+        /// Ancestor Dir entries retained for kept File/Symlink leaves. With
+        /// `.cfidx` → clear non-zero error.
         #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
         paths: Vec<String>,
-        /// Exclude `.cfdir` File paths matching this pattern (repeatable): exact,
-        /// trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`).
-        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
-        /// With `.cfidx` → clear non-zero error.
+        /// Exclude `.cfdir` File+Symlink paths matching this pattern (repeatable):
+        /// exact, trailing `/` directory prefix, or single edge `*` (`*.o`,
+        /// `temp*`). Illegal middle `*` / `**` → clear error. Applied after
+        /// `--path`. With `.cfidx` → clear non-zero error.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
         excludes: Vec<String>,
         /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
@@ -1348,6 +1372,8 @@ fn run() -> Result<()> {
             progress,
             jobs,
             dry_run,
+            seed,
+            seed_trust_mtime,
         } => {
             let jobs = parse_jobs(jobs)?;
             cmd_make(
@@ -1360,6 +1386,7 @@ fn run() -> Result<()> {
                 progress,
                 jobs,
                 dry_run,
+                seed.as_deref().map(|p| (p, seed_trust_mtime)),
             )
         }
         Commands::Archive {
@@ -2210,9 +2237,31 @@ fn cmd_make(
     progress: bool,
     jobs: usize,
     dry_run: bool,
+    seed: Option<(&Path, bool)>,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
-    let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
+
+    let input_meta =
+        fs::metadata(input).with_context(|| format!("stat input {}", input.display()))?;
+    if !input_meta.is_file() {
+        bail!(
+            "make input {} is not a regular file (or is unreadable)",
+            input.display()
+        );
+    }
+    let source_size = input_meta.len();
+    let source_mtime_secs = file_mtime_secs(&input_meta);
+
+    // Load prior `.cfidx` for --seed (fail non-zero on bad magic / decode / .cfdir).
+    let (prior_index, prior_mtime_secs, seed_trust_mtime, seeding) = match seed {
+        Some((seed_path, trust)) => {
+            let prior = load_seed_cfidx(seed_path)?;
+            let prior_meta = fs::metadata(seed_path)
+                .with_context(|| format!("stat seed {}", seed_path.display()))?;
+            (Some(prior), file_mtime_secs(&prior_meta), trust, true)
+        }
+        None => (None, 0u64, false, false),
+    };
 
     // Dry-run: open existing store for has() accounting only; do not create / put / write .cfidx.
     // `--compression` is ignored for create under dry-run (never creates).
@@ -2230,17 +2279,159 @@ fn cmd_make(
         Some(open_or_create_store(store_path, compression)?)
     };
 
-    // FastCDC cut-points stay serial (StreamCDC / single-file). `--jobs` only
-    // parallelizes post-chunk store put / on-disk encoding (zstd).
-    let chunks = chunk_bytes(&data, &params);
-    let blob_blake3 = ChunkId::hash(&data);
-
     // Progress granularity (Phase17-M4 / G4): make always processes exactly one
     // input file → TOTAL=1 and a single tick after the file is fully chunked,
-    // stored, and indexed. (Per-chunk ticks were considered; 1/1 keeps the
-    // unit aligned with the CLI's single-file contract and avoids empty-file
-    // TOTAL=0 edge cases.) Dry-run ticks after accounting (no put / no index).
+    // stored, and indexed. Dry-run / seed-Reuse ticks after accounting (no put
+    // on dry-run; no FastCDC on Reuse).
     let prog = ProgressReporter::new(progress, "make", Some(1));
+
+    // --- Seed reuse path (size fast-reject + BLAKE3 / optional trust-mtime) ---
+    if let Some(ref prior) = prior_index {
+        let mut f =
+            File::open(input).with_context(|| format!("open {} for seed hash", input.display()))?;
+        let decision = decide_seed_trust_mtime(
+            prior.total_size,
+            &prior.blob_blake3,
+            prior_mtime_secs,
+            source_size,
+            source_mtime_secs,
+            &mut f,
+            seed_trust_mtime,
+        )
+        .map_err(|e| anyhow::anyhow!("seed decide for {}: {e}", input.display()))?;
+
+        if decision == SeedDecision::Reuse {
+            // Prior chunks must be present in store — clear non-zero if missing
+            // (do not silently invent / do not fall through to inventing).
+            let missing: Vec<String> = match store.as_ref() {
+                Some(s) => prior
+                    .entries
+                    .iter()
+                    .filter(|e| !s.has(&e.chunk_id))
+                    .map(|e| e.chunk_id.to_string())
+                    .collect(),
+                None => prior
+                    .entries
+                    .iter()
+                    .map(|e| e.chunk_id.to_string())
+                    .collect(),
+            };
+            if !missing.is_empty() {
+                bail!(
+                    "make: seed reuse: missing {} chunk{} in store for {} \
+                     (refusing to invent; first missing: {}). Restore the store \
+                     or omit --seed to rechunk.",
+                    missing.len(),
+                    if missing.len() == 1 { "" } else { "s" },
+                    input.display(),
+                    missing.first().map(|s| s.as_str()).unwrap_or("?"),
+                );
+            }
+
+            let chunk_n = prior.entries.len();
+            prog.tick();
+
+            if dry_run {
+                match format {
+                    CliFormat::Text => {
+                        eprintln!(
+                            "make: dry-run: {} bytes, {} chunk{} (would_write=0, would_reuse={}; \
+                             seed_reused=true); no store/.cfidx written (would write {})",
+                            source_size,
+                            chunk_n,
+                            if chunk_n == 1 { "" } else { "s" },
+                            chunk_n,
+                            output.display()
+                        );
+                    }
+                    CliFormat::Json => {
+                        let obj = serde_json::json!({
+                            "ok": true,
+                            "dry_run": true,
+                            "bytes": source_size,
+                            "chunks": chunk_n,
+                            "would_write": 0usize,
+                            "would_reuse": chunk_n,
+                            "seed_reused": true,
+                        });
+                        println!("{obj}");
+                    }
+                }
+                return Ok(());
+            }
+
+            let store = store.expect("non-dry-run make always opens or creates the store");
+            let mut flags = prior.flags;
+            if !matches!(store.compression(), Compression::None) {
+                flags |= FLAG_CHUNKS_COMPRESSED_IN_STORE;
+            } else {
+                flags &= !FLAG_CHUNKS_COMPRESSED_IN_STORE;
+            }
+
+            let index = if chunk_n == 0 {
+                let mut empty = Index::empty(prior.params);
+                empty.flags = flags;
+                empty
+            } else {
+                Index::new(
+                    flags,
+                    prior.params,
+                    prior.total_size,
+                    prior.blob_blake3,
+                    prior.entries.clone(),
+                )
+                .map_err(|e| anyhow::anyhow!("build index from seed: {e}"))?
+            };
+
+            if let Some(parent) = output.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("create parent dir {}", parent.display()))?;
+                }
+            }
+            let mut file = File::create(output)
+                .with_context(|| format!("create index {}", output.display()))?;
+            index
+                .write_to(&mut file)
+                .map_err(|e| anyhow::anyhow!("write index: {e}"))?;
+            file.sync_all()
+                .with_context(|| format!("fsync index {}", output.display()))?;
+
+            match format {
+                CliFormat::Text => {
+                    eprintln!(
+                        "make: wrote {} ({} bytes, {} chunk{}; new=0, reused={}; \
+                         seed_reused=true) → store {}",
+                        output.display(),
+                        source_size,
+                        chunk_n,
+                        if chunk_n == 1 { "" } else { "s" },
+                        chunk_n,
+                        store_path.display()
+                    );
+                }
+                CliFormat::Json => {
+                    let obj = serde_json::json!({
+                        "ok": true,
+                        "bytes": source_size,
+                        "chunks": chunk_n,
+                        "new": 0usize,
+                        "reused": chunk_n,
+                        "seed_reused": true,
+                    });
+                    println!("{obj}");
+                }
+            }
+            return Ok(());
+        }
+        // SeedDecision::Rechunk → fall through to FastCDC path below.
+    }
+
+    // FastCDC cut-points stay serial (StreamCDC / single-file). `--jobs` only
+    // parallelizes post-chunk store put / on-disk encoding (zstd).
+    let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
+    let chunks = chunk_bytes(&data, &params);
+    let blob_blake3 = ChunkId::hash(&data);
 
     if dry_run {
         let mut would_write = 0usize;
@@ -2258,20 +2449,34 @@ fn cmd_make(
         prog.tick();
         match format {
             CliFormat::Text => {
-                eprintln!(
-                    "make: dry-run: {} bytes, {} chunk{} (would_write={}, would_reuse={});                      no store/.cfidx written (would write {})",
-                    data.len(),
-                    chunks.len(),
-                    if chunks.len() == 1 { "" } else { "s" },
-                    would_write,
-                    would_reuse,
-                    output.display()
-                );
+                if seeding {
+                    eprintln!(
+                        "make: dry-run: {} bytes, {} chunk{} (would_write={}, would_reuse={}; \
+                         seed_reused=false); no store/.cfidx written (would write {})",
+                        data.len(),
+                        chunks.len(),
+                        if chunks.len() == 1 { "" } else { "s" },
+                        would_write,
+                        would_reuse,
+                        output.display()
+                    );
+                } else {
+                    eprintln!(
+                        "make: dry-run: {} bytes, {} chunk{} (would_write={}, would_reuse={}); \
+                         no store/.cfidx written (would write {})",
+                        data.len(),
+                        chunks.len(),
+                        if chunks.len() == 1 { "" } else { "s" },
+                        would_write,
+                        would_reuse,
+                        output.display()
+                    );
+                }
             }
             CliFormat::Json => {
                 // Mirror archive dry-run: would_* instead of new/reused (avoid
                 // misleading written-field names on plan-only).
-                let obj = serde_json::json!({
+                let mut obj = serde_json::json!({
                     "ok": true,
                     "dry_run": true,
                     "bytes": data.len() as u64,
@@ -2279,6 +2484,11 @@ fn cmd_make(
                     "would_write": would_write,
                     "would_reuse": would_reuse,
                 });
+                if seeding {
+                    obj.as_object_mut()
+                        .expect("object")
+                        .insert("seed_reused".into(), serde_json::json!(false));
+                }
                 println!("{obj}");
             }
         }
@@ -2355,25 +2565,44 @@ fn cmd_make(
 
     match format {
         CliFormat::Text => {
-            eprintln!(
-                "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}) → store {}",
-                output.display(),
-                data.len(),
-                chunks.len(),
-                if chunks.len() == 1 { "" } else { "s" },
-                new_chunks,
-                reused_chunks,
-                store_path.display()
-            );
+            if seeding {
+                eprintln!(
+                    "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}; \
+                     seed_reused=false) → store {}",
+                    output.display(),
+                    data.len(),
+                    chunks.len(),
+                    if chunks.len() == 1 { "" } else { "s" },
+                    new_chunks,
+                    reused_chunks,
+                    store_path.display()
+                );
+            } else {
+                eprintln!(
+                    "make: wrote {} ({} bytes, {} chunk{}; new={}, reused={}) → store {}",
+                    output.display(),
+                    data.len(),
+                    chunks.len(),
+                    if chunks.len() == 1 { "" } else { "s" },
+                    new_chunks,
+                    reused_chunks,
+                    store_path.display()
+                );
+            }
         }
         CliFormat::Json => {
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "ok": true,
                 "bytes": data.len() as u64,
                 "chunks": chunks.len(),
                 "new": new_chunks,
                 "reused": reused_chunks,
             });
+            if seeding {
+                obj.as_object_mut()
+                    .expect("object")
+                    .insert("seed_reused".into(), serde_json::json!(false));
+            }
             println!("{obj}");
         }
     }
@@ -2941,6 +3170,21 @@ fn archive_rechunk_file(
         rechunked: true,
         seed_missing: false,
     })
+}
+
+/// Load a prior `.cfidx` for `make --seed` (rejects `.cfdir` / bad magic / decode).
+fn load_seed_cfidx(path: &Path) -> Result<Index> {
+    match peek_listing_kind(path)? {
+        ListingKind::Index => {}
+        ListingKind::DirArchive => bail!(
+            "make --seed requires a .cfidx prior (got .cfdir at {})",
+            path.display()
+        ),
+    }
+    let idx = load_index(path)?;
+    idx.validate()
+        .map_err(|e| anyhow::anyhow!("seed index structure {}: {e}", path.display()))?;
+    Ok(idx)
 }
 
 /// Load a prior `.cfdir` for `--seed` (rejects `.cfidx` / bad magic / decode errors).
