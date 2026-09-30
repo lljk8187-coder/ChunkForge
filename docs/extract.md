@@ -61,7 +61,7 @@ Matching is orthogonal to `--force` / `--skip-*` / `--dry-run` / `--format` /
 |---|---|
 | No `--skip-unchanged` / no `--dry-run` | `extract: wrote <out> (N files, D dirs)` — **0.8.0 / 1.0.0-compatible** |
 | With `--skip-unchanged` (write path) | `extract: <out> skipped=S wrote=W dirs=D` |
-| With `--dry-run` | `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…` |
+| With `--dry-run` | `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=… would_symlinks=…` (Phase23-M6 additive `would_symlinks`) |
 
 ### `--format json` (stdout; Phase 11 M2)
 
@@ -70,7 +70,7 @@ One JSON **object** on stdout on success. Failures still go through anyhow (non-
 | Mode | Fields |
 |---|---|
 | Write path | `{"ok":true,"dry_run":false,"skipped":S,"wrote":W,"dirs":D,"wrote_symlinks":N,"symlinks":N}` — always includes `skipped`/`wrote`/`dirs` (`skipped=0` when `--skip-unchanged` is off). Phase22 additive `wrote_symlinks` / `symlinks` (same count; 0 when listing has no Symlink) |
-| `--dry-run` | `{"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…}` |
+| `--dry-run` | `{"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…,"would_symlinks":N}` — Phase23-M6 additive `would_symlinks` (**always** present; **0** when no Symlink would-write). `would_write` still includes symlink would-writes (≡ 1.12) |
 
 ## `--skip-unchanged` / `--force` / `--dry-run` overlap
 
@@ -104,8 +104,13 @@ When the listing contains `DirEntryKind::Symlink` (`format_version=2` from
 - Path filter applies to Symlink paths like Files; filtered-out symlinks are
   simply not created — still **not** prune.
 - JSON write path adds additive `wrote_symlinks` / `symlinks` (same count).
+- Dry-run JSON adds additive **`would_symlinks`** (Phase23-M6; always present,
+  incl. **0**). Counts Symlink entries classified as would-write; does **not**
+  change `would_write` (still includes those cases ≡ 1.12). Absolute / empty /
+  conflict → `would_fail`, not `would_symlinks`.
 
-**`extract` Symlink ≠ write mount ≠ follow ≠ pack ≠ prune ≠ `gc --path`.**
+**`extract` Symlink / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ prune ≠
+`gc --path` ≠ sync.**
 
 ## Explicitly **no prune** (`path` ≠ prune ≠ sync; `fallback` ≠ cache ≠ sync)
 
@@ -159,7 +164,7 @@ chunkforge extract --store ./store -o /tmp/out --format json release.cfdir
 # → {"ok":true,"dry_run":false,"skipped":0,"wrote":W,"dirs":D}
 chunkforge extract --store ./store -o /tmp/out \
   --skip-unchanged --dry-run --format json release.cfdir
-# → {"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…}
+# → {"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…,"would_symlinks":…}
 
 # HTTP source + retries (skipped files still issue zero GET)
 chunkforge extract --source http://127.0.0.1:8765 \

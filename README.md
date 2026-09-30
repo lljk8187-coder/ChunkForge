@@ -28,7 +28,7 @@
 | **Phase 20** | **1.10.0** | **`--path-from`** (`load_path_file`) on archive/extract/push/pull/diff/doctor/verify + **`doctor`/`verify` path scope** (default ≡ 1.9 full) + docs + `demo_path_from_doctor_verify` + **`check_compat_1_9`** + P1 **`push` local/`file://` dest** (Store as `ChunkSink`; single dest; create **none**); **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**; **push local ≠ fallback**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub |
 | **Phase 21** | **1.11.0** | **`mount` path quartet** (`--path`/`--exclude`/`--exclude-from`/`--path-from` → `filter_dir_archive` → DirFs; default ≡ 1.10 full tree; `.cfidx`+path → non-zero) + docs + `demo_mount_path` + **`check_compat_1_10`** + P1 **`push --compression`** + P1 **`store list`** (+ thin docs); **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub / mount `--progress` |
 | **Phase 22** | **1.12.0** | **`.cfdir` Symlink opt-in** (`archive --symlinks skip\|record`; default **skip** ≡ 1.11 + write v1; record → `KIND_SYMLINK` / `format_version=2`; extract materialize; DirFs `readlink`; still RO) + docs + `demo_symlink` + **`check_compat_1_11`** + P1 **`make --dry-run`**; **`record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
-| **Phase 23** | **→ 1.13.0** (in progress; workspace still **1.12.0**) | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12 tree skip+warn; **record** → ephemeral Symlink; absolute/empty → non-zero; **no** follow; clap requires `--tree`) + docs/diff listing↔listing File+Symlink + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh) + **`check_compat_1_12`**; **`diff --tree --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` / version bump (M7) |
+| **Phase 23** | **→ 1.13.0** (in progress; workspace still **1.12.0**) | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12; **record** → ephemeral Symlink; clap requires `--tree`) + docs + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh) + **`check_compat_1_12`** + P1 extract dry-run **`would_symlinks`** (M6; `would_write` still includes symlink ≡ 1.12); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` / version bump (M7) |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -1241,7 +1241,7 @@ read this section as claiming **1.13.0** is already released.
 **Responsibility:** **`diff --tree --symlinks record` ≠ write mount ≠ follow
 ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**.
 
-**Delivered so far (M1–M5):**
+**Delivered so far (M1–M6):**
 
 - `diff --symlinks skip|record` + ephemeral tree record path (M1).
 - Path quartet orthogonal + progress honesty for Symlink ticks (M2).
@@ -1250,9 +1250,12 @@ read this section as claiming **1.13.0** is already released.
   (M4); [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md) /
   [docs/perf.md](docs/perf.md).
 - Gate **`check_compat_1_12.sh`** (M5; calls 1_11; requires executable).
+- P1 extract dry-run additive **`would_symlinks`** (M6; `would_write` still
+  includes symlink would-writes ≡ 1.12; always emit incl. 0) —
+  [docs/ops-json.md](docs/ops-json.md) / [docs/extract.md](docs/extract.md);
+  **`would_symlinks` ≠ prune ≠ sync ≠ pack ≠ write mount**.
 
-**Still ahead:** P1 extract dry-run `would_symlinks` / thin docs (M6,
-optional); workspace / CLI **1.13.0** bump (M7).
+**Still ahead:** workspace / CLI **1.13.0** bump (M7).
 
 **Non-goals (unchanged):** packfile; write mount / COW; bidirectional sync;
 extract prune / `--delete`; **`gc --path`**; remote scrub; full aws-sdk /

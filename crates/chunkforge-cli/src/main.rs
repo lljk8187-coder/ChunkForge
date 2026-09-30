@@ -221,7 +221,7 @@ enum Commands {
     /// (requires `--skip-unchanged`), size+mtime match skips content BLAKE3.
     /// With `--dry-run`, no target paths are created or modified (output root
     /// included); stderr reports would_skip / would_write / would_dirs /
-    /// would_fail for the **filtered** set and exit is 0 unless the listing
+    /// would_fail / would_symlinks for the **filtered** set and exit is 0 unless the listing
     /// is invalid. Default **`--format text`** (≡ 1.0.0): summaries on stderr.
     /// **`--format json`**: one JSON object on stdout (`ok` / `skipped` /
     /// `wrote` / `dirs`, or dry-run `would_*`); exit codes are format-
@@ -297,7 +297,9 @@ enum Commands {
         /// `would_write` (existing conflicts without `--force` → `would_fail`).
         /// With `--skip-unchanged`, only reads local dests for size+BLAKE3
         /// judgment. Text format stderr:
-        /// `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=…`.
+        /// `extract: dry-run: would_skip=… would_write=… would_dirs=… would_fail=… would_symlinks=…`.
+        /// Symlink would-writes also increment `would_write` (≡ 1.12); additive
+        /// `would_symlinks` counts those cases (always present in JSON, incl. 0).
         /// Exit **0** when the listing is valid (even if `would_fail>0`).
         #[arg(long = "dry-run")]
         dry_run: bool,
@@ -4502,6 +4504,12 @@ fn cmd_extract(
 /// presence only (`would_write` vs `would_fail`). With skip: only read local
 /// dests for size+BLAKE3 judgment. Exit **0** when listing is valid (even if
 /// `would_fail > 0`).
+///
+/// Phase23-M6: additive `would_symlinks` counts Symlink entries classified as
+/// would-write (missing dest, or existing symlink + `--force`). `would_write`
+/// still includes those cases (≡ 1.12). Absolute/empty/conflict → `would_fail`
+/// only. Always emit `would_symlinks` in JSON (incl. **0**). ≠ prune ≠ sync ≠
+/// pack ≠ write mount.
 #[allow(clippy::too_many_arguments)]
 fn cmd_extract_dry_run(
     archive: &DirArchive,
@@ -4527,6 +4535,10 @@ fn cmd_extract_dry_run(
     let mut would_write = 0usize;
     let mut would_dirs = 0usize;
     let mut would_fail = 0usize;
+    // Phase23-M6 / P1: additive counter for Symlink entries classified as
+    // would-write (symmetry with write-path `wrote_symlinks`). Does **not**
+    // change `would_write` (still includes symlink writes ≡ 1.12).
+    let mut would_symlinks = 0usize;
 
     // Same File-unit progress as real extract (PathFilter after; Dir not counted).
     let file_total = archive
@@ -4558,6 +4570,7 @@ fn cmd_extract_dry_run(
                 match fs::symlink_metadata(&dest) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         would_write += 1;
+                        would_symlinks += 1;
                     }
                     Err(_) => {
                         would_fail += 1;
@@ -4575,6 +4588,7 @@ fn cmd_extract_dry_run(
                                 would_skip += 1;
                             } else if force {
                                 would_write += 1;
+                                would_symlinks += 1;
                             } else {
                                 would_fail += 1;
                             }
@@ -4643,10 +4657,11 @@ fn cmd_extract_dry_run(
     }
 
     // G3 / M3: nailed field names (would_fail included — dry-run conflict path).
+    // Phase23-M6: always emit additive `would_symlinks` (0 when none / no Symlink).
     match format {
         CliFormat::Text => {
             eprintln!(
-                "extract: dry-run: would_skip={would_skip} would_write={would_write} would_dirs={would_dirs} would_fail={would_fail}"
+                "extract: dry-run: would_skip={would_skip} would_write={would_write} would_dirs={would_dirs} would_fail={would_fail} would_symlinks={would_symlinks}"
             );
         }
         CliFormat::Json => {
@@ -4657,6 +4672,7 @@ fn cmd_extract_dry_run(
                 "would_write": would_write,
                 "would_dirs": would_dirs,
                 "would_fail": would_fail,
+                "would_symlinks": would_symlinks,
             });
             apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");

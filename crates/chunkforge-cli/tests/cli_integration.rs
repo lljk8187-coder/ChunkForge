@@ -16100,3 +16100,231 @@ fn diff_listing_symlink_target_change_is_changed() {
         "target change must not be meta_changed; json={stdout}"
     );
 }
+
+// --- Phase23-M6 / P1: extract dry-run additive would_symlinks ---
+
+#[test]
+fn extract_dry_run_json_would_symlinks_counts_symlink_writes() {
+    // 1 File + 1 Symlink, empty out → would_write=2 (≡ 1.12 includes symlink),
+    // would_symlinks=1. Always emit would_symlinks.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("pkgs")).unwrap();
+        fs::write(src.join("pkgs/a.txt"), b"hello-sym-dry\n").unwrap();
+        symlink("a.txt", src.join("pkgs/link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        let out = dir.path().join("out-missing");
+        assert!(!out.exists());
+        let result = run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(
+            v["would_write"].as_u64(),
+            Some(2),
+            "would_write must still include symlink write (≡ 1.12); json={stdout}"
+        );
+        assert_eq!(
+            v["would_symlinks"].as_u64(),
+            Some(1),
+            "would_symlinks == Symlink would-writes; json={stdout}"
+        );
+        assert_eq!(v["would_fail"].as_u64(), Some(0), "json={stdout}");
+        assert!(!out.exists(), "dry-run must not create output root");
+    }
+}
+
+#[test]
+fn extract_dry_run_json_would_symlinks_zero_for_file_only() {
+    // File-only listing → would_symlinks == 0 and field **present**.
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"file-only\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("files.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out");
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        listing.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert!(
+        v.get("would_symlinks").is_some(),
+        "would_symlinks must always be present (even 0); json={stdout}"
+    );
+    assert_eq!(
+        v["would_symlinks"].as_u64(),
+        Some(0),
+        "file-only → would_symlinks=0; json={stdout}"
+    );
+    assert_eq!(
+        v["would_write"].as_u64(),
+        Some(1),
+        "one file would_write; json={stdout}"
+    );
+}
+
+#[test]
+fn extract_dry_run_json_skip_unchanged_same_symlink_target_not_in_would_symlinks() {
+    // After a real extract, dry-run --skip-unchanged on same symlink target →
+    // would_skip++, would_symlinks stays 0 (not counted as would-write).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("pkgs")).unwrap();
+        fs::write(src.join("pkgs/a.txt"), b"skip-sym\n").unwrap();
+        symlink("a.txt", src.join("pkgs/link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        let out = dir.path().join("out");
+        run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+
+        let result = run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--skip-unchanged",
+            "--dry-run",
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert!(
+            v["would_skip"].as_u64().unwrap_or(0) >= 2,
+            "file + same-target symlink should skip; json={stdout}"
+        );
+        assert_eq!(
+            v["would_write"].as_u64(),
+            Some(0),
+            "no would_write when all skip; json={stdout}"
+        );
+        assert_eq!(
+            v["would_symlinks"].as_u64(),
+            Some(0),
+            "skip-unchanged same target must not increment would_symlinks; json={stdout}"
+        );
+    }
+}
+
+#[test]
+fn extract_dry_run_json_absolute_symlink_target_is_would_fail_not_would_symlinks() {
+    // Absolute target in listing → would_fail, not would_symlinks.
+    #[cfg(unix)]
+    {
+        use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        run_ok(&["store", "create", "--store", store.to_str().unwrap()]);
+
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "bad".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "/etc/passwd".into(),
+                },
+            }],
+        )
+        .unwrap();
+        let listing = dir.path().join("abs.cfdir");
+        fs::write(&listing, arch.encode().unwrap()).unwrap();
+
+        let out = dir.path().join("out");
+        let result = run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(
+            v["would_fail"].as_u64(),
+            Some(1),
+            "absolute target → would_fail; json={stdout}"
+        );
+        assert_eq!(
+            v["would_symlinks"].as_u64(),
+            Some(0),
+            "absolute → not would_symlinks; json={stdout}"
+        );
+        assert_eq!(v["would_write"].as_u64(), Some(0), "json={stdout}");
+    }
+}
