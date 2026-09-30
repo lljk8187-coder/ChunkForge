@@ -229,8 +229,13 @@ if ! echo "$VER" | grep -F '1.9.0' >/dev/null; then
   echo "error: expected chunkforge 1.9.0; got $VER" >&2
   exit 1
 fi
-if [[ -f "$ROOT/scripts/check_compat_1_8.sh" ]]; then
-  echo "error: check_compat_1_8.sh must not exist yet (M5)" >&2
+COMPAT="$ROOT/scripts/check_compat_1_8.sh"
+if [[ ! -f "$COMPAT" ]]; then
+  echo "error: check_compat_1_8.sh must exist (1.9.0 / M5+)" >&2
+  exit 1
+fi
+if [[ ! -x "$COMPAT" ]]; then
+  echo "error: check_compat_1_8.sh must be executable" >&2
   exit 1
 fi
 
