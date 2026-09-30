@@ -805,6 +805,34 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum StoreCommands {
+    /// Create an empty local CAS store (`Store::create`)
+    ///
+    /// Writes `meta.toml` + `chunks/` under `--store`. If `meta.toml` already
+    /// exists → clear non-zero error (does **not** overwrite). Omit
+    /// `--compression` ≡ `none` (≡ 1.8 create default). **Not** recompress /
+    /// trim / change compression on an existing store. On-disk zstd is **not**
+    /// HTTP wire compression / Content-Encoding.
+    /// Default **`--format text`**: one stderr summary line.
+    /// **`--format json`**: one JSON object on stdout
+    /// (`ok` / `store` / `compression`); no duplicate text summary. Exit codes
+    /// are format-independent.
+    Create {
+        /// Local CAS store directory to create
+        #[arg(long)]
+        store: PathBuf,
+        /// On-disk chunk compression for this **new** store only (`none`|`zstd`;
+        /// case-insensitive). Omit ≡ `none` (≡ 1.8). Disk zstd is **not** HTTP
+        /// wire compression / Content-Encoding. Does not alter an existing store.
+        #[arg(
+            long = "compression",
+            value_name = "none|zstd",
+            value_parser = parse_cli_compression
+        )]
+        compression: Option<Compression>,
+        /// Output format (default text; json = one object on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
+    },
     /// Check whether a chunk id exists in the store
     Has {
         /// Local CAS store directory
@@ -866,8 +894,9 @@ enum StoreCommands {
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive` / `make` /
-/// `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 + Phase 15 M3/M4).
+/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `store create` /
+/// `archive` / `make` / `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 +
+/// Phase 15 M3/M4 + Phase 19 M1).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
 /// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent).
@@ -1325,6 +1354,14 @@ fn run() -> Result<()> {
                 &path_filter,
             )
         }
+        Commands::Store {
+            command:
+                StoreCommands::Create {
+                    store,
+                    compression,
+                    format,
+                },
+        } => cmd_store_create(&store, compression, format),
         Commands::Store {
             command: StoreCommands::Has { store, hex_id },
         } => cmd_store_has(&store, &hex_id),
@@ -4492,6 +4529,34 @@ fn cmd_chunk_id(input: &Path, chunk_size: Option<&str>) -> Result<()> {
     let chunks: Vec<ChunkInfo> = chunk_bytes(&data, &params);
     for c in &chunks {
         println!("{}\t{}\t{}", c.offset, c.length, c.id);
+    }
+    Ok(())
+}
+
+fn cmd_store_create(
+    store_path: &Path,
+    compression: Option<Compression>,
+    format: CliFormat,
+) -> Result<()> {
+    let c = compression.unwrap_or(Compression::None);
+    let _store = Store::create(store_path, c)
+        .with_context(|| format!("store create at {}", store_path.display()))?;
+    match format {
+        CliFormat::Text => {
+            eprintln!(
+                "store create: ok store={} compression={}",
+                store_path.display(),
+                c.as_str()
+            );
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "store": store_path.display().to_string(),
+                "compression": c.as_str(),
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }

@@ -12671,3 +12671,107 @@ fn verify_cfdir_progress_chunk_granularity() {
         "cfdir verify progress TOTAL should be chunk count; stderr={err}"
     );
 }
+
+// --- Phase 19 M1: store create ---
+
+#[test]
+fn store_create_help_lists_store_compression_format() {
+    let s = run_ok(&["store", "--help"]);
+    let s_out = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        s_out.contains("create"),
+        "store --help should list create:\n{s_out}"
+    );
+
+    let create = run_ok(&["store", "create", "--help"]);
+    let h = String::from_utf8_lossy(&create.stdout);
+    assert!(h.contains("--store"), "store create --help must list --store:\n{h}");
+    assert!(
+        h.contains("--compression"),
+        "store create --help must list --compression:\n{h}"
+    );
+    assert!(
+        h.contains("--format"),
+        "store create --help must list --format:\n{h}"
+    );
+}
+
+#[test]
+fn store_create_none_zstd_and_reject_duplicate() {
+    let dir = tempdir().unwrap();
+    let store_none = dir.path().join("s");
+    let store_zstd = dir.path().join("sz");
+    let store_json = dir.path().join("sj");
+
+    let out = run_ok(&[
+        "store",
+        "create",
+        "--store",
+        store_none.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("store create: ok") && err.contains("compression=none"),
+        "text summary expected; stderr={err}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "text mode must not write stdout; stdout={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let meta = fs::read_to_string(store_none.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"none\""),
+        "default create must write compression=none; meta={meta}"
+    );
+    assert!(store_none.join("chunks").is_dir());
+
+    let dup = run_fail(&[
+        "store",
+        "create",
+        "--store",
+        store_none.to_str().unwrap(),
+    ]);
+    let dup_err = String::from_utf8_lossy(&dup.stderr);
+    assert!(
+        dup_err.contains("already exists") || dup_err.contains("store create"),
+        "duplicate create must be clear non-zero; stderr={dup_err}"
+    );
+
+    run_ok(&[
+        "store",
+        "create",
+        "--store",
+        store_zstd.to_str().unwrap(),
+        "--compression",
+        "zstd",
+    ]);
+    let meta_z = fs::read_to_string(store_zstd.join("meta.toml")).expect("meta.toml zstd");
+    assert!(
+        meta_z.contains("compression = \"zstd\""),
+        "zstd create must write compression=zstd; meta={meta_z}"
+    );
+
+    let json_out = run_ok(&[
+        "store",
+        "create",
+        "--store",
+        store_json.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&json_out.stdout);
+    let stderr = String::from_utf8_lossy(&json_out.stderr);
+    assert!(
+        !stderr.contains("store create: ok"),
+        "json must not dual-write text summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("store create json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["compression"], "none");
+    assert!(
+        v["store"].as_str().unwrap().contains("sj"),
+        "json store path; v={v}"
+    );
+}
