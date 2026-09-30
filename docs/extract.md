@@ -82,7 +82,7 @@ does **not** trust mtime. Symmetrical to `archive --seed-trust-mtime`.
 **Dry-run exit:** **0** when the listing is valid (even if `would_fail>0`);
 invalid listing → non-zero.
 
-## Explicitly **no prune** (`--path` ≠ delete)
+## Explicitly **no prune** (`path` ≠ prune ≠ sync)
 
 `extract` is **one-way materialize**, not sync. Path filtering only **writes
 less**; it never removes destination paths:
@@ -151,6 +151,7 @@ chunkforge extract --store ./store -o /tmp/out \
 
 ```bash
 bash scripts/demo_extract_skip.sh
+bash scripts/demo_path_filter.sh  # Phase 13 path/exclude + non-prune
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → optional dry-run glance
 ```
@@ -161,3 +162,4 @@ bash scripts/demo_extract_skip.sh
 - Listing bytes: [dir-format.md](dir-format.md)
 - Diff (not sync): [diff.md](diff.md)
 - HTTP retries: [http-retry.md](http-retry.md)
+- Ops JSON: [ops-json.md](ops-json.md)

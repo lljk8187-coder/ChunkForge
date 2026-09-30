@@ -18,7 +18,7 @@
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
-| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` (M1–M4 landed; ops-json + compat_1_2 still open); extract path **≠** prune |
+| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` (M1–M5; compat_1_2 still open); path **≠** prune **≠** sync; **not** pack / write mount |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -508,10 +508,11 @@ summaries, jobs=1, progress off). Workspace / CLI version is **1.2.0**.
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash (no listing) |
 
-**Not delivered / non-goals (carry forward):** `archive --format json` (P1);
-packfile; write mount; remote scrub; aws-sdk; extract prune; bidirectional
-sync; byte-range resume; push listing upload; changing default jobs·retries;
-video analysis. Pack stays measured-only in [docs/perf.md](docs/perf.md).
+**Not delivered / non-goals (carry forward from 1.2):** packfile; write mount;
+remote scrub; aws-sdk; extract prune; bidirectional sync; byte-range resume;
+push listing upload; changing default jobs·retries; video analysis.
+`archive --format json` + path filters moved to **Phase 13** (see below).
+Pack stays measured-only in [docs/perf.md](docs/perf.md).
 
 ```bash
 # Phase 12 maint smoke + compat gate (~minutes; no internet)
@@ -527,6 +528,51 @@ bash scripts/check_compat_1_1.sh   # includes check_compat_1_0 + 1.1/1.2 flags
 Details: [docs/doctor-gc.md](docs/doctor-gc.md), [docs/ops-json.md](docs/ops-json.md),
 [docs/stability.md](docs/stability.md). Gate:
 [`scripts/check_compat_1_1.sh`](scripts/check_compat_1_1.sh).
+
+
+## Phase 13 / 1.3: path-scope filter (draft)
+
+Phase 13 (toward **1.3.0**, **not** bumped yet) adds opt-in **path scope** on
+tree ops. Defaults stay ≡ **1.2.0**: no `--path`/`--exclude` ⇒ full tree /
+full reference set; `archive --format` default **text**.
+
+**Delivered so far (M1–M5):**
+
+- **`PathFilter`** (`chunkforge-index`): `--path` prefix include (OR) +
+  `--exclude` exact / trailing-`/` / edge `*` — no `ignore`/`globset`.
+- **`archive --path` / `--exclude` + `--format json`**: filtered listing;
+  JSON minimum set in [docs/ops-json.md](docs/ops-json.md) (`ok` / `dry_run` /
+  `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse`
+  / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` /
+  `skipped_special` / `excluded`). Field rename → **breaking**.
+- **`extract --path` / `--exclude`**: materialize matching Files only;
+  **never** deletes filtered-out listing paths or extra dest files (**not**
+  prune / **not** sync / **no** `--delete`).
+- **`pull --path` / `--exclude`**: fetch chunk ids from matching Files only;
+  JSON field names unchanged; `unique_chunks` = filtered set.
+- Smoke: [`scripts/demo_path_filter.sh`](scripts/demo_path_filter.sh)
+  (exclude → archive json → extract `--path` → pull `--path`; local
+  `put_stub` only).
+
+**Explicit non-goals (still):** packfile; write mount / COW; bidirectional
+sync; extract prune / `--delete`; remote scrub; aws-sdk; bumping **1.3.0**
+(this milestone). Pack remains measured-only in [docs/perf.md](docs/perf.md)
+— **Phase 13 still does not implement pack**.
+
+```bash
+# Phase 13 path-filter smoke (~minutes; local put_stub only)
+cargo build -p chunkforge-cli
+bash scripts/demo_path_filter.sh
+# A: source with packages/foo + junk/.git → archive --exclude --format json
+# B: extract --path packages/foo (extra dest file kept; no prune)
+# C: push → pull --path → unique_chunks is subset
+
+./target/debug/chunkforge --version   # still chunkforge 1.2.0 until M7
+```
+
+Details: [docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md),
+[docs/pull.md](docs/pull.md), [docs/ops-json.md](docs/ops-json.md),
+[docs/stability.md](docs/stability.md).
 
 ## Incremental dedup demo
 

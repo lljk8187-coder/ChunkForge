@@ -8,7 +8,11 @@ project does **not** promise. **ChunkForge 1.0.0** is released (annotated tag
 and the frozen surface stay ≡ **1.0.0**. **1.2.0** adds further opt-in only
 (`gc --jobs`, `gc`/`store scrub --format json`, ops-json matrix,
 `check_compat_1_1`, `--progress`); defaults stay ≡ **1.1.0**. The workspace
-reports **1.2.0**.
+reports **1.2.0**. **1.3** (Unreleased) adds further opt-in only
+(`archive`/`extract`/`pull --path`/`--exclude`, `archive --format json`);
+defaults stay ≡ **1.2.0** (no path flags ⇒ full tree; archive format default
+**text**). See [ops-json.md](ops-json.md) for the expanded matrix (incl.
+**archive**).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -29,8 +33,8 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`, `gc --jobs`,
 `--progress`) may ship in **minor** releases when defaults stay compatible.
-**1.1.0** and **1.2.0** are such minors: all new flags default off / text /
-jobs=1 / depth 1 ≡ prior release.
+**1.1.0**, **1.2.0**, and the **1.3** draft are such minors: all new flags
+default off / text / jobs=1 / depth 1 / no path filter ≡ prior release.
 
 ## Breaking-change policy
 
@@ -96,9 +100,11 @@ There is **no** remote-scrub first-class command and **no** bidirectional sync.
 ## Ops JSON field matrix
 
 Stable `--format json` fields for ops commands live in
-**[ops-json.md](ops-json.md)** (one row per command: `diff` / `verify` /
-`doctor` / `extract` / `push` / `pull` / `gc` / `store scrub`). Default remains
-**text**. **Field rename → breaking** (same policy as above).
+**[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
+`verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub`).
+Default remains **text**. **Field rename → breaking** (same policy as above).
+Path filter on extract/pull does **not** rename fields (`unique_chunks` =
+filtered set).
 
 Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.0 defaults) and [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)

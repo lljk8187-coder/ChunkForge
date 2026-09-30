@@ -69,6 +69,8 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 
 ### `--path` / `--exclude` (Phase 13 M4)
 
+**`path` ≠ prune ≠ sync:** pull path/exclude only **shrinks the fetch set**. It does not extract a tree, does not delete local extras, and does not rewrite the listing. Extract path filtering is likewise non-prune — see [extract.md](extract.md).
+
 Optional, repeatable, **opt-in**. Default (no flags) ≡ **1.2.0** full reference set.
 
 | Rule | Detail |
@@ -150,3 +152,5 @@ Partial progress may leave some chunks in `--store`; re-run is safe (existing id
 - Inverse write path: [push.md](push.md)
 - HTTP layout / templates: [remote-layout.md](remote-layout.md)
 - Directory archive workflow: [archive.md](archive.md)
+- Path-filter smoke: [`scripts/demo_path_filter.sh`](../scripts/demo_path_filter.sh)
+- Ops JSON: [ops-json.md](ops-json.md)

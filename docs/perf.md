@@ -12,6 +12,12 @@ now.
 > **1.2.0 / Phase 12 still does not implement pack.** Evidence and the
 > promotion checklist below continue to govern any future dual-mode layout;
 > Phase 12 delivered local maint ops (`gc --jobs`, gc/scrub JSON) only.
+>
+> **Phase 13 / 1.3 still does not implement pack.** Path-filter work
+> (`archive`/`extract`/`pull --path`/`--exclude`, `archive --format json`)
+> does not change the loose `.cnk` layout. Local stub bench
+> (`scripts/bench_loose_http.sh`, 64×64KiB, jobs=1) remains near-zero RTT
+> evidence — promotion checklist condition 1 (high RTT dominant) still unmet.
 
 ## What we measure
 

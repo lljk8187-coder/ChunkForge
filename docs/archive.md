@@ -54,8 +54,9 @@ python3 scripts/put_stub.py --root /tmp/cf-arch/mirror --port 8766
 ### Smoke scripts
 
 ```bash
-./scripts/demo_archive.sh   # Phase 5 tree / push / mount smoke
-./scripts/demo_seed.sh      # Phase 6 seed: change one file → reuse stats → verify / extract / optional pull
+./scripts/demo_archive.sh      # Phase 5 tree / push / mount smoke
+./scripts/demo_seed.sh         # Phase 6 seed: change one file → reuse stats → verify / extract / optional pull
+./scripts/demo_path_filter.sh  # Phase 13: exclude → archive json → extract --path → pull --path
 ```
 
 `demo_archive.sh` covers archive → verify → extract → diff, optional FUSE mount
@@ -172,6 +173,12 @@ Phase 13 opt-in. Repeatable `--path P` and `--exclude PAT` build a
 Filtered-out regular files are **not** chunked and **do not** appear in the
 written `.cfdir`; they increment `excluded` in the text summary / JSON.
 
+**`path` ≠ prune ≠ sync:** archive path/exclude only **shrinks the listing**
+(fewer entries written). It does not delete anything on disk, does not prune
+an extract destination, and is not bidirectional sync. See
+[extract.md](extract.md) (non-prune materialize) and [pull.md](pull.md)
+(subset CAS fill).
+
 ### Walk order vs symlink / special
 
 1. **Type skip first**: symlinks and special files (fifo/socket/device) are
@@ -235,3 +242,4 @@ With `--force`:
 - Format bytes: [dir-format.md](dir-format.md)
 - FUSE directory mount: [mount.md](mount.md)
 - Push / doctor / gc accept `.cfdir`: [push.md](push.md), [doctor-gc.md](doctor-gc.md)
+- Ops JSON matrix (incl. archive): [ops-json.md](ops-json.md)

@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ≡ 1.2.0 full reference set. JSON field names unchanged; `unique_chunks` =
   filtered unique id count. Docs: `docs/pull.md`.
 
+- **Phase13-M5 ops-json archive + `demo_path_filter` + README**: `docs/ops-json.md` adds **archive** write/dry-run rows (`ok` / `dry_run` / `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse` / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` / `skipped_special` / `excluded`); removes stale "archive has no format json" scope note; documents that extract/pull path filter does **not** rename fields (`unique_chunks` = filtered). Docs proofread: `archive`/`extract`/`pull` path≠prune≠sync; `stability` 1.3 opt-in; `perf` Phase13 still no pack. Smoke: `scripts/demo_path_filter.sh` (exclude → archive json → extract `--path` non-prune → pull `--path` subset). README Phase 13 / 1.3 draft. **Not** bumping 1.3.0; **not** `check_compat_1_2` (M6).
+
 ## [1.2.0] — 2026-09-29
 
 Phase 12 closeout — `gc --jobs`; `gc`/`store scrub --format json`;
