@@ -1,4 +1,4 @@
-//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store (+ chunk-id debug).
+//! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / store (+ chunk-id debug).
 
 mod bytesize;
 mod parallel;
@@ -35,7 +35,7 @@ use std::time::Duration;
 #[command(
     name = "chunkforge",
     version,
-    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store)",
+    about = "Content-defined chunking + BLAKE3 CAS (make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / filter / store)",
     long_about = None
 )]
 struct Cli {
@@ -1046,6 +1046,56 @@ enum Commands {
         /// Right `.cfdir` (listing↔listing only). Must be omitted with `--tree`.
         right: Option<PathBuf>,
     },
+
+    /// Persist a path-scoped subset of an existing `.cfdir` listing
+    ///
+    /// Reads an input `.cfdir`, applies the same path 四件套 as `archive` /
+    /// `extract` / `mount` / `diff` (`--path` / `--path-from` / `--exclude` /
+    /// `--exclude-from`) via library [`filter_dir_archive`], then
+    /// [`DirArchive::encode`]s the result to `-o`. Empty path flags ≡
+    /// **identity** (re-encode / normalize; same File+Symlink leaf set). Keeps
+    /// matching **File** and **Symlink** leaves plus ancestor **Dir** entries.
+    ///
+    /// **Does not** open a store, rechunk, touch a source tree, prune a dest
+    /// tree, or rewrite the input listing in place. **≠** prune / **≠**
+    /// `gc --path` / **≠** sync / **≠** write mount / **≠** pack / **≠**
+    /// `archive --path` (no source-tree walk — input must already be a
+    /// `.cfdir`). `.cfidx` / wrong magic → clear non-zero error. If `-o`
+    /// already exists → clear non-zero error (no silent overwrite; `--force`
+    /// deferred to a later milestone). Atomic write: temp sibling + rename.
+    /// Text-only stderr summary (JSON / `--dry-run` deferred).
+    Filter {
+        /// Output `.cfdir` path (must not already exist)
+        #[arg(short = 'o', long = "output")]
+        output: PathBuf,
+        /// Include only listing paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (identity when
+        /// no exclude flags either).
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude listing paths matching this pattern (repeatable): exact,
+        /// trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error exit. Applied after `--path`.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
+        /// Read include path prefixes from a UTF-8 file (repeatable). One prefix
+        /// per line (same rules as `--path`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--path` (OR) into one `PathFilter`.
+        /// May combine with `--exclude` / `--exclude-from`. Unreadable file or
+        /// bad UTF-8 → clear non-zero error. Omit all path flags ⇒ identity.
+        #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        path_from: Vec<PathBuf>,
+        /// Input `.cfdir` (`.cfidx` / wrong magic → clear non-zero)
+        input: PathBuf,
+    },
+
     /// Query the local store
     Store {
         #[command(subcommand)]
@@ -1699,6 +1749,22 @@ fn run() -> Result<()> {
                 symlinks,
             )
         }
+
+        Commands::Filter {
+            output,
+            paths,
+            excludes,
+            exclude_from,
+            path_from,
+            input,
+        } => {
+            let paths = merged_paths(&paths, &path_from)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
+            cmd_filter(&input, &output, &path_filter)
+        }
+
         Commands::Store {
             command:
                 StoreCommands::Create {
@@ -3026,6 +3092,115 @@ fn load_dir_archive(path: &Path) -> Result<DirArchive> {
     let bytes = fs::read(path).with_context(|| format!("read archive {}", path.display()))?;
     DirArchive::decode(&bytes)
         .map_err(|e| anyhow::anyhow!("decode archive {}: {e}", path.display()))
+}
+
+/// Load a `.cfdir` for `filter` (reject `.cfidx` / bad magic).
+fn load_cfdir_for_filter(path: &Path) -> Result<DirArchive> {
+    match peek_listing_kind(path)? {
+        ListingKind::DirArchive => {}
+        ListingKind::Index => bail!(
+            "filter expects a `.cfdir` listing; {} looks like a `.cfidx` (single-blob; filter does not apply to `.cfidx`)",
+            path.display()
+        ),
+    }
+    let arch = load_dir_archive(path)?;
+    arch.validate()
+        .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", path.display()))?;
+    Ok(arch)
+}
+
+/// Persist `filter_dir_archive` of `input` to `output` (atomic; refuse overwrite).
+///
+/// Empty `path_filter` ≡ identity (re-encode). Does **not** open a store /
+/// rechunk / walk a source tree / prune dest trees. **≠** prune / **≠**
+/// `gc --path` / **≠** sync / **≠** write mount / **≠** pack / **≠**
+/// `archive --path`.
+fn cmd_filter(input: &Path, output: &Path, path_filter: &PathFilter) -> Result<()> {
+    let input_arch = load_cfdir_for_filter(input)?;
+    let out_arch = filter_dir_archive(&input_arch, path_filter);
+
+    let file_count = out_arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        .count();
+    let dir_count = out_arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::Dir { .. }))
+        .count();
+    let symlink_count = out_arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::Symlink { .. }))
+        .count();
+
+    if output.exists() {
+        bail!(
+            "filter output {} already exists (refusing to overwrite; remove it or choose another -o)",
+            output.display()
+        );
+    }
+
+    let bytes = out_arch
+        .encode()
+        .map_err(|e| anyhow::anyhow!("encode filtered .cfdir: {e}"))?;
+
+    write_cfdir_atomic(output, &bytes)?;
+
+    eprintln!(
+        "filter: wrote {} (files={}, dirs={}, symlinks={}) from {}",
+        output.display(),
+        file_count,
+        dir_count,
+        symlink_count,
+        input.display()
+    );
+    Ok(())
+}
+
+/// Write `.cfdir` bytes via a unique temp sibling + rename (atomic on same FS).
+fn write_cfdir_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out.cfdir");
+    let tmp_name = format!(
+        ".{}.{}.{:x}.tmp",
+        stem,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp_path = parent.join(tmp_name);
+
+    let write_result = (|| -> Result<()> {
+        let mut file = File::create(&tmp_path)
+            .with_context(|| format!("create temp {}", tmp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write temp {}", tmp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("fsync temp {}", tmp_path.display()))?;
+        drop(file);
+        fs::rename(&tmp_path, output).with_context(|| {
+            format!("rename temp {} → {}", tmp_path.display(), output.display())
+        })?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    write_result
 }
 
 /// Load a `.cfdir` for `diff` (reject `.cfidx` / bad magic).

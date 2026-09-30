@@ -16328,3 +16328,287 @@ fn extract_dry_run_json_absolute_symlink_target_is_would_fail_not_would_symlinks
         assert_eq!(v["would_write"].as_u64(), Some(0), "json={stdout}");
     }
 }
+
+// --- Phase24-M1: chunkforge filter skeleton + encode -o ---
+
+#[test]
+fn filter_help_exists_and_lists_filter() {
+    let top = run_ok(&["--help"]);
+    let top_s = String::from_utf8_lossy(&top.stdout);
+    assert!(
+        top_s.contains("filter"),
+        "top-level --help should list filter:\n{top_s}"
+    );
+
+    let help = run_ok(&["filter", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--path"),
+        "filter --help should list --path:\n{s}"
+    );
+    assert!(
+        s.contains("-o") || s.contains("--output"),
+        "filter --help should list -o/--output:\n{s}"
+    );
+    // Help prose nail: filter ≠ prune ≠ gc-path ≠ sync ≠ write mount ≠ pack ≠ archive --path
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("prune")
+            && (lower.contains("gc --path")
+                || lower.contains("gc-path")
+                || lower.contains("`gc --path`"))
+            && lower.contains("sync")
+            && (lower.contains("write mount") || lower.contains("write-mount"))
+            && lower.contains("pack")
+            && lower.contains("archive --path"),
+        "filter --help must nail ≠ prune / gc-path / sync / write mount / pack / archive --path:\n{s}"
+    );
+    assert!(
+        lower.contains("source-tree")
+            || lower.contains("source tree")
+            || lower.contains("no source"),
+        "filter --help should stress no source-tree walk:\n{s}"
+    );
+}
+
+#[test]
+fn filter_rejects_cfidx_input() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("blob.cfidx");
+    let out = dir.path().join("subset.cfdir");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx") || err.contains("CFIDX"),
+        "filter .cfidx input must be clear non-zero; stderr={err}"
+    );
+    assert!(!out.exists(), "filter must not write -o on .cfidx reject");
+}
+
+#[test]
+fn filter_path_subset_writes_matching_files_only() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let subset = dir.path().join("subset.cfdir");
+    let expected = dir.path().join("expected.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        subset.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(subset.is_file(), "filter -o subset.cfdir must exist");
+
+    // Archive with --path from the same source as the expected subset listing.
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo",
+        "-o",
+        expected.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Listing↔listing identical ⇒ exit 0 (same File leaf set after filter).
+    let diff = run_ok(&["diff", subset.to_str().unwrap(), expected.to_str().unwrap()]);
+    let diff_s = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        diff_s.contains("added=0") && diff_s.contains("removed=0") && diff_s.contains("changed=0"),
+        "filter --path subset must match archive --path; diff={diff_s}"
+    );
+
+    // Extract subset: only pkgs/foo present; pkgs/bar absent.
+    let out_tree = dir.path().join("out");
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        subset.to_str().unwrap(),
+        "-o",
+        out_tree.to_str().unwrap(),
+    ]);
+    assert!(
+        out_tree.join("pkgs/foo/a.txt").is_file(),
+        "subset extract must include pkgs/foo/a.txt"
+    );
+    assert!(
+        !out_tree.join("pkgs/bar").exists(),
+        "subset extract must omit pkgs/bar"
+    );
+}
+
+#[test]
+fn filter_empty_flags_identity_same_leaf_paths() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let copy = dir.path().join("copy.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Empty filter ≡ identity.
+    run_ok(&[
+        "filter",
+        "-o",
+        copy.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    assert!(copy.is_file(), "identity filter must write -o");
+
+    let diff = run_ok(&["diff", full.to_str().unwrap(), copy.to_str().unwrap()]);
+    let diff_s = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        diff_s.contains("added=0")
+            && diff_s.contains("removed=0")
+            && diff_s.contains("changed=0")
+            && diff_s.contains("meta_changed=0"),
+        "empty filter must be identity leaf-set; diff={diff_s}"
+    );
+}
+
+#[test]
+fn filter_refuses_existing_output() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"a\n").unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let out = dir.path().join("out.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    fs::write(&out, b"preexisting").unwrap();
+
+    let fail = run_fail(&[
+        "filter",
+        "-o",
+        out.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("already exists") || err.contains("refusing"),
+        "filter must refuse existing -o; stderr={err}"
+    );
+    assert_eq!(
+        fs::read(&out).unwrap(),
+        b"preexisting",
+        "existing -o must be untouched"
+    );
+}
+
+#[test]
+fn filter_path_keeps_symlink_under_prefix() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    let subset = dir.path().join("subset.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        subset.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    // Extract: symlink under pkgs/foo kept; pkgs/bar omitted.
+    let out_tree = dir.path().join("out");
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        subset.to_str().unwrap(),
+        "-o",
+        out_tree.to_str().unwrap(),
+    ]);
+    let link = out_tree.join("pkgs/foo/link.txt");
+    assert!(
+        link.symlink_metadata().unwrap().file_type().is_symlink(),
+        "filter must keep Symlink under --path"
+    );
+    assert!(
+        !out_tree.join("pkgs/bar").exists(),
+        "filter must omit pkgs/bar including its files"
+    );
+}
