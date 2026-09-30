@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase15-M1 — `CacheSource` soft budget**: `CacheSource::with_max_bytes(primary, cache, max_bytes: Option<u64>)`; `None` / `new` ≡ 1.4 unbounded fill. On miss, if `cache.stats().bytes_on_disk + plaintext.len() > max` → skip `put`, still return primary plaintext. Never evicts / removes. No `ChunkSource`/`ChunkSink` signature change; no CLI wiring yet (M2).
+
 ## [1.4.0] — 2026-09-29
 
 Phase 14 closeout — `Store::stats` / `store stats` (alias `du`) + json;
