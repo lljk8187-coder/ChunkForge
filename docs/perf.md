@@ -82,9 +82,9 @@ now.
 > dry-run `would_symlinks` is plan-only accounting (≠ pack). Promotion
 > checklist condition 1 stays unmet; pack stays deferred.
 >
-> **Phase24 / toward 1.14.0 still does not implement pack**. `chunkforge
-> filter` is a pure listing transform (no store / no chunk I/O / no layout
-> change; ≠ pack). Workspace version stays **1.13.0** until M7. Promotion
+> **Phase24 / 1.14.0 still does not implement pack**. `chunkforge filter`
+> is a pure listing transform (no store / no chunk I/O / no layout change;
+> ≠ pack). `make --seed` is plan/Reuse accounting only (≠ pack). Promotion
 > checklist condition 1 stays unmet on local stub evidence; pack stays
 > deferred.
 

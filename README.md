@@ -29,7 +29,7 @@
 | **Phase 21** | **1.11.0** | **`mount` path quartet** (`--path`/`--exclude`/`--exclude-from`/`--path-from` → `filter_dir_archive` → DirFs; default ≡ 1.10 full tree; `.cfidx`+path → non-zero) + docs + `demo_mount_path` + **`check_compat_1_10`** + P1 **`push --compression`** + P1 **`store list`** (+ thin docs); **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / recompress / push `--fallback` / remote scrub / mount `--progress` |
 | **Phase 22** | **1.12.0** | **`.cfdir` Symlink opt-in** (`archive --symlinks skip\|record`; default **skip** ≡ 1.11 + write v1; record → `KIND_SYMLINK` / `format_version=2`; extract materialize; DirFs `readlink`; still RO) + docs + `demo_symlink` + **`check_compat_1_11`** + P1 **`make --dry-run`**; **`record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 | **Phase 23** | **1.13.0** | **`diff --tree --symlinks skip\|record`** (default **skip** ≡ 1.12; **record** → ephemeral Symlink; clap requires `--tree`) + docs + [`demo_diff_tree_symlink`](scripts/demo_diff_tree_symlink.sh) + **`check_compat_1_12`** + P1 extract dry-run **`would_symlinks`** (`would_write` still includes symlink ≡ 1.12); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
-| **Phase 24** | **toward 1.14.0** (CLI still **1.13.0** until M7) | **`chunkforge filter`** persist path-scoped subset `.cfdir` + docs + [`demo_filter_listing`](scripts/demo_filter_listing.sh) + **`check_compat_1_13`** (M5) + P1 **`make --seed`** / mount help File+Symlink honesty (M6); version bump **1.14.0** in **M7**; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
+| **Phase 24** | **1.14.0** | **`chunkforge filter`** persist path-scoped subset `.cfdir` + docs + [`demo_filter_listing`](scripts/demo_filter_listing.sh) + **`check_compat_1_13`** + P1 **`make --seed`** / mount help File+Symlink honesty; **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / aws-sdk / prune / **`gc --path`** / LRU / default zstd / default record / follow / fifo/xattr / offline bundle / mount `--progress` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -61,7 +61,7 @@ Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount
 **Phase 21 closed at 1.11.0**: `mount` path quartet (`filter_dir_archive` → DirFs; default ≡ 1.10 full tree) + docs + `demo_mount_path` + `check_compat_1_10` + P1 `push --compression` + P1 `store list` — see [docs/mount.md](docs/mount.md) / [docs/store.md](docs/store.md) / [docs/stability.md](docs/stability.md); **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**; **not** pack / write mount / **`gc --path`** / mount `--progress` / default zstd.
 **Phase 22 closed at 1.12.0**: `.cfdir` Symlink opt-in (`--symlinks record`; default skip ≡ 1.11) + extract/DirFs wiring + `demo_symlink` + `check_compat_1_11` + P1 `make --dry-run` — see [docs/dir-format.md](docs/dir-format.md) / [docs/archive.md](docs/archive.md) / [docs/stability.md](docs/stability.md); **`record` ≠ write mount ≠ follow ≠ pack ≠ prune ≠ `gc --path` ≠ default record**; **`make --dry-run` ≠ seed ≠ pack ≠ recompress**; **not** pack / write mount / **`gc --path`** / mount `--progress` / default zstd / default record.
 **Phase 23 closed at 1.13.0**: `diff --tree --symlinks skip|record` (default skip ≡ 1.12) + docs + `demo_diff_tree_symlink` + `check_compat_1_12` + P1 extract dry-run `would_symlinks` — see [docs/diff.md](docs/diff.md) / [docs/stability.md](docs/stability.md); **`diff --tree --symlinks record` / `would_symlinks` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
-**Phase 24 (in progress toward 1.14.0; version still 1.13.0 until M7)**: first-class **`chunkforge filter`** + docs + `demo_filter_listing` + **`check_compat_1_13`** (M5) + P1 **`make --seed <prior.cfidx>`** / mount help File+Symlink honesty (M6) — see [docs/filter.md](docs/filter.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/stability.md](docs/stability.md); **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
+**Phase 24 closed at 1.14.0**: first-class **`chunkforge filter`** + docs + `demo_filter_listing` + **`check_compat_1_13`** + P1 **`make --seed <prior.cfidx>`** / mount help File+Symlink honesty — see [docs/filter.md](docs/filter.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/stability.md](docs/stability.md); **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**; **not** pack / write mount / **`gc --path`** / default record / follow / mount `--progress` / default zstd.
 
 ## Quick start (local CAS)
 
@@ -1288,28 +1288,26 @@ bash scripts/check_compat_1_12.sh
 Details: [docs/diff.md](docs/diff.md), [docs/stability.md](docs/stability.md),
 [docs/perf.md](docs/perf.md), [docs/dir-format.md](docs/dir-format.md).
 
-## Phase 24 / toward 1.14.0: `chunkforge filter` (+ demo; version still 1.13.0)
+## Phase 24 / 1.14.0: `chunkforge filter` (+ demo + make --seed)
 
-Phase 24 productizes library **`filter_dir_archive`** as a first-class
-**`chunkforge filter`** subcommand: read an existing `.cfdir`, apply the same
-path 四件套 as archive/extract/mount/diff, encode the subset to `-o`. Empty
-path flags ≡ **identity**. Symlink keep → encode **v2**; filtering out all
-Symlinks → encode **v1**. **`--dry-run`** / **`--force`** / **`--format
-text|json`** (`ok` / `dry_run` / `input` / `output` / `files` / `dirs` /
-`symlinks` / `excluded`). **Does not** open a store, walk a source tree,
-prune a dest tree, or rewrite the input in place.
+Phase 24 closes the **listing-subset persistence** gap at **1.14.0**:
+library **`filter_dir_archive`** becomes a first-class **`chunkforge filter`**
+subcommand — read an existing `.cfdir`, apply the same path 四件套 as
+archive/extract/mount/diff, encode the subset to `-o`. Empty path flags ≡
+**identity**. Symlink keep → encode **v2**; filtering out all Symlinks →
+encode **v1**. **`--dry-run`** / **`--force`** / **`--format text|json`**
+(`ok` / `dry_run` / `input` / `output` / `files` / `dirs` / `symlinks` /
+`excluded`). **Does not** open a store, walk a source tree, prune a dest
+tree, or rewrite the input in place.
 
-**Version note:** filter + gate + P1 seed/help are present on `main`
-(M1–M6), but workspace / CLI version stays **1.13.0** until **M7** bumps
-**1.14.0**. Gate **`check_compat_1_13.sh`** (M5) + P1 **`make --seed`** /
-mount help File+Symlink honesty (M6) are landed.
+Workspace / CLI version is **1.14.0**.
 
 **Responsibility:** **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠
 pack ≠ `archive --path`** (latter needs a source-tree walk). Warning: taking a
 filtered listing into `gc` uses **that listing's** refs — still **no**
 `gc --path`.
 
-**Delivered so far (M1–M6):**
+**Delivered:**
 
 - `filter` skeleton + `filter_dir_archive` → encode → `-o` (M1).
 - Path 四件套 + `--dry-run` / `--force` / `--format text|json` (M2).
@@ -1320,8 +1318,7 @@ filtered listing into `gc` uses **that listing's** refs — still **no**
 - Gate [`scripts/check_compat_1_13.sh`](scripts/check_compat_1_13.sh) (M5).
 - P1 **`make --seed <PRIOR.cfidx>`** / **`--seed-trust-mtime`** + mount help
   File+Symlink honesty (M6); additive ops-json `seed_reused` when seeding.
-
-**Still coming:** **1.14.0** version bump + CHANGELOG closeout (M7).
+- Workspace / CLI **1.14.0** (M7 closeout).
 
 **Non-goals (unchanged):** packfile; write mount / COW; bidirectional sync;
 extract prune / `--delete`; **`gc --path`**; remote scrub; full aws-sdk /
@@ -1331,7 +1328,7 @@ cache LRU; **default** zstd; HTTP wire compression; `store recompress`;
 symlink**; follow directory symlink; fifo / socket / device / xattr / ACL;
 offline bundle; changing default jobs·retries·SigV4·progress·create
 compression; absolute perf SLA in CI; video analysis. Pack stance:
-[docs/perf.md](docs/perf.md) — **Phase24 / toward 1.14.0 still does not
+[docs/perf.md](docs/perf.md) — **Phase24 / 1.14.0 still does not
 implement pack**.
 
 ```bash
@@ -1344,10 +1341,10 @@ bash scripts/demo_filter_listing.sh
 # D: empty filter ≡ identity (diff exit 0)
 # E: exclude all Symlinks → encode v1
 # G: help has filter; gc --help has no --path; no pack
-# H: version still 1.13.0; check_compat_1_13 note-only (lands M5)
+# H: version 1.14.0; check_compat_1_12 + check_compat_1_13 present + executable
 
-./target/debug/chunkforge --version   # → chunkforge 1.13.0 (until M7)
-# bash scripts/check_compat_1_13.sh   # lands Phase24-M5
+./target/debug/chunkforge --version   # → chunkforge 1.14.0
+bash scripts/check_compat_1_13.sh
 ```
 
 Details: [docs/filter.md](docs/filter.md), [docs/stability.md](docs/stability.md),

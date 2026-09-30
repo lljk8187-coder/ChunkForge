@@ -36,7 +36,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`make`** (write) | `ok`, `bytes`, `chunks`, `new`, `reused`; **additive with `--seed`:** `seed_reused` (`bool`) | Phase 15 + Phase24-M6. Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). Omit `--seed` ⇒ field set unchanged (no `seed_reused`; ≡ 1.13). With **`--seed`**: additive `seed_reused` (`true` = copied prior chunk table / skipped FastCDC; `false` = rechunked). Reuse requires prior chunks `has()` in store else clear non-zero. **≠** pack / **≠** recompress / **≠** path. |
 | **`make`** (dry-run) | `ok`, `dry_run` (`true`), `bytes`, `chunks`, `would_write`, `would_reuse`; **additive with `--seed`:** `seed_reused` | Phase22-M7 / P1 + Phase24-M6. Plan-only: FastCDC (rechunk path) + `has()` accounting; no store create/put; no `.cfidx` write. Uses **`would_write` / `would_reuse`** (not `new` / `reused`). Missing store → all unique chunks `would_write` on rechunk; seed Reuse with missing chunks → clear non-zero. With `--seed`, additive `seed_reused`. Omit `--seed` ⇒ no `seed_reused` (≡ 1.13). **≠** pack / **≠** recompress / **≠** path. |
 | **`cat`** | `ok`, `bytes`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Phase 15 + Phase18-M3. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Without `--cache`, omit `cache_*` (1.7 baseline). With `--cache`, three numeric fields from the same `CacheStatsRef` (even if `--cache-stats` off). Orthogonal to `--cache-max-bytes` / `--jobs` / `--cache-stats` / `--progress`. Failure paths do not require a full JSON object. Prior field names **frozen**. |
-| **`filter`** | `ok`, `dry_run`, `input`, `output`, `files`, `dirs`, `symlinks`, `excluded` | Phase24 / toward 1.14.0 (new command field set; **additive** — does not rename prior fields). Default **text** ≡ stderr summary. **json**: one object on stdout; no text dual-write; exit format-independent. `dry_run` true under `--dry-run` (no `-o` write). `excluded` = input File+Symlink leaves that failed PathFilter (Dirs that drop as non-ancestors not counted — same leaf accounting as archive). Empty path 四件套 ⇒ `excluded=0` (identity). **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**. See [filter.md](filter.md). |
+| **`filter`** | `ok`, `dry_run`, `input`, `output`, `files`, `dirs`, `symlinks`, `excluded` | Phase24 / **1.14.0** (new command field set; **additive** — does not rename prior fields). Default **text** ≡ stderr summary. **json**: one object on stdout; no text dual-write; exit format-independent. `dry_run` true under `--dry-run` (no `-o` write). `excluded` = input File+Symlink leaves that failed PathFilter (Dirs that drop as non-ancestors not counted — same leaf accounting as archive). Empty path 四件套 ⇒ `excluded=0` (identity). **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**. See [filter.md](filter.md). |
 
 ## Conventions
 
@@ -162,6 +162,14 @@ symlink would-writes ≡ 1.12). Gated by **`check_compat_1_12.sh`** (calls
 1_11; no absolute perf SLA). Workspace reports **1.13.0**. Smoke:
 [`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
 **`would_symlinks` ≠ prune ≠ sync ≠ pack ≠ write mount**.
+Phase 24 / **1.14.0** adds **`filter`** (new command field set:
+`ok`/`dry_run`/`input`/`output`/`files`/`dirs`/`symlinks`/`excluded`) and
+make `--seed` additive **`seed_reused`**. Gated by **`check_compat_1_13.sh`**
+(calls 1_12; no absolute perf SLA). Workspace reports **1.14.0**. Smoke:
+[`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
+**`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠ pack ≠ `archive --path`**.
+**`make --seed` ≠ pack ≠ recompress ≠ path**.
+
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)

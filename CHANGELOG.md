@@ -7,27 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.14.0] — 2026-09-30
+
+Phase 24 closeout — **`chunkforge filter`** (persist path-scoped subset
+`.cfdir` via library `filter_dir_archive` → encode → `-o`; path 四件套;
+`--dry-run` / `--force` / `--format text|json`; empty filter ≡ identity;
+Symlink keep → encode **v2**; all Symlinks filtered → encode **v1**; **≠**
+prune **≠** `gc --path` **≠** sync **≠** write mount **≠** pack **≠**
+`archive --path`) + `docs/filter.md` + `demo_filter_listing.sh` +
+`check_compat_1_13.sh`; P1 **`make --seed <PRIOR.cfidx>`** /
+**`--seed-trust-mtime`** + mount help File+Symlink honesty. Defaults of
+existing commands remain ≡ **1.13.0**. No pack / write mount / aws-sdk /
+remote scrub / extract prune / bidirectional sync / push listing / LRU /
+store trim / **default** zstd / HTTP wire compression / `store recompress` /
+`push --fallback` / multi dest / **`gc --path`** / mount `--progress` /
+**default record symlink** / follow dir symlink / fifo·xattr / offline
+bundle.
+
 ### Added
 
-- **`make --seed <PRIOR.cfidx>`** + **`--seed-trust-mtime`** (Phase24-M6 / P1):
-  mirror archive seed for single-file `.cfidx`. Size fast-reject + content
-  BLAKE3 via library `decide_seed` / `decide_seed_trust_mtime`; **Reuse** copies
-  prior chunk table (skip FastCDC), still writes new `-o`; missing prior chunks
-  in store → clear non-zero (no silent invent). **`--seed-trust-mtime`**
-  (requires `--seed`): size + mtime match (input vs prior `.cfidx` **file**
-  mtime — `.cfidx` has no embedded mtime) → Reuse without content hash (same
-  warning honesty as archive). Omit `--seed` ≡ 1.13 make. Dry-run + seed plans
-  reuse/rechunk without writing. Additive ops-json `seed_reused` when seeding.
-  **≠** pack / **≠** recompress / **≠** path. See `docs/ops-json.md`.
-- **mount help Symlink honesty** (Phase24-M6 / P1): CLI `--help` path/exclude
+- **`chunkforge filter`** (Phase 24 M1–M3 / P0): first-class persist of
+  library `filter_dir_archive` to a new `.cfdir`. Path 四件套 (`--path` /
+  `--path-from` / `--exclude` / `--exclude-from`) same semantics as
+  archive/extract/mount/diff; **`--dry-run`** (plan-only; no `-o` write);
+  **`--force`** (atomic replace existing `-o`; default refuse overwrite);
+  **`--format text|json`** (`ok` / `dry_run` / `input` / `output` / `files` /
+  `dirs` / `symlinks` / `excluded`). Empty path flags ≡ **identity**. Symlink
+  keep → encode **v2**; filtering out all Symlinks → encode **v1**. Never
+  opens a store; never walks a source tree; never rewrites input in place;
+  never prunes a dest tree. `.cfidx` / wrong magic → clear non-zero.
+  Responsibility nail: **`filter` ≠ prune ≠ `gc --path` ≠ sync ≠ write mount ≠
+  pack ≠ `archive --path`**. See `docs/filter.md` / `docs/stability.md` /
+  `docs/ops-json.md`.
+- **Docs + `demo_filter_listing.sh`** (Phase 24 M4): filter / stability /
+  ops-json / perf / README Phase 24 narrative; local smoke for
+  archive-record full → filter `--path` → verify green; empty-filter
+  identity; drop-all-Symlinks → v1; help / ≠ prune / ≠ gc-path / ≠ pack.
+- **`check_compat_1_13.sh`** (Phase 24 M5): calls `check_compat_1_12` +
+  asserts `filter --help` / thin full→subset Symlink keep (format_version=2);
+  no gc `--path` / no write mount / no pack / no default record / no mount
+  `--progress`; requires `demo_filter_listing.sh` present + executable.
+- **`make --seed <PRIOR.cfidx>`** + **`--seed-trust-mtime`** (Phase 24 M6 /
+  P1): mirror archive seed for single-file `.cfidx`. Size fast-reject +
+  content BLAKE3 via library `decide_seed` / `decide_seed_trust_mtime`;
+  **Reuse** copies prior chunk table (skip FastCDC), still writes new `-o`;
+  missing prior chunks in store → clear non-zero (no silent invent).
+  **`--seed-trust-mtime`** (requires `--seed`): size + mtime match (input vs
+  prior `.cfidx` **file** mtime — `.cfidx` has no embedded mtime) → Reuse
+  without content hash (same warning honesty as archive). Omit `--seed` ≡
+  1.13 make. Dry-run + seed plans reuse/rechunk without writing. Additive
+  ops-json `seed_reused` when seeding. **≠** pack / **≠** recompress / **≠**
+  path. See `docs/ops-json.md`.
+- **mount help Symlink honesty** (Phase 24 M6 / P1): CLI `--help` path/exclude
   copy now says **File+Symlink** (filtered File∪Symlink + ancestor Dirs),
   matching `docs/mount.md`. Runtime defaults unchanged.
+- Workspace version **1.14.0** (Phase 24 M7 closeout).
 
 ### Changed
 
-- `make --help` / dry-run narrative: **≠** pack / **≠** recompress / **≠** path
-  (seed is now a first-class opt-in flag, no longer a dry-run exclusion).
+- `make --help` / dry-run narrative: **≠** pack / **≠** recompress / **≠**
+  path (seed is now a first-class opt-in flag, no longer a dry-run
+  exclusion).
 
+### Not delivered / deferred (Phase 24)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
+- **`mount --progress`** — non-goal (session-typed; no natural done/TOTAL)
+- **Default record symlink** / follow directory symlink / fifo·socket·device /
+  xattr / ACL — non-goal (opt-in record only; tree default stays skip)
+- Offline bundle — deferred (not pack; not this release)
+
+### Compatibility
+
+- CLI defaults of existing commands match **1.13.0**: `diff --tree` without
+  `--symlinks` (or `--symlinks skip`) ≡ 1.12/1.13 tree skip+warn; no silent
+  default **record**; archive `--symlinks skip` ≡ 1.11–1.13; create
+  compression **none**; `jobs=1`, `http-retries=0`, SigV4 **off**, ops
+  default **text**, progress **off**, mount prefetch depth **1**; no mount
+  path flags ⇒ full tree; omit make `--dry-run` ≡ real write; omit make
+  `--seed` ≡ 1.13 make; no `--path-from` / no doctor·verify path flags ⇒
+  full set; no `diff --progress` ⇒ quiet; `make --jobs` default **1**; no
+  `--verify` on pull ⇒ quiet; no `--cache-stats` ⇒ no cache noise; no
+  `--fallback` ⇒ single origin; no `--cache-max-bytes` ⇒ unbounded cache
+  fill; omit push `--compression` ≡ create none; extract dry-run
+  `would_write` still includes symlink (additive `would_symlinks` only);
+  **`filter` is additive** (new subcommand; other commands unchanged)
+- `.cfidx` v1 on-wire bytes unchanged; `.cfdir` default write (no Symlink)
+  stays v1; opt-in v2 unchanged from 1.12/1.13; Source/Sink signatures
+  unchanged; FUSE stays **RO**
 
 ## [1.13.0] — 2026-09-30
 
@@ -1409,6 +1490,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.14.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.14.0
 [1.13.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.13.0
 [1.12.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.12.0
 [1.11.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.11.0

@@ -1,8 +1,7 @@
 # `chunkforge filter`
 
 Persist a **path-scoped subset** of an existing `.cfdir` listing to a new
-`.cfdir`. Phase24 / toward **1.14.0** (filter is on `main` as of M1–M4;
-workspace / CLI version stays **1.13.0** until M7 closeout).
+`.cfdir`. Phase24 / **1.14.0** closeout.
 
 Consumes library [`filter_dir_archive`](../crates/chunkforge-index/src/filter_dir.rs)
 (same PathFilter as `archive` / `extract` / `mount` / `diff` / `doctor` /
@@ -115,8 +114,9 @@ Symlink entries contribute **0** chunks (same as archive `--symlinks record`).
 - changing other command defaults
 - default record symlink / follow / fifo·xattr / offline bundle
 
-Pack stance: [perf.md](perf.md) — **Phase24 / toward 1.14.0 still does not
-implement pack** (version remains **1.13.0** until M7).
+Pack stance: [perf.md](perf.md) — **Phase24 / 1.14.0 still does not
+implement pack**.
 
-Compat gate **`check_compat_1_13.sh`** lands in **Phase24-M5** (note-only here;
-this doc / demo do not assert that script must-exist or must-not-exist).
+Compat gate **`check_compat_1_13.sh`** (Phase24-M5/M7) asserts `filter` help +
+thin Symlink-keep subset; calls `check_compat_1_12`. Smoke:
+[`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
