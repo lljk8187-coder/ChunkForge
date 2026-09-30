@@ -67,6 +67,17 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// On-disk chunk compression for a **new** store only (`none`|`zstd`;
+        /// case-insensitive). Omit ≡ create with `none` (≡ 1.6); existing stores
+        /// open by `meta.toml` (omit → no mismatch check; explicit value that
+        /// differs from meta → clear non-zero error). Disk zstd is **not** HTTP
+        /// wire compression / Content-Encoding. Default none ≡ 1.6.
+        #[arg(
+            long = "compression",
+            value_name = "none|zstd",
+            value_parser = parse_cli_compression
+        )]
+        compression: Option<Compression>,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -133,6 +144,18 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// On-disk chunk compression for a **new** store only (`none`|`zstd`;
+        /// case-insensitive). Omit ≡ create with `none` (≡ 1.6); existing stores
+        /// open by `meta.toml` (omit → no mismatch check; explicit value that
+        /// differs from meta → clear non-zero error). Disk zstd is **not** HTTP
+        /// wire compression / Content-Encoding. Default none ≡ 1.6. Ignored for
+        /// create under `--dry-run` (dry-run never creates a store).
+        #[arg(
+            long = "compression",
+            value_name = "none|zstd",
+            value_parser = parse_cli_compression
+        )]
+        compression: Option<Compression>,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -833,7 +856,15 @@ fn run() -> Result<()> {
             input,
             chunk_size,
             format,
-        } => cmd_make(&store, &output, &input, chunk_size.as_deref(), format),
+            compression,
+        } => cmd_make(
+            &store,
+            &output,
+            &input,
+            chunk_size.as_deref(),
+            format,
+            compression,
+        ),
         Commands::Archive {
             store,
             output,
@@ -847,6 +878,7 @@ fn run() -> Result<()> {
             excludes,
             exclude_from,
             format,
+            compression,
         } => {
             let jobs = parse_jobs(jobs)?;
             let excludes = merged_excludes(&excludes, &exclude_from)?;
@@ -861,6 +893,7 @@ fn run() -> Result<()> {
                 &paths,
                 &excludes,
                 format,
+                compression,
             )
         }
         Commands::Extract {
@@ -1197,6 +1230,17 @@ fn parse_chunk_size(spec: Option<&str>) -> Result<ChunkParams> {
     ChunkParams::new(min, avg, max).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Parse `--compression none|zstd` (case-insensitive). Used as a clap
+/// `value_parser`; clap wraps the field in `Option` so omit → `None` and
+/// explicit `none` → `Some(Compression::None)` (distinguishable for mismatch).
+fn parse_cli_compression(s: &str) -> std::result::Result<Compression, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "none" => Ok(Compression::None),
+        "zstd" => Ok(Compression::Zstd),
+        other => Err(format!("unknown compression {other:?}: expected none|zstd")),
+    }
+}
+
 /// Open an existing store or create one at `root`.
 ///
 /// `compression`:
@@ -1415,10 +1459,11 @@ fn cmd_make(
     input: &Path,
     chunk_size: Option<&str>,
     format: CliFormat,
+    compression: Option<Compression>,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
-    let store = open_or_create_store(store_path, None)?;
+    let store = open_or_create_store(store_path, compression)?;
 
     let chunks = chunk_bytes(&data, &params);
     let blob_blake3 = ChunkId::hash(&data);
@@ -1512,6 +1557,7 @@ fn cmd_archive(
     paths: &[String],
     excludes: &[String],
     format: CliFormat,
+    compression: Option<Compression>,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -1548,7 +1594,7 @@ fn cmd_archive(
             None
         }
     } else {
-        Some(open_or_create_store(store_path, None)?)
+        Some(open_or_create_store(store_path, compression)?)
     };
 
     let mut flags = 0u16;
@@ -4509,5 +4555,22 @@ mod open_or_create_store_tests {
         open_or_create_store(&root, Some(Compression::Zstd)).unwrap();
         let store = open_or_create_store(&root, None).unwrap();
         assert_eq!(store.compression(), Compression::Zstd);
+    }
+
+    #[test]
+    fn parse_cli_compression_accepts_case_insensitive() {
+        assert_eq!(parse_cli_compression("none").unwrap(), Compression::None);
+        assert_eq!(parse_cli_compression("None").unwrap(), Compression::None);
+        assert_eq!(parse_cli_compression("NONE").unwrap(), Compression::None);
+        assert_eq!(parse_cli_compression("zstd").unwrap(), Compression::Zstd);
+        assert_eq!(parse_cli_compression("ZSTD").unwrap(), Compression::Zstd);
+        assert_eq!(parse_cli_compression(" Zstd ").unwrap(), Compression::Zstd);
+    }
+
+    #[test]
+    fn parse_cli_compression_rejects_unknown() {
+        let err = parse_cli_compression("gzip").unwrap_err();
+        assert!(err.contains("unknown compression"), "{err}");
+        assert!(err.contains("none|zstd"), "{err}");
     }
 }

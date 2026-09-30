@@ -10953,3 +10953,302 @@ fn fallback_local_primary_http_fallback_with_url_template() {
     ]);
     assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
 }
+
+// --- Phase 17 M2: make/archive --compression ---
+
+#[test]
+fn help_lists_compression_on_make_and_archive() {
+    for cmd in ["make", "archive"] {
+        let out = Command::new(bin())
+            .args([cmd, "--help"])
+            .output()
+            .expect("spawn");
+        assert!(out.status.success(), "{cmd} --help failed");
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("--compression"),
+            "{cmd} --help must list --compression:\n{s}"
+        );
+        let lower = s.to_ascii_lowercase();
+        assert!(
+            lower.contains("none") && lower.contains("zstd"),
+            "{cmd} --help should mention none|zstd:\n{s}"
+        );
+        assert!(
+            lower.contains("new") || lower.contains("creat"),
+            "{cmd} --help should say flag affects new stores:\n{s}"
+        );
+        assert!(
+            !lower.contains("content-encoding")
+                || lower.contains("not")
+                || lower.contains("≠")
+                || lower.contains("wire")
+                || lower.contains("http"),
+            "{cmd} --help should clarify disk ≠ HTTP wire (got):\n{s}"
+        );
+    }
+}
+
+#[test]
+fn make_compression_zstd_stats_and_cat_roundtrip() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store-z");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("zstd"), "{v}");
+    assert!(v["ok"].as_bool().unwrap_or(false), "{v}");
+
+    // Optional plaintext round-trip via cat (get returns plaintext).
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}
+
+#[test]
+fn make_omitted_compression_is_none() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store-none");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
+}
+
+#[test]
+fn make_existing_none_store_omit_succeeds() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("a.cfidx");
+    let idx2 = dir.path().join("b.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    // Omit again on existing none store → success (1.6 regression).
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
+}
+
+#[test]
+fn make_existing_none_store_explicit_zstd_mismatch() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("a.cfidx");
+    let idx2 = dir.path().join("b.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let fail = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        "-o",
+        idx2.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("compression mismatch")
+            || err.to_ascii_lowercase().contains("mismatch"),
+        "expected mismatch error, got:\n{err}"
+    );
+}
+
+#[test]
+fn make_compression_invalid_value_errors() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let fail = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "--compression",
+        "gzip",
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&fail.stderr),
+        String::from_utf8_lossy(&fail.stdout)
+    );
+    let lower = err.to_ascii_lowercase();
+    assert!(
+        lower.contains("compression") || lower.contains("gzip") || lower.contains("none|zstd"),
+        "expected clear invalid-value error, got:\n{err}"
+    );
+}
+
+#[test]
+fn make_compression_case_insensitive_zstd() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "--compression",
+        "Zstd",
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("zstd"), "{v}");
+}
+
+#[test]
+fn archive_compression_zstd_stats() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store-z");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"archive zstd payload aaa").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("zstd"), "{v}");
+}
+
+#[test]
+fn archive_omitted_compression_is_none() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"archive none payload").unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
+}
