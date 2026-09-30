@@ -18,13 +18,19 @@ static PUT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `chunks` counts well-formed loose `.cnk` files (same as
 /// [`Store::list_chunk_ids`]). `bytes_on_disk` sums each `.cnk` file's
 /// `metadata().len()` — compressed size when the store uses zstd — without
-/// decoding plaintext. `compression` is the store-wide policy from `meta.toml`.
+/// decoding plaintext. `bytes_plaintext` is `Some(bytes_on_disk)` when
+/// `compression=none` (zero `get`); for zstd it is `None` unless computed via
+/// [`Store::stats_with_decode`] (opt-in full-store decode). `compression` is
+/// the store-wide policy from `meta.toml`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StoreStats {
     /// Number of well-formed loose chunk files.
     pub chunks: u64,
     /// Sum of on-disk `.cnk` file lengths (not plaintext).
     pub bytes_on_disk: u64,
+    /// Sum of plaintext lengths when cheap or explicitly decoded; see
+    /// [`Store::stats`] / [`Store::stats_with_decode`].
+    pub bytes_plaintext: Option<u64>,
     /// Uniform compression policy for this store.
     pub compression: Compression,
 }
@@ -248,23 +254,65 @@ impl Store {
         }
     }
 
-    /// Aggregate chunk count and on-disk bytes for this store.
+    /// Aggregate chunk count and on-disk bytes for this store (cheap path).
     ///
     /// Uses [`list_chunk_ids`](Self::list_chunk_ids) for the count and each
     /// chunk's `.cnk` [`metadata().len()`](std::fs::Metadata::len) for
-    /// `bytes_on_disk`. Does **not** decode plaintext (`get`). Empty stores
-    /// report `chunks = 0` and `bytes_on_disk = 0`.
+    /// `bytes_on_disk`. Does **not** decode plaintext (`get`).
+    ///
+    /// `bytes_plaintext`:
+    /// - `compression=none` → `Some(bytes_on_disk)` (plaintext ≡ on-disk);
+    /// - `compression=zstd` → `None` (use [`stats_with_decode`](Self::stats_with_decode)
+    ///   to opt in to a full-store `get` sum).
+    ///
+    /// Empty stores report `chunks = 0`, `bytes_on_disk = 0`, and
+    /// `bytes_plaintext = Some(0)` when compression is none.
     pub fn stats(&self) -> Result<StoreStats, Error> {
+        self.stats_inner(false)
+    }
+
+    /// Like [`stats`](Self::stats), but when `decode` is true and the store
+    /// uses zstd, sums plaintext lengths via `get` for every chunk.
+    ///
+    /// For `compression=none`, `decode` is a no-op: plaintext still equals
+    /// on-disk size (no `get`). Prefer [`stats`](Self::stats) when you do not
+    /// need zstd plaintext.
+    pub fn stats_with_decode(&self) -> Result<StoreStats, Error> {
+        self.stats_inner(true)
+    }
+
+    fn stats_inner(&self, decode: bool) -> Result<StoreStats, Error> {
         let ids = self.list_chunk_ids()?;
         let mut bytes_on_disk: u64 = 0;
         for id in &ids {
             let meta = fs::metadata(self.chunk_path(id))?;
             bytes_on_disk = bytes_on_disk.saturating_add(meta.len());
         }
+        let compression = self.compression();
+        // When the optional `zstd` feature is off, `decode` is unused (only
+        // Compression::None exists); silence the warning without renaming the
+        // public-facing opt-in semantics.
+        #[cfg(not(feature = "zstd"))]
+        let _ = decode;
+        let bytes_plaintext = match compression {
+            Compression::None => Some(bytes_on_disk),
+            #[cfg(feature = "zstd")]
+            Compression::Zstd if decode => {
+                let mut sum: u64 = 0;
+                for id in &ids {
+                    let plain = self.get(id)?;
+                    sum = sum.saturating_add(plain.len() as u64);
+                }
+                Some(sum)
+            }
+            #[cfg(feature = "zstd")]
+            Compression::Zstd => None,
+        };
         Ok(StoreStats {
             chunks: ids.len() as u64,
             bytes_on_disk,
-            compression: self.compression(),
+            bytes_plaintext,
+            compression,
         })
     }
 }
@@ -489,6 +537,7 @@ mod tests {
         let s = store.stats().unwrap();
         assert_eq!(s.chunks, 0);
         assert_eq!(s.bytes_on_disk, 0);
+        assert_eq!(s.bytes_plaintext, Some(0));
         assert_eq!(s.compression, Compression::None);
     }
 
@@ -510,6 +559,27 @@ mod tests {
             expected += fs::metadata(store.chunk_path(&id)).unwrap().len();
         }
         assert_eq!(s.bytes_on_disk, expected);
+        // compression=none → plaintext ≡ on_disk (cheap, no get).
+        assert_eq!(s.bytes_plaintext, Some(expected));
+        // decode flag is a no-op for none stores.
+        let decoded = store.stats_with_decode().unwrap();
+        assert_eq!(decoded.bytes_plaintext, Some(expected));
+        assert_eq!(decoded.bytes_on_disk, expected);
+    }
+
+    #[test]
+    fn stats_none_plaintext_equals_on_disk() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::None).unwrap();
+        let payloads: &[&[u8]] = &[b"alpha", b"bravo-bravo", b"charlie"];
+        let mut plain_sum: u64 = 0;
+        for p in payloads {
+            store.put(p).unwrap();
+            plain_sum += p.len() as u64;
+        }
+        let s = store.stats().unwrap();
+        assert_eq!(s.bytes_plaintext, Some(s.bytes_on_disk));
+        assert_eq!(s.bytes_on_disk, plain_sum);
     }
 
     fn walkdir_cnk(root: PathBuf) -> Vec<PathBuf> {
@@ -564,5 +634,47 @@ mod zstd_tests {
         assert_eq!(s.chunks, 1);
         assert!(s.bytes_on_disk > 0);
         assert_eq!(s.compression, Compression::Zstd);
+        // Cheap stats must not decode → bytes_plaintext stays None.
+        assert_eq!(s.bytes_plaintext, None);
+    }
+
+    #[test]
+    fn stats_zstd_without_decode_plaintext_is_none() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::Zstd).unwrap();
+        let a = b"zzzzzzzzzzzzzzzz aaa compressible zzzzzzzzzzzz";
+        let b = b"zzzzzzzzzzzzzzzz bbb compressible zzzzzzzzzzzz";
+        store.put(a).unwrap();
+        store.put(b).unwrap();
+        let s = store.stats().unwrap();
+        assert_eq!(s.chunks, 2);
+        assert!(s.bytes_on_disk > 0);
+        assert_eq!(s.bytes_plaintext, None);
+        // On-disk should differ from plaintext sum when compressed.
+        let plain_sum = (a.len() + b.len()) as u64;
+        assert_ne!(s.bytes_on_disk, plain_sum);
+    }
+
+    #[test]
+    fn stats_zstd_with_decode_sums_plaintext_lens() {
+        let dir = tempdir().unwrap();
+        let store = Store::create(dir.path(), Compression::Zstd).unwrap();
+        let payloads: &[&[u8]] = &[
+            b"zzzzzzzzzzzzzzzz first compressible payload zzzzzzzzzzzz",
+            b"zzzzzzzzzzzzzzzz second compressible payload zzzzzzzzzzzz",
+            b"zzzzzzzzzzzzzzzz third compressible payload zzzzzzzzzzzz",
+        ];
+        let mut plain_sum: u64 = 0;
+        for p in payloads {
+            store.put(p).unwrap();
+            plain_sum += p.len() as u64;
+        }
+        let cheap = store.stats().unwrap();
+        assert_eq!(cheap.bytes_plaintext, None);
+        let decoded = store.stats_with_decode().unwrap();
+        assert_eq!(decoded.chunks, payloads.len() as u64);
+        assert_eq!(decoded.bytes_on_disk, cheap.bytes_on_disk);
+        assert_eq!(decoded.bytes_plaintext, Some(plain_sum));
+        assert_ne!(decoded.bytes_on_disk, plain_sum);
     }
 }

@@ -5950,6 +5950,10 @@ fn store_stats_help_lists_stats_du_and_format() {
         "store stats --help must list --format:\n{stats_s}"
     );
     assert!(
+        stats_s.contains("--decode"),
+        "store stats --help must list --decode:\n{stats_s}"
+    );
+    assert!(
         !stats_s.contains("--apply"),
         "store stats must not offer --apply:\n{stats_s}"
     );
@@ -5960,6 +5964,10 @@ fn store_stats_help_lists_stats_du_and_format() {
     assert!(
         du_s.contains("--format"),
         "store du --help must list --format:\n{du_s}"
+    );
+    assert!(
+        du_s.contains("--decode"),
+        "store du --help must list --decode:\n{du_s}"
     );
 }
 
@@ -5975,9 +5983,9 @@ fn store_stats_empty_store_text_and_json() {
     let out = run_ok(&["store", "stats", "--store", store.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout
-            .lines()
-            .any(|l| l.trim() == "store stats: chunks=0 bytes_on_disk=0 compression=none"),
+        stdout.lines().any(|l| {
+            l.trim() == "store stats: chunks=0 bytes_on_disk=0 bytes_plaintext=0 compression=none"
+        }),
         "empty store text summary; stdout={stdout}"
     );
 
@@ -5999,6 +6007,7 @@ fn store_stats_empty_store_text_and_json() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["chunks"].as_u64(), Some(0));
     assert_eq!(v["bytes_on_disk"].as_u64(), Some(0));
+    assert_eq!(v["bytes_plaintext"].as_u64(), Some(0));
     assert_eq!(v["compression"].as_str(), Some("none"));
 }
 
@@ -6036,8 +6045,10 @@ fn store_stats_after_put_json_chunks_and_bytes() {
     assert_eq!(v["ok"], true);
     let chunks = v["chunks"].as_u64().expect("chunks");
     let bytes = v["bytes_on_disk"].as_u64().expect("bytes_on_disk");
+    let plain = v["bytes_plaintext"].as_u64().expect("bytes_plaintext");
     assert!(chunks >= 1, "chunks={chunks}");
     assert!(bytes > 0, "bytes_on_disk={bytes}");
+    assert_eq!(plain, bytes, "none-store plaintext ≡ on_disk");
     assert_eq!(v["compression"].as_str(), Some("none"));
 
     // Cross-check against library + on-disk .cnk sizes
@@ -6047,6 +6058,7 @@ fn store_stats_after_put_json_chunks_and_bytes() {
         let lib = s.stats().unwrap();
         assert_eq!(chunks, lib.chunks);
         assert_eq!(bytes, lib.bytes_on_disk);
+        assert_eq!(lib.bytes_plaintext, Some(bytes));
     }
 }
 
@@ -6071,8 +6083,9 @@ fn store_stats_default_format_is_text_not_json() {
     assert!(
         stdout.lines().any(|l| l.starts_with("store stats: chunks=")
             && l.contains("bytes_on_disk=")
+            && l.contains("bytes_plaintext=")
             && l.contains("compression=")),
-        "default (no --format) must keep text summary; stdout={stdout}"
+        "default (no --format) must keep text summary with bytes_plaintext; stdout={stdout}"
     );
     assert!(
         serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
@@ -6092,9 +6105,9 @@ fn store_stats_du_alias_works() {
     let out = run_ok(&["store", "du", "--store", store.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout
-            .lines()
-            .any(|l| l.trim() == "store stats: chunks=0 bytes_on_disk=0 compression=none"),
+        stdout.lines().any(|l| {
+            l.trim() == "store stats: chunks=0 bytes_on_disk=0 bytes_plaintext=0 compression=none"
+        }),
         "du alias text; stdout={stdout}"
     );
 
@@ -6112,6 +6125,85 @@ fn store_stats_du_alias_works() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["chunks"].as_u64(), Some(0));
     assert_eq!(v["bytes_on_disk"].as_u64(), Some(0));
+}
+
+// --- Phase 16 M4: store stats bytes_plaintext + --decode ---
+
+#[test]
+fn store_stats_none_json_bytes_plaintext_equals_on_disk() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    {
+        use chunkforge_store::{Compression, Store};
+        let s = Store::create(&store, Compression::None).unwrap();
+        s.put(b"plaintext-a").unwrap();
+        s.put(b"plaintext-bb").unwrap();
+    }
+
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stats json invalid: {e}; stdout={stdout}"));
+    let on_disk = v["bytes_on_disk"].as_u64().expect("bytes_on_disk");
+    let plain = v["bytes_plaintext"].as_u64().expect("bytes_plaintext");
+    assert_eq!(plain, on_disk);
+    assert_eq!(v["compression"].as_str(), Some("none"));
+
+    // --decode is a no-op for none stores (still Some ≡ on_disk).
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        "--decode",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v2: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stats --decode json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v2["bytes_plaintext"].as_u64(), Some(on_disk));
+    assert_eq!(v2["bytes_on_disk"].as_u64(), Some(on_disk));
+}
+
+#[test]
+fn store_stats_decode_flag_listed_and_text_prints_plaintext() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--decode",
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().any(|l| l.starts_with("store stats:")
+            && l.contains("bytes_on_disk=")
+            && l.contains("bytes_plaintext=")
+            && l.contains("compression=none")),
+        "text with --decode must print bytes_plaintext; stdout={stdout}"
+    );
 }
 
 // --- Phase 7 M6: archive --seed-trust-mtime + extract --force ---

@@ -691,11 +691,14 @@ enum StoreCommands {
     },
     /// Report local CAS chunk count and on-disk bytes (alias: `du`)
     ///
-    /// Read-only observation via `Store::stats` — never deletes, trims, or
-    /// applies LRU. Default **`--format text`**: one stdout summary line
-    /// `store stats: chunks=N bytes_on_disk=M compression=none|zstd`.
+    /// Read-only observation via `Store::stats` / `stats_with_decode` — never
+    /// deletes, trims, or applies LRU. Default **`--format text`**: one stdout
+    /// summary line `store stats: chunks=N bytes_on_disk=M [bytes_plaintext=P]
+    /// compression=none|zstd` (`bytes_plaintext` printed when known: always for
+    /// `compression=none`, or for zstd only with `--decode`).
     /// **`--format json`**: one JSON object on stdout (`ok` / `chunks` /
-    /// `bytes_on_disk` / `compression`); no text dual-write. Exit codes are
+    /// `bytes_on_disk` / `bytes_plaintext` / `compression`); `bytes_plaintext`
+    /// is a number or `null`. No text dual-write. Exit codes are
     /// format-independent (success → 0).
     #[command(visible_alias = "du")]
     Stats {
@@ -705,6 +708,12 @@ enum StoreCommands {
         /// Output format (default text; json = one object on stdout)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Opt-in: for zstd stores, decode every chunk (`get`) and sum plaintext
+        /// lengths into `bytes_plaintext`. For `compression=none` this is a
+        /// no-op (`bytes_plaintext` already equals `bytes_on_disk`). Default off
+        /// so stats stay cheap (no full-store decode).
+        #[arg(long = "decode")]
+        decode: bool,
     },
 }
 
@@ -1104,8 +1113,13 @@ fn run() -> Result<()> {
             cmd_store_scrub(&store, listing.as_deref(), jobs, format, progress)
         }
         Commands::Store {
-            command: StoreCommands::Stats { store, format },
-        } => cmd_store_stats(&store, format),
+            command:
+                StoreCommands::Stats {
+                    store,
+                    format,
+                    decode,
+                },
+        } => cmd_store_stats(&store, format, decode),
     }
 }
 
@@ -4068,32 +4082,53 @@ fn cmd_store_scrub(
     Ok(())
 }
 
-/// Local CAS size observation: chunk count + on-disk `.cnk` bytes.
+/// Local CAS size observation: chunk count + on-disk `.cnk` bytes (+ optional
+/// plaintext).
 ///
 /// Text (default): one stdout line
-/// `store stats: chunks=N bytes_on_disk=M compression=none|zstd`.
-/// Json: one object (`ok`, `chunks`, `bytes_on_disk`, `compression`); no text
-/// dual-write. Never deletes. Exit 0 on success for both formats.
-fn cmd_store_stats(store_path: &Path, format: CliFormat) -> Result<()> {
+/// `store stats: chunks=N bytes_on_disk=M [bytes_plaintext=P] compression=…`
+/// (`bytes_plaintext` only when `Some`).
+/// Json: one object (`ok`, `chunks`, `bytes_on_disk`, `bytes_plaintext`,
+/// `compression`); `bytes_plaintext` is a number or `null`. No text dual-write.
+/// Never deletes. Exit 0 on success for both formats.
+///
+/// When `decode` is false, uses cheap [`Store::stats`] (none → plaintext ≡
+/// on_disk; zstd → `bytes_plaintext=None`). When `decode` is true, uses
+/// [`Store::stats_with_decode`] (zstd pays a full-store `get`).
+fn cmd_store_stats(store_path: &Path, format: CliFormat, decode: bool) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
-    let s = store
-        .stats()
-        .with_context(|| format!("stats for store {}", store_path.display()))?;
+    let s = if decode {
+        store.stats_with_decode()
+    } else {
+        store.stats()
+    }
+    .with_context(|| format!("stats for store {}", store_path.display()))?;
     match format {
         CliFormat::Text => {
-            println!(
-                "store stats: chunks={} bytes_on_disk={} compression={}",
-                s.chunks,
-                s.bytes_on_disk,
-                s.compression.as_str()
-            );
+            if let Some(plain) = s.bytes_plaintext {
+                println!(
+                    "store stats: chunks={} bytes_on_disk={} bytes_plaintext={} compression={}",
+                    s.chunks,
+                    s.bytes_on_disk,
+                    plain,
+                    s.compression.as_str()
+                );
+            } else {
+                println!(
+                    "store stats: chunks={} bytes_on_disk={} compression={}",
+                    s.chunks,
+                    s.bytes_on_disk,
+                    s.compression.as_str()
+                );
+            }
         }
         CliFormat::Json => {
             let obj = serde_json::json!({
                 "ok": true,
                 "chunks": s.chunks,
                 "bytes_on_disk": s.bytes_on_disk,
+                "bytes_plaintext": s.bytes_plaintext,
                 "compression": s.compression.as_str(),
             });
             println!("{obj}");
