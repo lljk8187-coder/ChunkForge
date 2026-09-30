@@ -13,9 +13,9 @@
 #   CHUNKFORGE_DEMO_SKIP_FUSE=1  force-skip real FUSE even if available
 #
 # Version gate expects chunkforge 1.10.0 (Phase21-M7 bumps to 1.11.0 later).
-# Note (M7b lesson / M3 hard rule): do NOT hard-assert that
-# check_compat_1_10.sh must exist or must not exist — that script is M4.
-# Mentions of compat_1_10 below are comment / note-only.
+# Gate (Phase20-M5 / Phase19-M7b lesson): require check_compat_1_10.sh
+# present + executable. Do NOT leave a soft "not yet" note, and never
+# assert that compat_1_10 must not exist.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -290,7 +290,7 @@ echo "mount has no --format / --progress: OK"
 echo "E: help / ≠ gc-path / no session JSON-progress: OK"
 
 echo
-echo "==> F. version 1.10.0 + compat_1_9; compat_1_10 note-only (M4)"
+echo "==> F. version 1.10.0 + compat_1_9 + compat_1_10 (must exist)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
 if ! grep -F '1.10.0' <<<"$VER" >/dev/null; then
@@ -312,9 +312,16 @@ if [[ ! -x "$COMPAT19" ]]; then
   echo "error: check_compat_1_9.sh must be executable" >&2
   exit 1
 fi
-# NOTE ONLY — do not assert presence or absence of check_compat_1_10.sh (M4).
-echo "note: check_compat_1_10.sh is Phase21-M4 (not asserted here)"
-echo "F: version 1.10.0 / Cargo 1.10.0 / compat_1_9: OK"
+COMPAT110="$ROOT/scripts/check_compat_1_10.sh"
+if [[ ! -f "$COMPAT110" ]]; then
+  echo "error: check_compat_1_10.sh must exist" >&2
+  exit 1
+fi
+if [[ ! -x "$COMPAT110" ]]; then
+  echo "error: check_compat_1_10.sh must be executable" >&2
+  exit 1
+fi
+echo "F: version 1.10.0 / Cargo 1.10.0 / compat_1_9 / compat_1_10: OK"
 
 echo
 echo "demo_mount_path: ALL OK (assert_path=$ASSERT_PATH)"
