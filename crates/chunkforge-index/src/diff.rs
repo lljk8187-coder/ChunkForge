@@ -1,9 +1,11 @@
-//! Directory-archive path/chunk diff (Phase 7 M1).
+//! Directory-archive path/chunk diff (Phase 7 M1; Phase22-M3 Symlink).
 //!
-//! Compare two [`.cfdir`](crate::DirArchive) listings by relative **File** path
-//! (Dir-only entries are ignored, matching [`crate::seed_file_map`]). Reports
-//! path-level added / removed / content-changed / meta-changed, plus unique
-//! chunk-id set statistics.
+//! Compare two [`.cfdir`](crate::DirArchive) listings by relative **File** and
+//! **Symlink** path (Dir-only entries are ignored). Reports path-level added /
+//! removed / content-changed / meta-changed, plus unique chunk-id set
+//! statistics. Symlink paths participate in added/removed/changed/meta_changed
+//! (target change → `changed`; mode-only → `meta_changed`). Seed maps remain
+//! File-only ([`crate::seed_file_map`]); Symlink is never reused via seed.
 //!
 //! Does **not** change `.cfdir` / `.cfidx` v1 byte layouts.
 
@@ -11,16 +13,16 @@ use crate::{DirArchive, DirEntry, DirEntryKind};
 use chunkforge_chunk::ChunkId;
 use std::collections::{HashMap, HashSet};
 
-/// Path-keyed comparison of two directory archives (File entries only).
+/// Path-keyed comparison of two directory archives (File + Symlink entries).
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct DiffReport {
     /// Paths present in `right` but not in `left`.
     pub added: Vec<String>,
     /// Paths present in `left` but not in `right`.
     pub removed: Vec<String>,
-    /// Same path, content differs (`blob_blake3` different, or size mismatch).
+    /// Same path, content differs (File: `blob_blake3`/size; Symlink: target).
     pub changed: Vec<String>,
-    /// Same path, same `blob_blake3`, but `mode` and/or `mtime_secs` differ.
+    /// Same path, same content identity, but mode (and for File, `mtime_secs`) differ.
     /// Never also listed in [`Self::changed`].
     pub meta_changed: Vec<String>,
     /// Unique chunk ids present in both archives.
@@ -31,12 +33,15 @@ pub struct DiffReport {
     pub chunks_only_right: usize,
 }
 
-/// Compare two directory archives by File relative path.
+/// Compare two directory archives by File and Symlink relative path.
 ///
-/// - **added** / **removed** / **changed** / **meta_changed** cover File paths only.
-/// - Content change: `blob_blake3` differs (size mismatch is treated as content change).
-/// - Meta-only: same `blob_blake3`, but `mode` and/or `mtime_secs` differ.
-/// - Chunk stats: unique chunk ids from all File entries on each side.
+/// - **added** / **removed** / **changed** / **meta_changed** cover File and
+///   Symlink paths (Dir-only ignored).
+/// - File content change: `blob_blake3` differs (size mismatch is content change).
+/// - Symlink content change: `target` differs → `changed`; mode-only → `meta_changed`.
+/// - Kind mismatch at the same path (File vs Symlink) → `changed`.
+/// - File meta-only: same `blob_blake3`, but `mode` and/or `mtime_secs` differ.
+/// - Chunk stats: unique chunk ids from all File entries on each side (Symlink = 0).
 ///
 /// Path vectors are sorted for determinism.
 ///
@@ -46,41 +51,36 @@ pub fn diff_dir_archives(left: &DirArchive, right: &DirArchive) -> DiffReport {
 }
 
 /// Like [`diff_dir_archives`], but invokes `on_path` once per filtered **File**
-/// path in the union of both sides (Dir-only entries are ignored, matching
-/// [`file_map`]). Tick count equals `|left∪right|` File paths — never a
-/// post-hoc empty spin over TOTAL.
+/// or **Symlink** path in the union of both sides (Dir-only entries are
+/// ignored, matching [`leaf_map`]). Tick count equals `|left∪right|` leaf
+/// paths — never a post-hoc empty spin over TOTAL.
 pub fn diff_dir_archives_with_progress(
     left: &DirArchive,
     right: &DirArchive,
     mut on_path: impl FnMut(),
 ) -> DiffReport {
-    let left_files = file_map(left);
-    let right_files = file_map(right);
+    let left_leaves = leaf_map(left);
+    let right_leaves = leaf_map(right);
 
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut changed = Vec::new();
     let mut meta_changed = Vec::new();
 
-    // Union of File paths (Dir-only already excluded by file_map).
-    let mut union: HashSet<&str> = left_files.keys().copied().collect();
-    union.extend(right_files.keys().copied());
+    // Union of File + Symlink paths (Dir-only already excluded by leaf_map).
+    let mut union: HashSet<&str> = left_leaves.keys().copied().collect();
+    union.extend(right_leaves.keys().copied());
 
     for path in &union {
         on_path();
-        match (left_files.get(path), right_files.get(path)) {
+        match (left_leaves.get(path), right_leaves.get(path)) {
             (Some(_), None) => removed.push((*path).to_owned()),
             (None, Some(_)) => added.push((*path).to_owned()),
             (Some(left_entry), Some(right_entry)) => {
-                let (l_mode, l_size, l_mtime, l_blake3) = file_meta(left_entry);
-                let (r_mode, r_size, r_mtime, r_blake3) = file_meta(right_entry);
-
-                if l_blake3 != r_blake3 || l_size != r_size {
-                    // Content differs (blake3 and/or size). Size mismatch without blake3
-                    // change is still treated as content change per Phase7 §3.1.
-                    changed.push((*path).to_owned());
-                } else if l_mode != r_mode || l_mtime != r_mtime {
-                    meta_changed.push((*path).to_owned());
+                match compare_leaves(left_entry, right_entry) {
+                    LeafCompare::Changed => changed.push((*path).to_owned()),
+                    LeafCompare::MetaChanged => meta_changed.push((*path).to_owned()),
+                    LeafCompare::Same => {}
                 }
             }
             (None, None) => unreachable!("union path must exist on at least one side"),
@@ -109,26 +109,74 @@ pub fn diff_dir_archives_with_progress(
     }
 }
 
-fn file_map(arch: &DirArchive) -> HashMap<&str, &DirEntry> {
+/// File + Symlink path map (Dir-only excluded). Used by listing↔listing diff.
+fn leaf_map(arch: &DirArchive) -> HashMap<&str, &DirEntry> {
     arch.entries
         .iter()
-        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                DirEntryKind::File { .. } | DirEntryKind::Symlink { .. }
+            )
+        })
         .map(|e| (e.path.as_str(), e))
         .collect()
 }
 
-fn file_meta(entry: &DirEntry) -> (u32, u64, u64, ChunkId) {
-    match &entry.kind {
-        DirEntryKind::File {
-            mode,
-            size,
-            mtime_secs,
-            blob_blake3,
-            ..
-        } => (*mode, *size, *mtime_secs, *blob_blake3),
-        DirEntryKind::Dir { .. } | DirEntryKind::Symlink { .. } => {
-            unreachable!("file_map only yields File entries")
+enum LeafCompare {
+    Same,
+    Changed,
+    MetaChanged,
+}
+
+fn compare_leaves(left: &DirEntry, right: &DirEntry) -> LeafCompare {
+    match (&left.kind, &right.kind) {
+        (
+            DirEntryKind::File {
+                mode: l_mode,
+                size: l_size,
+                mtime_secs: l_mtime,
+                blob_blake3: l_blake3,
+                ..
+            },
+            DirEntryKind::File {
+                mode: r_mode,
+                size: r_size,
+                mtime_secs: r_mtime,
+                blob_blake3: r_blake3,
+                ..
+            },
+        ) => {
+            if l_blake3 != r_blake3 || l_size != r_size {
+                // Content differs (blake3 and/or size). Size mismatch without blake3
+                // change is still treated as content change per Phase7 §3.1.
+                LeafCompare::Changed
+            } else if l_mode != r_mode || l_mtime != r_mtime {
+                LeafCompare::MetaChanged
+            } else {
+                LeafCompare::Same
+            }
         }
+        (
+            DirEntryKind::Symlink {
+                mode: l_mode,
+                target: l_target,
+            },
+            DirEntryKind::Symlink {
+                mode: r_mode,
+                target: r_target,
+            },
+        ) => {
+            if l_target != r_target {
+                LeafCompare::Changed
+            } else if l_mode != r_mode {
+                LeafCompare::MetaChanged
+            } else {
+                LeafCompare::Same
+            }
+        }
+        // File vs Symlink (or any other kind mismatch) at the same path → changed.
+        _ => LeafCompare::Changed,
     }
 }
 
@@ -375,8 +423,8 @@ mod tests {
 
         let mut ticks = 0usize;
         let report = diff_dir_archives_with_progress(&left, &right, || ticks += 1);
-        // Union File paths: a.txt, sub/b.txt, c.txt, new.txt → 4
-        assert_eq!(ticks, 4, "tick once per File path in left∪right");
+        // Union leaf paths: a.txt, sub/b.txt, c.txt, new.txt → 4
+        assert_eq!(ticks, 4, "tick once per File/Symlink path in left∪right");
         assert_eq!(report.removed, vec!["c.txt".to_string()]);
         assert_eq!(report.added, vec!["new.txt".to_string()]);
 
@@ -412,5 +460,87 @@ mod tests {
         let mut ticks = 0usize;
         let _ = diff_dir_archives_with_progress(&left, &right, || ticks += 1);
         assert_eq!(ticks, 1, "Dir-only paths must not contribute to TOTAL");
+    }
+
+    fn symlink_entry(path: &str, mode: u32, target: &str) -> DirEntry {
+        DirEntry {
+            path: path.into(),
+            kind: DirEntryKind::Symlink {
+                mode,
+                target: target.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn symlink_added_removed_target_changed() {
+        let left = DirArchive::new(
+            0,
+            vec![
+                single_chunk_file("a.txt", 0o644, 1, b"a"),
+                symlink_entry("link", 0o777, "a.txt"),
+                symlink_entry("gone", 0o777, "x"),
+            ],
+        )
+        .unwrap();
+        let right = DirArchive::new(
+            0,
+            vec![
+                single_chunk_file("a.txt", 0o644, 1, b"a"),
+                symlink_entry("link", 0o777, "b.txt"), // target changed
+                symlink_entry("newlink", 0o777, "a.txt"), // added
+                                                       // gone removed
+            ],
+        )
+        .unwrap();
+
+        let report = diff_dir_archives(&left, &right);
+        assert_eq!(report.added, vec!["newlink".to_string()]);
+        assert_eq!(report.removed, vec!["gone".to_string()]);
+        assert_eq!(report.changed, vec!["link".to_string()]);
+        assert!(report.meta_changed.is_empty(), "{report:?}");
+        // Symlinks contribute no chunks; only a.txt shared.
+        assert_eq!(report.chunks_shared, 1);
+        assert_eq!(report.chunks_only_left, 0);
+        assert_eq!(report.chunks_only_right, 0);
+    }
+
+    #[test]
+    fn symlink_mode_only_is_meta_changed() {
+        let left = DirArchive::new(0, vec![symlink_entry("link", 0o777, "a.txt")]).unwrap();
+        let right = DirArchive::new(0, vec![symlink_entry("link", 0o755, "a.txt")]).unwrap();
+        let report = diff_dir_archives(&left, &right);
+        assert_eq!(report.meta_changed, vec!["link".to_string()]);
+        assert!(report.changed.is_empty(), "{report:?}");
+        assert!(report.added.is_empty());
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn file_vs_symlink_same_path_is_changed() {
+        let left = DirArchive::new(0, vec![single_chunk_file("x", 0o644, 1, b"data")]).unwrap();
+        let right = DirArchive::new(0, vec![symlink_entry("x", 0o777, "elsewhere")]).unwrap();
+        let report = diff_dir_archives(&left, &right);
+        assert_eq!(report.changed, vec!["x".to_string()]);
+        assert!(report.added.is_empty());
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn with_progress_ticks_symlink_paths() {
+        let left = DirArchive::new(0, vec![symlink_entry("a", 0o777, "t")]).unwrap();
+        let right = DirArchive::new(
+            0,
+            vec![
+                symlink_entry("a", 0o777, "t"),
+                symlink_entry("b", 0o777, "u"),
+            ],
+        )
+        .unwrap();
+        let mut ticks = 0usize;
+        let report = diff_dir_archives_with_progress(&left, &right, || ticks += 1);
+        assert_eq!(ticks, 2);
+        assert_eq!(report.added, vec!["b".to_string()]);
+        assert_eq!(report, diff_dir_archives(&left, &right));
     }
 }

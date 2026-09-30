@@ -6,6 +6,14 @@
 //! (default **off**) may skip content hashing when size and `mtime_secs` both
 //! match the prior — see [`decide_seed_trust_mtime`].
 //!
+//! # Symlink policy (Phase22-M3)
+//!
+//! The seed map is **File-only**. [`DirEntryKind::Symlink`] priors are never
+//! entered into [`seed_file_map`] and cannot be reused: on `archive --symlinks
+//! record`, symlinks are always freshly recorded from the source tree. Passing a
+//! Symlink prior to [`decide_seed_for_entry`] returns [`Error::InvalidStructure`].
+//! This preserves the v1 File seed contract unchanged.
+//!
 //! Does **not** change `.cfdir` / `.cfidx` v1 byte layouts.
 
 use crate::{DirArchive, DirEntry, DirEntryKind, Error};
@@ -25,8 +33,9 @@ pub enum SeedDecision {
 
 /// Build a path → file-entry map from a prior `.cfdir` (**File** kinds only).
 ///
-/// Directory entries are skipped. Paths not present in the returned map are
-/// treated as [`SeedDecision::Rechunk`] by the caller.
+/// Directory and Symlink entries are skipped (Symlink is never seed-reused;
+/// always freshly recorded on archive). Paths not present in the returned map
+/// are treated as [`SeedDecision::Rechunk`] by the caller.
 pub fn seed_file_map(prior: &DirArchive) -> HashMap<&str, &DirEntry> {
     prior
         .entries
@@ -236,6 +245,60 @@ mod tests {
             map.get("a.txt").unwrap().kind,
             DirEntryKind::File { .. }
         ));
+    }
+
+    #[test]
+    fn seed_file_map_skips_symlinks() {
+        let content = b"hello-seed-v1";
+        let blob = ChunkId::hash(content);
+        let prior = DirArchive::new(
+            0,
+            vec![
+                file_entry(
+                    "a.txt",
+                    content.len() as u64,
+                    1,
+                    blob,
+                    vec![IndexEntry {
+                        end_offset: content.len() as u64,
+                        chunk_id: ChunkId::hash(content),
+                    }],
+                ),
+                DirEntry {
+                    path: "link".into(),
+                    kind: DirEntryKind::Symlink {
+                        mode: 0o777,
+                        target: "a.txt".into(),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        let map = seed_file_map(&prior);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("a.txt"));
+        assert!(
+            !map.contains_key("link"),
+            "Symlink must never enter the File-only seed map"
+        );
+    }
+
+    #[test]
+    fn decide_seed_for_entry_rejects_symlink() {
+        let link = DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "a.txt".into(),
+            },
+        };
+        let err = decide_seed_for_entry(&link, 0, &mut Cursor::new(b"")).unwrap_err();
+        assert!(matches!(err, Error::InvalidStructure(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Symlink") || msg.contains("symlink"),
+            "error should mention Symlink: {msg}"
+        );
     }
 
     #[test]

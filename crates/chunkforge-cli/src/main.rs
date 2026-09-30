@@ -3091,17 +3091,25 @@ fn cmd_diff_dispatch(
     }
 }
 
-/// `|left∪right|` File paths after filtering (Dir-only excluded; matches
-/// [`diff_dir_archives_with_progress`] TOTAL / tick count).
+/// `|left∪right|` File + Symlink paths after filtering (Dir-only excluded;
+/// matches [`diff_dir_archives_with_progress`] TOTAL / tick count).
 fn diff_file_path_union_len(left: &DirArchive, right: &DirArchive) -> usize {
     let mut paths: HashSet<&str> = left
         .entries
         .iter()
-        .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                DirEntryKind::File { .. } | DirEntryKind::Symlink { .. }
+            )
+        })
         .map(|e| e.path.as_str())
         .collect();
     for e in &right.entries {
-        if matches!(e.kind, DirEntryKind::File { .. }) {
+        if matches!(
+            e.kind,
+            DirEntryKind::File { .. } | DirEntryKind::Symlink { .. }
+        ) {
             paths.insert(e.path.as_str());
         }
     }
@@ -3177,7 +3185,10 @@ fn cmd_diff_tree(
 
 /// Build an in-memory `DirArchive` from a source tree for `diff --tree`.
 ///
-/// Regular files only (symlink/special skipped + warn, same policy as `archive`).
+/// Regular files only (symlink/special skipped + warn). Phase22-M3: listing↔listing
+/// diff includes Symlink paths; tree↔listing still skips live symlinks with warn
+/// (File-only walk) so existing File tree-diff tests stay stable. Symlink-aware
+/// tree candidates are deferred (easy follow-up; not required for M3).
 /// Does **not** write store or `.cfdir`. For each file: size, mode, mtime_secs,
 /// stream BLAKE3 → `blob_blake3`. When the path exists in `listing` **and**
 /// `blob_blake3` matches, copy the listing's File entry (chunk table + meta) so
@@ -3428,6 +3439,111 @@ fn join_archive_path(out_root: &Path, rel: &str) -> Result<PathBuf> {
         dest.push(seg);
     }
     Ok(dest)
+}
+
+/// Phase22-M3: materialize one Symlink listing entry under `out_dir`.
+///
+/// Conflict policy (pinned):
+/// - dest missing → create via `std::os::unix::fs::symlink`
+/// - dest exists and is a **symlink**: without `--force` → error; with `--force`
+///   → remove existing symlink then recreate (same-type overwrite only)
+/// - dest exists and is a **directory** → always refuse (even with `--force`);
+///   never replace a directory with a symlink
+/// - dest exists as regular file / other → refuse regardless of `--force`
+///
+/// `--force` only overwrites an existing **symlink**. Absolute / empty targets
+/// are rejected (belt-and-suspenders vs archive). No prune / `--delete`.
+///
+/// Mode: Linux does not support `lchmod` on symlinks (permissions are unused /
+/// always 0777); we deliberately do **not** call [`apply_file_mode`] here because
+/// `fs::set_permissions` would follow the link and mutate the target.
+#[allow(clippy::too_many_arguments)]
+fn materialize_extract_symlink(
+    dest: &Path,
+    entry_path: &str,
+    target: &str,
+    mode: u32,
+    force: bool,
+    skip_unchanged: bool,
+    skipped_count: &mut usize,
+    symlink_count: &mut usize,
+) -> Result<()> {
+    let _ = mode; // recorded in listing; not applied on Linux (see doc above)
+
+    if target.is_empty() {
+        bail!("extract: symlink {entry_path} has empty target (refusing)");
+    }
+    if Path::new(target).is_absolute() {
+        bail!(
+            "extract: symlink {entry_path} has absolute target {target:?} (refusing; use a relative target)"
+        );
+    }
+
+    match fs::symlink_metadata(dest) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Fall through to create.
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("stat {}", dest.display()));
+        }
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_dir() {
+                bail!(
+                    "extract target {} already exists and is a directory (refusing to replace a directory with a symlink; --force does not change type)",
+                    dest.display(),
+                );
+            }
+            if ft.is_symlink() {
+                let same_target = fs::read_link(dest)
+                    .ok()
+                    .is_some_and(|p| p.as_os_str() == std::ffi::OsStr::new(target));
+                if skip_unchanged && same_target {
+                    *skipped_count += 1;
+                    return Ok(());
+                }
+                if !force {
+                    bail!(
+                        "extract target {} already exists (refusing to overwrite symlink; pass --force)",
+                        dest.display()
+                    );
+                }
+                // --force + existing symlink: remove then recreate below.
+                fs::remove_file(dest).with_context(|| {
+                    format!("remove existing symlink {} for --force", dest.display())
+                })?;
+            } else {
+                // Regular file / other node: refuse even with --force.
+                // Phase22: --force only overwrites an existing symlink.
+                bail!(
+                    "extract target {} already exists and is not a symlink (refusing to replace with a symlink; --force only overwrites an existing symlink)",
+                    dest.display(),
+                );
+            }
+        }
+    }
+
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(target, dest)
+            .with_context(|| format!("create symlink {} -> {target:?}", dest.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (dest, target);
+        bail!("extract: symlink materialization requires unix");
+    }
+
+    *symlink_count += 1;
+    Ok(())
 }
 
 fn apply_file_mode(path: &Path, mode: u32) -> Result<()> {
@@ -3740,17 +3856,24 @@ fn cmd_verify_dir(
         .validate()
         .map_err(|e| anyhow::anyhow!("archive structure: {e}"))?;
 
-    // Only File entries that pass PathFilter contribute (Dir never does).
-    // Empty filter ≡ full tree (≡ 1.9.0).
+    // File entries that pass PathFilter contribute chunks; Symlink is structure-
+    // only (0 chunks). Empty filter ≡ full tree (≡ 1.9.0).
     let mut file_count = 0usize;
+    let mut symlink_count = 0usize;
     let mut total_chunks = 0usize;
     for entry in &archive.entries {
         if !path_filter.allows(&entry.path) {
             continue;
         }
-        if let DirEntryKind::File { chunks, .. } = &entry.kind {
-            file_count += 1;
-            total_chunks += chunks.len();
+        match &entry.kind {
+            DirEntryKind::File { chunks, .. } => {
+                file_count += 1;
+                total_chunks += chunks.len();
+            }
+            DirEntryKind::Symlink { .. } => {
+                symlink_count += 1;
+            }
+            DirEntryKind::Dir { .. } => {}
         }
     }
 
@@ -3765,9 +3888,19 @@ fn cmd_verify_dir(
             DirEntryKind::Dir { .. } => {
                 // Structure already validated; nothing to fetch.
             }
-            DirEntryKind::Symlink { .. } => {
-                // Phase22-M1: Symlink has 0 chunks; structure/target validated by DirArchive.
-                // Materialization / absolute-target policy is M2+.
+            DirEntryKind::Symlink { target, .. } => {
+                // Phase22-M3: structure + non-empty target + reject absolute target.
+                // Do not fetch chunks; File/Dir behavior unchanged.
+                if target.is_empty() {
+                    bail!("verify failed (symlink {}): empty target", entry.path);
+                }
+                if Path::new(target).is_absolute() {
+                    bail!(
+                        "verify failed (symlink {}): absolute target {:?} (refusing)",
+                        entry.path,
+                        target
+                    );
+                }
             }
             DirEntryKind::File {
                 size,
@@ -3831,13 +3964,25 @@ fn cmd_verify_dir(
 
     match format {
         CliFormat::Text => {
-            eprintln!(
-                "verify: ok ({} file{}, {} chunk{})",
-                file_count,
-                if file_count == 1 { "" } else { "s" },
-                total_chunks,
-                if total_chunks == 1 { "" } else { "s" }
-            );
+            if symlink_count > 0 {
+                eprintln!(
+                    "verify: ok ({} file{}, {} symlink{}, {} chunk{})",
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    symlink_count,
+                    if symlink_count == 1 { "" } else { "s" },
+                    total_chunks,
+                    if total_chunks == 1 { "" } else { "s" }
+                );
+            } else {
+                eprintln!(
+                    "verify: ok ({} file{}, {} chunk{})",
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    total_chunks,
+                    if total_chunks == 1 { "" } else { "s" }
+                );
+            }
         }
         CliFormat::Json => {
             let mut obj = serde_json::json!({
@@ -3845,6 +3990,7 @@ fn cmd_verify_dir(
                 "kind": "cfdir",
                 "files": file_count,
                 "chunks": total_chunks,
+                "symlinks": symlink_count,
             });
             apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
@@ -3912,10 +4058,12 @@ fn cmd_extract(
 
     let mut file_count = 0usize;
     let mut dir_count = 0usize;
+    let mut symlink_count = 0usize;
     let mut skipped_count = 0usize;
 
     // Progress: per filtered File (PathFilter after; includes skip-unchanged
-    // judgments). Dir entries are not counted. TOTAL known up front.
+    // judgments). Dir / Symlink entries are not counted in TOTAL. TOTAL known
+    // up front.
     let file_total = archive
         .entries
         .iter()
@@ -3923,9 +4071,9 @@ fn cmd_extract(
         .count();
     let prog = ProgressReporter::new(progress, "extract", Some(file_total));
 
-    // Phase 13 M3: read full listing; only materialize matching File + Dir
-    // entries (parents of written files via create_dir_all). Unmatched paths
-    // are skipped (not written, never deleted — non-prune).
+    // Phase 13 M3 / Phase22-M3: read full listing; materialize matching File +
+    // Dir + Symlink entries (parents via create_dir_all). Unmatched paths are
+    // skipped (not written, never deleted — non-prune). No --delete.
     for entry in &archive.entries {
         if !path_filter.allows(&entry.path) {
             continue;
@@ -3952,12 +4100,17 @@ fn cmd_extract(
                 apply_file_mode(&dest, *mode)?;
                 dir_count += 1;
             }
-            DirEntryKind::Symlink { .. } => {
-                // Phase22-M3: materialize symlink. M1: skip with clear warning.
-                eprintln!(
-                    "extract: skipping symlink {} (symlink materialization requires Phase22-M3)",
-                    entry.path
-                );
+            DirEntryKind::Symlink { mode, target } => {
+                materialize_extract_symlink(
+                    &dest,
+                    &entry.path,
+                    target,
+                    *mode,
+                    force,
+                    skip_unchanged,
+                    &mut skipped_count,
+                    &mut symlink_count,
+                )?;
             }
             DirEntryKind::File {
                 mode,
@@ -4088,13 +4241,32 @@ fn cmd_extract(
     match format {
         CliFormat::Text => {
             if skip_unchanged {
-                // G3 / M2: field names skipped= / wrote= / dirs= (nailed).
+                // G3 / M2: field names skipped= / wrote= / dirs= (nailed);
+                // Phase22-M3 additive symlinks= when any symlink was materialized.
+                if symlink_count > 0 {
+                    eprintln!(
+                        "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count} symlinks={symlink_count}",
+                        out_dir.display(),
+                    );
+                } else {
+                    eprintln!(
+                        "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
+                        out_dir.display(),
+                    );
+                }
+            } else if symlink_count > 0 {
                 eprintln!(
-                    "extract: {} skipped={skipped_count} wrote={file_count} dirs={dir_count}",
+                    "extract: wrote {} ({} file{}, {} dir{}, {} symlink{})",
                     out_dir.display(),
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    dir_count,
+                    if dir_count == 1 { "" } else { "s" },
+                    symlink_count,
+                    if symlink_count == 1 { "" } else { "s" },
                 );
             } else {
-                // ≡ 0.8.0 / 1.0.0 summary line when --skip-unchanged is off.
+                // ≡ 0.8.0 / 1.0.0 summary line when --skip-unchanged is off and no symlinks.
                 eprintln!(
                     "extract: wrote {} ({} file{}, {} dir{})",
                     out_dir.display(),
@@ -4107,12 +4279,15 @@ fn cmd_extract(
         }
         CliFormat::Json => {
             // Always emit skipped/wrote/dirs for scripts (skipped=0 when flag off).
+            // Phase22-M3: additive wrote_symlinks / symlinks (same count).
             let mut obj = serde_json::json!({
                 "ok": true,
                 "dry_run": false,
                 "skipped": skipped_count,
                 "wrote": file_count,
                 "dirs": dir_count,
+                "wrote_symlinks": symlink_count,
+                "symlinks": symlink_count,
             });
             apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
@@ -4174,8 +4349,42 @@ fn cmd_extract_dry_run(
                     would_dirs += 1;
                 }
             }
-            DirEntryKind::Symlink { .. } => {
-                // Phase22-M3: would materialize symlink. M1: ignore for dry-run counts.
+            DirEntryKind::Symlink { target, .. } => {
+                // Phase22-M3: dry-run classify symlink destinations (no writes).
+                if target.is_empty() || Path::new(target).is_absolute() {
+                    would_fail += 1;
+                    continue;
+                }
+                match fs::symlink_metadata(&dest) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        would_write += 1;
+                    }
+                    Err(_) => {
+                        would_fail += 1;
+                    }
+                    Ok(meta) => {
+                        let ft = meta.file_type();
+                        if ft.is_dir() {
+                            // Never replace a directory with a symlink.
+                            would_fail += 1;
+                        } else if ft.is_symlink() {
+                            let same_target = fs::read_link(&dest).ok().is_some_and(|p| {
+                                p.as_os_str() == std::ffi::OsStr::new(target.as_str())
+                            });
+                            if skip_unchanged && same_target {
+                                would_skip += 1;
+                            } else if force {
+                                would_write += 1;
+                            } else {
+                                would_fail += 1;
+                            }
+                        } else {
+                            // Regular file / other: refuse even with --force
+                            // (force only overwrites an existing symlink).
+                            would_fail += 1;
+                        }
+                    }
+                }
             }
             DirEntryKind::File {
                 size,

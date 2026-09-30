@@ -14620,3 +14620,357 @@ fn archive_symlinks_record_path_filter_orthogonal() {
         );
     }
 }
+
+// --- Phase22-M3: extract Symlink materialization + verify / path filter ---
+
+#[test]
+fn extract_symlinks_record_readlink_matches() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+        fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+        symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree-sym.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        let out = dir.path().join("out");
+        let result = run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(
+            v["wrote_symlinks"].as_u64().unwrap_or(0),
+            1,
+            "json={stdout}"
+        );
+        assert_eq!(v["symlinks"].as_u64().unwrap_or(0), 1, "json={stdout}");
+
+        let link = out.join("pkgs/foo/link.txt");
+        let target = fs::read_link(&link).expect("read_link");
+        assert_eq!(target.as_os_str(), "a.txt");
+        assert!(out.join("pkgs/foo/a.txt").is_file());
+    }
+}
+
+#[test]
+fn extract_symlinks_absolute_target_in_listing_nonzero() {
+    #[cfg(unix)]
+    {
+        use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        run_ok(&["store", "create", "--store", store.to_str().unwrap()]);
+
+        // Craft a v2 listing with an absolute symlink target (library allows;
+        // extract must refuse).
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "bad".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "/etc/passwd".into(),
+                },
+            }],
+        )
+        .unwrap();
+        let listing = dir.path().join("abs.cfdir");
+        fs::write(&listing, arch.encode().unwrap()).unwrap();
+
+        let out = dir.path().join("out");
+        let result = run_fail(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("absolute") || err.contains("bad"),
+            "absolute target must clear-error; stderr={err}"
+        );
+        assert!(
+            !out.join("bad").exists(),
+            "must not materialize absolute symlink"
+        );
+    }
+}
+
+#[test]
+fn extract_symlinks_path_filter_only_matching() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("keep")).unwrap();
+        fs::create_dir_all(src.join("drop")).unwrap();
+        fs::write(src.join("keep/a.txt"), b"keep\n").unwrap();
+        fs::write(src.join("drop/b.txt"), b"drop\n").unwrap();
+        symlink("a.txt", src.join("keep/link-keep")).unwrap();
+        symlink("b.txt", src.join("drop/link-drop")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        let out = dir.path().join("out");
+        run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--path",
+            "keep",
+        ]);
+
+        assert!(out.join("keep/link-keep").exists());
+        let target = fs::read_link(out.join("keep/link-keep")).unwrap();
+        assert_eq!(target.as_os_str(), "a.txt");
+        assert!(out.join("keep/a.txt").is_file());
+        assert!(
+            !out.join("drop").exists() && !out.join("drop/link-drop").exists(),
+            "drop subtree must not be extracted under --path keep"
+        );
+    }
+}
+
+#[test]
+fn verify_symlink_only_listing_ok_without_chunks() {
+    #[cfg(unix)]
+    {
+        use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        run_ok(&["store", "create", "--store", store.to_str().unwrap()]);
+
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "link".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "a.txt".into(),
+                },
+            }],
+        )
+        .unwrap();
+        let listing = dir.path().join("sym-only.cfdir");
+        fs::write(&listing, arch.encode().unwrap()).unwrap();
+
+        let result = run_ok(&[
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["files"].as_u64().unwrap_or(999), 0);
+        assert_eq!(v["chunks"].as_u64().unwrap_or(999), 0);
+        assert_eq!(v["symlinks"].as_u64().unwrap_or(0), 1, "json={stdout}");
+    }
+}
+
+#[test]
+fn verify_symlink_absolute_target_fails() {
+    #[cfg(unix)]
+    {
+        use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+        let dir = tempdir().unwrap();
+        let store = dir.path().join("store");
+        run_ok(&["store", "create", "--store", store.to_str().unwrap()]);
+
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "bad".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "/etc/passwd".into(),
+                },
+            }],
+        )
+        .unwrap();
+        let listing = dir.path().join("abs.cfdir");
+        fs::write(&listing, arch.encode().unwrap()).unwrap();
+
+        let result = run_fail(&[
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+        ]);
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("absolute") || err.contains("bad"),
+            "verify must reject absolute symlink target; stderr={err}"
+        );
+    }
+}
+
+#[test]
+fn extract_symlink_force_overwrites_symlink_not_dir() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"a\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        let out = dir.path().join("out");
+        run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+
+        // Conflict: existing symlink without --force → fail
+        let fail = run_fail(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        let err = String::from_utf8_lossy(&fail.stderr);
+        assert!(
+            err.contains("already exists") || err.contains("force"),
+            "stderr={err}"
+        );
+
+        // --force overwrites existing symlink
+        run_ok(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--force",
+        ]);
+        assert_eq!(
+            fs::read_link(out.join("link")).unwrap().as_os_str(),
+            "a.txt"
+        );
+
+        // Dest is a directory named like the symlink path → refuse even with --force
+        let out2 = dir.path().join("out2");
+        fs::create_dir_all(out2.join("link")).unwrap();
+        let fail_dir = run_fail(&[
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+            "--force",
+        ]);
+        let err2 = String::from_utf8_lossy(&fail_dir.stderr);
+        assert!(
+            err2.contains("directory") || err2.contains("symlink"),
+            "must refuse dir→symlink even with --force; stderr={err2}"
+        );
+    }
+}
+
+#[test]
+fn doctor_symlink_listing_ignores_symlink_chunks() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"doc\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // doctor --deep must succeed (Symlink contributes 0 chunk ids).
+        let result = run_ok(&[
+            "doctor",
+            "--store",
+            store.to_str().unwrap(),
+            "--deep",
+            "--format",
+            "json",
+            listing.to_str().unwrap(),
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["ok"], true, "json={stdout}");
+        assert_eq!(v["missing"].as_u64().unwrap_or(999), 0);
+    }
+}

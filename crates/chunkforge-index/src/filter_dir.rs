@@ -224,4 +224,85 @@ mod tests {
         let _ = filter_dir_archive(&arch, &filter);
         assert_eq!(arch.encode().unwrap(), before);
     }
+
+    fn symlink_entry(path: &str, target: &str) -> DirEntry {
+        DirEntry {
+            path: path.into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: target.into(),
+            },
+        }
+    }
+
+    fn sample_tree_with_symlinks() -> DirArchive {
+        DirArchive::new(
+            0,
+            vec![
+                file_entry("readme.txt"),
+                dir_entry("pkgs", 0o755),
+                dir_entry("pkgs/foo", 0o755),
+                file_entry("pkgs/foo/a.txt"),
+                symlink_entry("pkgs/foo/link", "a.txt"),
+                dir_entry("pkgs/bar", 0o700),
+                symlink_entry("pkgs/bar/slink", "../foo/a.txt"),
+                file_entry("other/x.txt"),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn empty_filter_identity_includes_symlinks() {
+        let arch = sample_tree_with_symlinks();
+        assert_eq!(arch.format_version, crate::DIR_FORMAT_VERSION_V2);
+        let filter = PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        assert_eq!(filtered, arch);
+        assert_eq!(arch.encode().unwrap(), filtered.encode().unwrap());
+        assert!(
+            filtered.entries.iter().any(
+                |e| matches!(e.kind, DirEntryKind::Symlink { .. }) && e.path == "pkgs/foo/link"
+            )
+        );
+    }
+
+    #[test]
+    fn filter_keeps_symlink_path_and_ancestors() {
+        let arch = sample_tree_with_symlinks();
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let paths = paths_of(&filtered);
+        assert_eq!(
+            paths,
+            vec!["pkgs", "pkgs/foo", "pkgs/foo/a.txt", "pkgs/foo/link",]
+        );
+        let link = filtered
+            .entries
+            .iter()
+            .find(|e| e.path == "pkgs/foo/link")
+            .unwrap();
+        match &link.kind {
+            DirEntryKind::Symlink { target, .. } => assert_eq!(target, "a.txt"),
+            other => panic!("expected Symlink, got {other:?}"),
+        }
+        // bar symlink and other dropped
+        assert!(!paths.iter().any(|p| p.starts_with("pkgs/bar")));
+        assert!(!paths.contains(&"other/x.txt"));
+        assert!(!paths.contains(&"readme.txt"));
+    }
+
+    #[test]
+    fn filter_symlink_only_prefix_keeps_ancestors() {
+        let arch = sample_tree_with_symlinks();
+        // Exact path include of a symlink leaf
+        let filter = PathFilter::new(["pkgs/bar/slink"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let paths = paths_of(&filtered);
+        assert!(paths.contains(&"pkgs"));
+        assert!(paths.contains(&"pkgs/bar"));
+        assert!(paths.contains(&"pkgs/bar/slink"));
+        assert!(!paths.contains(&"pkgs/foo/a.txt"));
+        assert!(!paths.contains(&"pkgs/foo/link"));
+    }
 }
