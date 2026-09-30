@@ -2,6 +2,7 @@
 //!
 //! Used by `archive` / `extract` / `pull` / `push` `--path` / `--exclude`
 //! (Phase 13–14). [`load_exclude_file`] reads `--exclude-from` text (Phase 14 M4).
+//! [`load_path_file`] reads `--path-from` include prefixes (Phase 20 M1; CLI later).
 //! Matching is literal UTF-8 / byte-oriented (no casefold). No `ignore` / `globset`.
 //!
 //! Archive paths follow the same conventions as [`crate::validate_archive_path`]
@@ -118,6 +119,34 @@ pub fn load_exclude_file(path: impl AsRef<std::path::Path>) -> Result<Vec<String
         .map_err(|e| Error::ExcludeFile(format!("cannot read {}: {e}", path.display())))?;
     let text = std::string::String::from_utf8(bytes)
         .map_err(|_| Error::ExcludeFile(format!("{} is not valid UTF-8", path.display())))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    Ok(out)
+}
+
+/// Load include path prefixes from a UTF-8 text file (`--path-from`).
+///
+/// One prefix per line (same grammar as CLI `--path`: exact or `P/` subtree).
+/// These are **not** [`ExcludePat`] patterns — just include path strings.
+/// Blank lines and lines whose trimmed text starts with `#` are skipped.
+/// Leading and trailing whitespace on each line is trimmed.
+///
+/// Does **not** validate or compile paths — callers merge the strings with CLI
+/// `--path` and pass them to [`PathFilter::new`] (OR include semantics unchanged).
+///
+/// Open / read failure and non-UTF-8 → [`Error::PathFile`].
+pub fn load_path_file(path: impl AsRef<std::path::Path>) -> Result<Vec<String>, Error> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)
+        .map_err(|e| Error::PathFile(format!("cannot read {}: {e}", path.display())))?;
+    let text = std::string::String::from_utf8(bytes)
+        .map_err(|_| Error::PathFile(format!("{} is not valid UTF-8", path.display())))?;
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -368,5 +397,77 @@ mod tests {
         let err = load_exclude_file(&path).unwrap_err();
         let _ = std::fs::remove_file(&path);
         assert!(matches!(err, Error::ExcludeFile(_)), "{err:?}");
+    }
+
+    #[test]
+    fn load_path_file_multiple_prefixes() {
+        let path = std::env::temp_dir().join(format!("cf-path-from-{}.txt", std::process::id()));
+        std::fs::write(&path, "pkg/foo\npkg/bar\nsrc\n").unwrap();
+        let v = load_path_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            v,
+            vec![
+                "pkg/foo".to_string(),
+                "pkg/bar".to_string(),
+                "src".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn load_path_file_skips_blank_hash_and_trims() {
+        let path =
+            std::env::temp_dir().join(format!("cf-path-from-trim-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "\n# comment\n  pkg/foo  \n\n  # also comment\npkg/bar\n   \n",
+        )
+        .unwrap();
+        let v = load_path_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(v, vec!["pkg/foo".to_string(), "pkg/bar".to_string()]);
+    }
+
+    #[test]
+    fn load_path_file_missing_and_bad_utf8() {
+        let missing =
+            std::env::temp_dir().join(format!("cf-path-from-missing-{}", std::process::id()));
+        let err = load_path_file(&missing).unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, Error::PathFile(_)), "{msg}");
+        assert!(msg.contains("path file"), "{msg}");
+        assert!(msg.contains("cannot read"), "{msg}");
+
+        let path =
+            std::env::temp_dir().join(format!("cf-path-from-badutf-{}.txt", std::process::id()));
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        let err = load_path_file(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        let msg = err.to_string();
+        assert!(matches!(err, Error::PathFile(_)), "{msg}");
+        assert!(msg.contains("path file"), "{msg}");
+        assert!(msg.contains("UTF-8"), "{msg}");
+    }
+
+    #[test]
+    fn load_path_file_merge_with_cli_paths_or_include() {
+        // CLI-style: paths from flags, then extend from --path-from file.
+        let path =
+            std::env::temp_dir().join(format!("cf-path-from-merge-{}.txt", std::process::id()));
+        std::fs::write(&path, "pkg/bar\n# skip\nother\n").unwrap();
+        let mut paths = vec!["pkg/foo".to_string()];
+        paths.extend(load_path_file(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        let f = PathFilter::new(paths, Vec::<String>::new()).unwrap();
+        assert!(f.allows("pkg/foo"));
+        assert!(f.allows("pkg/foo/a.rs"));
+        assert!(f.allows("pkg/bar"));
+        assert!(f.allows("pkg/bar/x"));
+        assert!(f.allows("other"));
+        assert!(f.allows("other/y"));
+        assert!(!f.allows("pkg"));
+        assert!(!f.allows("pkg/baz"));
+        assert!(!f.allows("unrelated"));
     }
 }

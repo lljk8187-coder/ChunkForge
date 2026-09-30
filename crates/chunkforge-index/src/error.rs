@@ -32,6 +32,9 @@ pub enum Error {
     #[error("exclude file: {0}")]
     ExcludeFile(String),
 
+    #[error("path file: {0}")]
+    PathFile(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
