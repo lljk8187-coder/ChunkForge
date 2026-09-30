@@ -15292,11 +15292,16 @@ fn diff_tree_symlinks_record_identical_exit_zero() {
                 .unwrap_or(false),
             "record identical must have empty meta_changed; json={stdout}"
         );
+        // Symlink contributes 0 chunks; a.txt still shared — categories already empty.
+        assert!(
+            result.status.success(),
+            "identical record matrix row requires exit 0"
+        );
     }
 }
 
 #[test]
-fn diff_tree_default_skip_against_record_listing_may_show_added() {
+fn diff_tree_default_skip_against_record_listing_false_added() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
@@ -15338,7 +15343,7 @@ fn diff_tree_default_skip_against_record_listing_may_show_added() {
         let added = v["added"].as_array().cloned().unwrap_or_default();
         assert!(
             added.iter().any(|p| p.as_str() == Some("link.txt")),
-            "default skip vs record listing may show added link.txt; json={stdout}"
+            "default skip ≡ 1.12: symlink path must false-add in added; json={stdout}"
         );
     }
 }
@@ -15580,7 +15585,7 @@ fn diff_tree_default_skip_exclude_symlink_not_in_false_added() {
             src.to_str().unwrap(),
         ]);
 
-        // Default skip vs record listing → false added link.txt (M1 baseline).
+        // Default skip vs record listing → false added link.txt (M1/M3 baseline; dedicated assert).
         let unfiltered = run_fail(&[
             "diff",
             "--tree",
@@ -15713,4 +15718,385 @@ fn diff_tree_symlinks_record_progress_counts_symlink_in_total() {
             "record identical; json={out}"
         );
     }
+}
+
+// --- Phase23-M3: diff symlink correctness matrix ---
+
+#[test]
+fn diff_tree_symlinks_record_target_change_is_changed() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello\n").unwrap();
+        fs::write(src.join("b.txt"), b"other\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // Same path, different target → changed (not meta_changed).
+        fs::remove_file(src.join("link")).unwrap();
+        symlink("b.txt", src.join("link")).unwrap();
+
+        let result = run_fail(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let changed = v["changed"].as_array().cloned().unwrap_or_default();
+        let meta = v["meta_changed"].as_array().cloned().unwrap_or_default();
+        assert!(
+            changed.iter().any(|p| p.as_str() == Some("link")),
+            "target change must list link in changed; json={stdout}"
+        );
+        assert!(
+            meta.iter().all(|p| p.as_str() != Some("link")),
+            "target change must not also list link in meta_changed; json={stdout}"
+        );
+    }
+}
+
+#[test]
+fn diff_listing_file_vs_symlink_kind_mismatch_is_changed() {
+    use chunkforge_chunk::ChunkId;
+    use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+    let dir = tempdir().unwrap();
+    let content = b"file-bytes\n";
+    let blob = ChunkId::hash(content);
+    let left = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "x".into(),
+            kind: DirEntryKind::File {
+                mode: 0o644,
+                size: content.len() as u64,
+                mtime_secs: 1,
+                blob_blake3: blob,
+                chunks: vec![chunkforge_index::IndexEntry {
+                    end_offset: content.len() as u64,
+                    chunk_id: blob,
+                }],
+            },
+        }],
+    )
+    .unwrap();
+    let right = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "x".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "elsewhere".into(),
+            },
+        }],
+    )
+    .unwrap();
+
+    let left_path = dir.path().join("left.cfdir");
+    let right_path = dir.path().join("right.cfdir");
+    fs::write(&left_path, left.encode().unwrap()).unwrap();
+    fs::write(&right_path, right.encode().unwrap()).unwrap();
+
+    let result = run_fail(&[
+        "diff",
+        left_path.to_str().unwrap(),
+        right_path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let changed = v["changed"].as_array().cloned().unwrap_or_default();
+    assert!(
+        changed.iter().any(|p| p.as_str() == Some("x")),
+        "File↔Symlink kind mismatch must be changed; json={stdout}"
+    );
+    assert!(
+        v["added"].as_array().map(|a| a.is_empty()).unwrap_or(false)
+            && v["removed"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+        "kind mismatch is same-path changed, not added/removed; json={stdout}"
+    );
+}
+
+#[test]
+fn diff_tree_vs_listing_file_vs_symlink_kind_mismatch_is_changed() {
+    #[cfg(unix)]
+    {
+        use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        // Tree side: regular file at path "x".
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("x"), b"plain-file\n").unwrap();
+
+        // Listing side: Symlink at same relative path "x".
+        let listing = dir.path().join("listing.cfdir");
+        let arch = DirArchive::new(
+            0,
+            vec![DirEntry {
+                path: "x".into(),
+                kind: DirEntryKind::Symlink {
+                    mode: 0o777,
+                    target: "elsewhere".into(),
+                },
+            }],
+        )
+        .unwrap();
+        fs::write(&listing, arch.encode().unwrap()).unwrap();
+
+        let result = run_fail(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let changed = v["changed"].as_array().cloned().unwrap_or_default();
+        assert!(
+            changed.iter().any(|p| p.as_str() == Some("x")),
+            "tree File vs listing Symlink must be changed; json={stdout}"
+        );
+
+        // Reverse: tree Symlink vs listing File (crafted).
+        let src2 = dir.path().join("src2");
+        fs::create_dir_all(&src2).unwrap();
+        fs::write(src2.join("target.txt"), b"t\n").unwrap();
+        symlink("target.txt", src2.join("x")).unwrap();
+
+        let store = dir.path().join("store");
+        let file_listing = dir.path().join("file.cfdir");
+        // Archive a sibling tree that has file at x for a File listing entry.
+        let file_src = dir.path().join("file_src");
+        fs::create_dir_all(&file_src).unwrap();
+        fs::write(file_src.join("x"), b"plain-file\n").unwrap();
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            file_listing.to_str().unwrap(),
+            file_src.to_str().unwrap(),
+        ]);
+
+        let result2 = run_fail(&[
+            "diff",
+            "--tree",
+            src2.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            file_listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout2 = String::from_utf8_lossy(&result2.stdout);
+        let v2: serde_json::Value = serde_json::from_str(stdout2.trim()).expect("json");
+        let changed2 = v2["changed"].as_array().cloned().unwrap_or_default();
+        // Symlink-only tree vs File listing: "x" kind mismatch → changed;
+        // "target.txt" may be removed (only on tree). Accept path in changed.
+        assert!(
+            changed2.iter().any(|p| p.as_str() == Some("x")),
+            "tree Symlink vs listing File must be changed; json={stdout2}"
+        );
+    }
+}
+
+#[test]
+fn diff_listing_symlink_mode_only_is_meta_changed() {
+    // Linux cannot chmod(2) a symlink (no lchmod; mode stays 0777), so mode-only
+    // is covered via crafted DirArchive listings (same spirit as library unit test).
+    use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+    let dir = tempdir().unwrap();
+    let left = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "a.txt".into(),
+            },
+        }],
+    )
+    .unwrap();
+    let right = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o755,
+                target: "a.txt".into(),
+            },
+        }],
+    )
+    .unwrap();
+
+    let left_path = dir.path().join("left.cfdir");
+    let right_path = dir.path().join("right.cfdir");
+    fs::write(&left_path, left.encode().unwrap()).unwrap();
+    fs::write(&right_path, right.encode().unwrap()).unwrap();
+
+    let result = run_fail(&[
+        "diff",
+        left_path.to_str().unwrap(),
+        right_path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let meta = v["meta_changed"].as_array().cloned().unwrap_or_default();
+    let changed = v["changed"].as_array().cloned().unwrap_or_default();
+    assert!(
+        meta.iter().any(|p| p.as_str() == Some("link")),
+        "mode-only must list link in meta_changed; json={stdout}"
+    );
+    assert!(
+        changed.iter().all(|p| p.as_str() != Some("link")),
+        "mode-only must not list link in changed; json={stdout}"
+    );
+    assert!(
+        v["added"].as_array().map(|a| a.is_empty()).unwrap_or(false)
+            && v["removed"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+        "mode-only is not added/removed; json={stdout}"
+    );
+}
+
+#[test]
+fn diff_tree_symlinks_record_empty_target_uncreateable_on_linux() {
+    // Empty-target refuse shares archive/diff --symlinks record policy
+    // (`bail!(... empty target ...)`). On Linux, `ln -s '' name`, Python
+    // `os.symlink('', ...)`, and libc `symlink("", ...)` all fail with ENOENT
+    // — an empty-target symlink cannot be created on the filesystem, so a
+    // tree-walk CLI integration assert is not feasible here.
+    // Prefer archive spirit: DirArchive::new rejects empty targets (encode
+    // path); absolute-target sibling test covers the clear non-zero refuse
+    // path for tree `--symlinks record`.
+    use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+    let err = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "bad".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "".into(),
+            },
+        }],
+    );
+    assert!(
+        err.is_err(),
+        "DirArchive must reject empty symlink target (shared with archive/diff refuse)"
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("empty") || msg.contains("target"),
+        "empty-target error should mention empty/target; got={msg}"
+    );
+
+    // Document FS uncreateability so the matrix row is explicit in CI output.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("empty_link");
+        let fs_err = symlink("", &link);
+        assert!(
+            fs_err.is_err(),
+            "Linux must refuse creating symlink with empty target"
+        );
+        assert!(
+            !link.exists() && !link.symlink_metadata().is_ok(),
+            "empty-target link must not exist after failed create"
+        );
+    }
+}
+
+#[test]
+fn diff_listing_symlink_target_change_is_changed() {
+    // Listing↔listing companion to tree target-change CLI path.
+    use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+    let dir = tempdir().unwrap();
+    let left = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "a.txt".into(),
+            },
+        }],
+    )
+    .unwrap();
+    let right = DirArchive::new(
+        0,
+        vec![DirEntry {
+            path: "link".into(),
+            kind: DirEntryKind::Symlink {
+                mode: 0o777,
+                target: "b.txt".into(),
+            },
+        }],
+    )
+    .unwrap();
+
+    let left_path = dir.path().join("left.cfdir");
+    let right_path = dir.path().join("right.cfdir");
+    fs::write(&left_path, left.encode().unwrap()).unwrap();
+    fs::write(&right_path, right.encode().unwrap()).unwrap();
+
+    let result = run_fail(&[
+        "diff",
+        left_path.to_str().unwrap(),
+        right_path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let changed = v["changed"].as_array().cloned().unwrap_or_default();
+    let meta = v["meta_changed"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        changed,
+        vec![serde_json::Value::String("link".into())],
+        "target change → changed; json={stdout}"
+    );
+    assert!(
+        meta.is_empty(),
+        "target change must not be meta_changed; json={stdout}"
+    );
 }
