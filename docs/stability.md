@@ -96,6 +96,20 @@ zstd, push `--fallback`, mount `--progress`. Responsibility:
 ≡ **1.10.0** (no mount path flags ⇒ full tree). The workspace reports
 **1.11.0**. Gate **`check_compat_1_10.sh`** gates 1.11 flags (calls 1_9).
 
+**1.12.0 preview (Phase22; workspace still reports 1.11.0 until M7):** further
+**opt-in** only: **`archive --symlinks skip|record`** (default **`skip`** ≡
+**1.11** skip+warn + default write `format_version=1`); `--symlinks record`
+writes `DirEntryKind::Symlink` / `KIND_SYMLINK=3` and bumps listing to
+`format_version=2` when ≥1 Symlink is present. Decode accepts `{1,2}`.
+Extract materializes Symlink; DirFs exposes `readlink`; still **RO**. Path
+filter treats Symlink paths like Files. Absolute targets → clear non-zero;
+**not** followed. **Hard ban unchanged** plus: **no default record**, no
+follow-walk, no fifo/xattr, no offline bundle, no pack, no write mount, no
+prune, no `gc --path`. Responsibility nail:
+**`archive --symlinks record` ≠ write mount ≠ follow dir symlink ≠ pack ≠
+offline bundle ≠ prune ≠ `gc --path` ≠ default record**. Gate
+`check_compat_1_11.sh` lands in **M6** (not required for M5 docs/demo).
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -105,7 +119,7 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 | Surface | Commitment |
 |---|---|
 | **`.cfidx` v1** | Byte layout frozen (`CFIDX\0\0\x01`, `format_version=1`). Incompatible changes → **major** (2.x). See [index-format.md](index-format.md). |
-| **`.cfdir` v1** | Byte layout frozen (`CFDIR\0\0\x01`, `format_version=1`). Incompatible changes → **major** (2.x). See [dir-format.md](dir-format.md). |
+| **`.cfdir` v1** | Byte layout frozen (`CFDIR\0\0\x01`, `format_version=1`). Default write path (no Symlink) stays v1. Phase22 opt-in **v2** (`format_version=2` + `KIND_SYMLINK`) is a **minor** compatible extension (decode accepts 1\|2). Incompatible changes → **major** (2.x). See [dir-format.md](dir-format.md). |
 | **`ChunkSource`** | Method signatures frozen: `has` / `get` only (plaintext). No silent add of `put` / `list` on this trait. |
 | **`ChunkSink`** | Method signatures frozen: `has` / `put` → `PutOutcome::{Written,SkippedExists}`. Source and Sink stay separate. |
 | **Loose CAS layout** | On-disk / default HTTP object path `chunks/<2hex>/<62hex>.cnk` is the frozen narrative. Default HTTP GET/PUT = `{base}/{path}` (see [remote-layout.md](remote-layout.md)). A future pack layout must be dual-mode and either a **major** bump or an explicit opt-in layout version. |
@@ -120,21 +134,26 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
 `pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
 `store create`, `pull --compression`, `diff --progress`, `make --jobs`,
-`--path-from`, `doctor`/`verify` path scope, `mount` path quartet) may ship in
+`--path-from`, `doctor`/`verify` path scope, `mount` path quartet,
+`archive --symlinks record`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), **1.10.0** (Phase20), and **1.11.0** (Phase21) are such
+**1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21), and planned
+**1.12.0** (Phase22 symlink opt-in) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
 omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release /
 `make --jobs` default **1** / no `--path-from` / no doctor·verify path flags ≡
-1.9 full set / no mount path flags ≡ 1.10 full tree. Soft budget is **refuse-fill only** (≠ LRU ≠
+1.9 full set / no mount path flags ≡ 1.10 full tree / **`--symlinks skip`** ≡
+1.11 skip+warn + default write v1. Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 **`store create` ≠ recompress ≠ default zstd ≠ pack**.
 **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
 **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**.
+**`archive --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ offline bundle ≠
+prune ≠ `gc --path` ≠ default record**.
 
 ## Breaking-change policy
 
@@ -178,7 +197,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** and Phase22 / planned **1.12.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -196,7 +215,8 @@ At 1.0, ChunkForge promises:
 | `diff` | Listing↔listing (+ `--tree`); optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
-| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes` / path quartet) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU); Phase21 path flags subset DirFs visibility (default ≡ 1.10 full tree; **≠** write mount **≠** prune **≠** `gc --path`) |
+| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes` / path quartet / Symlink `readlink`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU); Phase21 path flags subset DirFs visibility (default ≡ 1.10 full tree; **≠** write mount **≠** prune **≠** `gc --path`); Phase22 Symlink nodes + `readlink` still **RO** (**record ≠ write mount ≠ follow**) |
+| `archive --symlinks skip\|record` | Default **skip** ≡ 1.11 skip+warn + write v1; **record** → Symlink kind / v2 when ≥1; absolute target → non-zero; **≠** write mount **≠** follow **≠** pack **≠** prune **≠** `gc --path` **≠** default record |
 | `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 | `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
 | `push` local / `file://` `--dest` | Single Store as `ChunkSink` (open or create **none**); **≠** `--fallback` / multi-dest; HTTP knobs with local dest → non-zero |

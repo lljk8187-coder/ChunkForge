@@ -72,11 +72,12 @@ chunkforge mount \
 ### Path scope (Phase 21 / 1.11.0 opt-in)
 
 Repeatable **`--path` / `--path-from` / `--exclude` / `--exclude-from`**
-restrict which **`.cfdir` File** paths appear under the mount point (kept
-Files + ancestor Dirs). Semantics match archive/extract/push/pull/diff/doctor/
-verify (`PathFilter` / `load_path_file` / `load_exclude_file`). Library path:
-`filter_dir_archive` → `DirFs::new` (empty filter ≡ identity ≡ **1.10** full
-tree).
+restrict which **`.cfdir` File and Symlink** paths appear under the mount point
+(kept Files/Symlinks + ancestor Dirs). Semantics match
+archive/extract/push/pull/diff/doctor/verify (`PathFilter` /
+`load_path_file` / `load_exclude_file`). Library path: `filter_dir_archive` →
+`DirFs::new` (empty filter ≡ identity ≡ **1.10** full tree). Phase22 Symlink
+nodes are kept/excluded by path like Files.
 
 | Rule | Detail |
 |---|---|
@@ -88,6 +89,8 @@ tree).
 **`mount path` ≠ write mount ≠ prune ≠ `gc --path` ≠ sync ≠ pack** — filtering
 only **shows fewer** paths; it never writes back, never deletes extras under a
 target tree, never shrinks the GC keep-set, and never packs chunks.
+**`archive --symlinks record` ≠ write mount ≠ follow ≠ pack** — DirFs exposes
+recorded Symlinks via `readlink` but the mount stays **RO**.
 
 ```bash
 # Subset mount (packages/foo only)
@@ -102,6 +105,21 @@ Smoke: [`scripts/demo_mount_path.sh`](../scripts/demo_mount_path.sh)
 (library DirFs / `filter_dir_archive` is the primary CI-friendly path; real
 FUSE is optional when `/dev/fuse` + fuse3 are present).
 
+### Symlink / `readlink` (Phase22 / 1.12 preview)
+
+When a `.cfdir` listing contains Symlink entries (`format_version=2`):
+
+- `DirFs` exposes them as symlink nodes (`FileType::Symlink`).
+- `lookup` / `readdir` report the correct type; **`readlink`** returns the
+  recorded target string (library: `DirFs::readlink_at_path`).
+- Symlinks are **not** followed when resolving paths inside DirFs.
+- Write-side FUSE callbacks (`symlink` / `link` / …) still return **`EROFS`** /
+  `EACCES` — **still RO**. Recording / extracting a symlink is **not** write
+  mount.
+- Path filter can keep Symlink paths (orthogonal to Phase21 mount path).
+
+Smoke: [`scripts/demo_symlink.sh`](../scripts/demo_symlink.sh) (library DirFs
+asserts primary; real FUSE optional).
 
 ### Sequential prefetch (Phase 10 + Phase 11 P1 O1)
 
@@ -166,9 +184,10 @@ mkdir -p /tmp/cf-mnt-demo/mnt-tree
 fusermount3 -u /tmp/cf-mnt-demo/mnt-tree
 ```
 
-Under the mount point, relative paths from the `.cfdir` appear as directories and
-regular files. File content is assembled from `ChunkSource::get`, with sequential
-prefetch of subsequent chunk(s) when enabled (default depth 1).
+Under the mount point, relative paths from the `.cfdir` appear as directories,
+regular files, and (Phase22) **symlinks**. File content is assembled from
+`ChunkSource::get`, with sequential prefetch of subsequent chunk(s) when
+enabled (default depth 1). Symlink `readlink` returns the recorded target.
 
 ### Smoke scripts
 
@@ -176,6 +195,7 @@ prefetch of subsequent chunk(s) when enabled (default depth 1).
 ./scripts/demo_mount.sh           # .cfidx single-file smoke
 ./scripts/demo_archive.sh         # includes optional .cfdir mount (skips if fuse unavailable)
 ./scripts/demo_mount_path.sh      # Phase21 path quartet (DirFs lib + optional FUSE)
+./scripts/demo_symlink.sh         # Phase22 Symlink + readlink (DirFs lib + optional FUSE)
 ```
 
 See also [remote-layout.md](remote-layout.md) for HTTP / `file://` chunk URLs and
@@ -206,9 +226,11 @@ Composition (recommended): `CacheSource(Fallback([primary, …fallbacks]), cache
 
 ## Out of scope
 
-- Writable mounts / COW write-back (**mount path is not write-back**)
+- Writable mounts / COW write-back (**mount path is not write-back**;
+  **symlink record / extract / readlink ≠ write mount**)
 - Prefetch depth beyond the hard cap (`N≤2` / ≤512 KiB)
 - Treating `--fallback` as sync / prune / write-back / LRU
 - `gc --path` / extract prune / `--delete` / bidirectional sync / packfile
+- Following directory symlinks inside DirFs / archive walk
 - `mount --progress` done/TOTAL (session-typed; no natural TOTAL)
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

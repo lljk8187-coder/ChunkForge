@@ -1,13 +1,13 @@
 # Directory archive (`archive` / `extract` / tree `verify` / push)
 
-Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
+Phase 5 multi-file workflow built on [`.cfdir` v1/v2](dir-format.md) (Phase22 opt-in Symlink / `format_version=2`). Single-blob
 [`.cfidx`](index-format.md) commands (`make` / `cat`) are unchanged.
 
 ## Commands
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] [--path P]… [--exclude PAT]… [--exclude-from FILE]… [--format text\|json] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` as before; `--path`/`--exclude`/`--exclude-from`: filter which files are chunked+listed, default full tree ≡ 1.2.0; `--format`: `text` default ≡ 1.2.0 stderr summary, `json` one object on stdout) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] [--path P]… [--exclude PAT]… [--exclude-from FILE]… [--path-from FILE]… [--symlinks skip\|record] [--format text\|json] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing. Default **`--symlinks skip`** ≡ 1.11 skip+warn + `format_version=1`. Opt-in **`--symlinks record`** writes Symlink entries (`format_version=2` when ≥1). Path 四件套 orthogonal under record. `--format`: `text` default ≡ 1.2.0 stderr summary, `json` one object on stdout (additive `recorded_symlinks`) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir> [--force]` | Materialize the tree (parents created; existing paths → non-zero unless `--force`) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
@@ -58,6 +58,7 @@ python3 scripts/put_stub.py --root /tmp/cf-arch/mirror --port 8766
 ./scripts/demo_seed.sh         # Phase 6 seed: change one file → reuse stats → verify / extract / optional pull
 ./scripts/demo_path_filter.sh  # Phase 13: exclude → archive json → extract --path → pull --path
 ./scripts/demo_zstd_progress.sh  # Phase 17: --compression zstd + archive/extract/make --progress
+./scripts/demo_symlink.sh      # Phase 22: --symlinks skip|record → extract readlink (local)
 ```
 
 `demo_archive.sh` covers archive → verify → extract → diff, optional FUSE mount
@@ -195,12 +196,24 @@ pack. See [extract.md](extract.md) (non-prune materialize), [pull.md](pull.md)
 
 ### Walk order vs symlink / special
 
-1. **Type skip first**: symlinks and special files (fifo/socket/device) are
-   skipped with a stderr warning and counted in `skipped_symlinks` /
-   `skipped_special` (not followed, not recorded).
-2. **Then path filter**: remaining regular-file candidates are checked with
-   `PathFilter::allows`; rejects increment `excluded` and are omitted from the
-   listing.
+1. **Discover**: walk the tree **without following** directory symlinks.
+   - **Default `--symlinks skip`** (≡ **1.11.0**): symlinks are skipped with a
+     stderr warning **before** PathFilter and counted in `skipped_symlinks`
+     (not recorded; listing stays `format_version=1`).
+   - **`--symlinks record`**: symlink paths become archive candidates (target
+     via `read_link` as-is; mode from `symlink_metadata`); they later pass
+     through PathFilter like Files. Absolute / empty targets among **kept**
+     candidates → clear non-zero. ≥1 recorded Symlink ⇒ listing
+     `format_version=2`. Order under record: File + Symlink paths sorted
+     together in the written listing.
+   - **Special** (fifo/socket/device): always skipped + warn → `skipped_special`
+     (before PathFilter).
+2. **Then path filter**: remaining File (and, under `record`, Symlink)
+   candidates are checked with `PathFilter::allows`; rejects increment
+   `excluded` and are omitted from the listing.
+
+**`archive --symlinks record` ≠ write mount ≠ follow dir symlink ≠ pack ≠
+offline bundle ≠ prune ≠ `gc --path` ≠ default record** (default skip ≡ 1.11).
 
 ## `--format text|json`
 
@@ -218,8 +231,9 @@ Exit codes are format-independent.
 | `written` / `reused` | chunk put outcomes (**normal write only**) |
 | `would_write` / `would_reuse` | same accounting under **`--dry-run` only** (not both with written/reused) |
 | `seed_reused_files` / `rechunked_files` | seed file-level counters (0 when no `--seed`) |
-| `skipped_symlinks` / `skipped_special` | type-skip counts |
-| `excluded` | regular files rejected by `--path`/`--exclude` (0 when no filter) |
+| `skipped_symlinks` / `skipped_special` | type-skip counts (skip policy / special) |
+| `recorded_symlinks` | Phase22 additive: Symlink entries written under `--symlinks record` (0 under default skip) |
+| `excluded` | regular files (and under record, symlink paths) rejected by `--path`/`--exclude` (0 when no filter) |
 
 ```bash
 chunkforge archive --store ./store -o app.cfdir \
@@ -227,15 +241,21 @@ chunkforge archive --store ./store -o app.cfdir \
 # stdout: {"ok":true,"dry_run":false,"files":…,"excluded":…,…}
 ```
 
-## Archive policy (P0)
+## Archive policy (P0 + Phase22 symlink)
 
-- **Regular files** only are recorded (optional empty `Dir` entries omitted).
-- **Symlinks**: skipped with a stderr warning (not followed, not recorded) —
-  **before** `--path`/`--exclude`.
+- **Regular files** are always candidates (optional empty `Dir` entries omitted).
+- **Default `--symlinks skip`** (≡ **1.11.0**): skipped with a stderr warning
+  (not followed, not recorded) **before** `--path`/`--exclude`; listing
+  `format_version=1`.
+- **Opt-in `--symlinks record`**: record Symlink into the listing (relative
+  target string as-is; **not** followed; directory symlink **not** recursed);
+  absolute target → non-zero; path 四件套 orthogonal; ≥1 Symlink ⇒
+  `format_version=2`.
 - **fifo / socket / device**: skipped with a stderr warning — **before** path
   filter.
 - Chunk params default to FastCDC 16KiB / 64KiB / 256KiB; override with
   `--chunk-size min:avg:max`.
+- Smoke: [`scripts/demo_symlink.sh`](../scripts/demo_symlink.sh).
 
 ## Extract conflicts / `--force`
 
@@ -245,11 +265,15 @@ exits non-zero — remove or choose a fresh `-o` directory.
 With `--force`:
 
 - **Existing regular files** are truncated and overwritten.
+- **Existing symlinks** (Phase22): `--force` only overwrites an existing
+  **same-type symlink** (remove + recreate). Replacing a file/dir with a
+  symlink (or vice versa) still fails with a clear error.
 - **Type mismatches** still fail with a clear error: a directory where a file is
   expected (or a file where a directory is expected) is **not** replaced;
   `--force` does not `rm -rf` directories.
 - The `-o` output root itself, if it already exists as a **file**, is never
   overwritten (even with `--force`).
+- Still **no prune** / no `--delete`. See [extract.md](extract.md).
 
 
 

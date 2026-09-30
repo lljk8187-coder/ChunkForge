@@ -2,7 +2,8 @@
 
 Materialize a directory tree from a **`.cfdir`** listing plus a chunk source
 (`--store` / `--source`). Parents are created as needed; file modes are restored
-on Unix when recorded. Empty matching `Dir` entries create directories.
+on Unix when recorded. Empty matching `Dir` entries create directories. Phase22:
+Symlink entries are materialized as real symlinks (see below); still **no prune**.
 
 Phase 9 adds opt-in **`--skip-unchanged`** and **`--dry-run`**; Phase 11 adds
 opt-in **`--skip-trust-mtime`** (requires `--skip-unchanged`) and
@@ -43,7 +44,7 @@ chunkforge extract \
 | `--exclude PAT` | Repeatable exclude: exact, trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. **Not** prune |
 | `--exclude-from FILE` | Repeatable UTF-8 file: one pattern per line (blank / `#` skipped, trim). Merged with `--exclude` into one `PathFilter`. Missing file or illegal line → clear non-zero. **Not** prune |
 | `--path-from FILE` | Phase 20 opt-in: UTF-8 one include prefix per line (≡ `--path`); blank/`#`/trim; merged with `--path` (OR). Missing file → non-zero. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack** |
-| `--force` | Overwrite existing **regular files**. Type mismatches (file↔directory) still fail. Default **off** ≡ 0.8.0 conflict-fail |
+| `--force` | Overwrite existing **regular files**, or existing **same-type symlinks** (Phase22). Type mismatches (file↔directory↔symlink) still fail — `--force` never changes entry type. Default **off** ≡ 0.8.0 conflict-fail |
 | `--skip-unchanged` | Opt-in: if dest exists as a regular file, **size** matches the listing, and **content BLAKE3 ≡ `blob_blake3`**, skip chunk fetch and write (mode/mtime untouched). Default **off** ≡ 0.8.0 / 1.0.0 |
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
 | `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Text: stderr `would_*` counters over the **filtered** set |
@@ -68,7 +69,7 @@ One JSON **object** on stdout on success. Failures still go through anyhow (non-
 
 | Mode | Fields |
 |---|---|
-| Write path | `{"ok":true,"dry_run":false,"skipped":S,"wrote":W,"dirs":D}` — always includes `skipped`/`wrote`/`dirs` (`skipped=0` when `--skip-unchanged` is off) |
+| Write path | `{"ok":true,"dry_run":false,"skipped":S,"wrote":W,"dirs":D,"wrote_symlinks":N,"symlinks":N}` — always includes `skipped`/`wrote`/`dirs` (`skipped=0` when `--skip-unchanged` is off). Phase22 additive `wrote_symlinks` / `symlinks` (same count; 0 when listing has no Symlink) |
 | `--dry-run` | `{"ok":true,"dry_run":true,"would_skip":…,"would_write":…,"would_dirs":…,"would_fail":…}` |
 
 ## `--skip-unchanged` / `--force` / `--dry-run` overlap
@@ -88,6 +89,23 @@ does **not** trust mtime. Symmetrical to `archive --seed-trust-mtime`.
 
 **Dry-run exit:** **0** when the listing is valid (even if `would_fail>0`);
 invalid listing → non-zero.
+
+## Symlink materialize (Phase22 / 1.12 preview)
+
+When the listing contains `DirEntryKind::Symlink` (`format_version=2` from
+`archive --symlinks record`):
+
+- Extract creates the symlink with the **recorded target string** (Unix
+  `symlink(2)` / `std::os::unix::fs::symlink`). Absolute / empty targets in
+  the listing are refused (clear non-zero).
+- **`--force`** only overwrites an existing **symlink** (same-type). It will
+  **not** replace a regular file or directory with a symlink.
+- Symlinks contribute **0 chunks** (no `ChunkSource::get`).
+- Path filter applies to Symlink paths like Files; filtered-out symlinks are
+  simply not created — still **not** prune.
+- JSON write path adds additive `wrote_symlinks` / `symlinks` (same count).
+
+**`extract` Symlink ≠ write mount ≠ follow ≠ pack ≠ prune ≠ `gc --path`.**
 
 ## Explicitly **no prune** (`path` ≠ prune ≠ sync; `fallback` ≠ cache ≠ sync)
 
@@ -176,6 +194,7 @@ bash scripts/demo_extract_skip.sh
 bash scripts/demo_path_filter.sh  # Phase 13 path/exclude + non-prune
 bash scripts/demo_fallback_bytes_suffix.sh  # Phase 16 fallback + suffix + bytes_plaintext
 bash scripts/demo_zstd_progress.sh  # Phase 17: zstd create + archive/extract/make --progress
+bash scripts/demo_symlink.sh      # Phase 22: record → extract readlink
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → optional dry-run glance
 ```
