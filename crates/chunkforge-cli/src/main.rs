@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use chunkforge_chunk::{ChunkId, ChunkInfo, ChunkParams, chunk_bytes};
 use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
-    FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, SeedDecision,
+    FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader,
     judge_extract_unchanged_opts, seed_file_map, validate_archive_path,
 };
@@ -62,8 +62,13 @@ enum Commands {
     /// written into `--store` with content-addressed dedup; the output `.cfdir`
     /// records relative paths and per-file chunk tables. Symlinks, fifos,
     /// sockets, and device nodes are **skipped with a stderr warning** (P0
-    /// policy: do not follow / do not record). Empty directories are omitted
-    /// (extract can recreate parents from file paths). `make` single-file
+    /// policy: do not follow / do not record) **before** `--path`/`--exclude`
+    /// filtering. Empty directories are omitted (extract can recreate parents
+    /// from file paths). Optional repeatable `--path` / `--exclude` restrict
+    /// which regular files are chunked and listed (default: full tree ≡ 1.2.0).
+    /// Default **`--format text`** (≡ 1.2.0): summary on stderr.
+    /// **`--format json`**: one JSON object on stdout; no duplicate text
+    /// summary; exit codes are format-independent. `make` single-file
     /// semantics are unchanged.
     Archive {
         /// Local CAS store directory (created if missing; not written in `--dry-run`)
@@ -94,6 +99,21 @@ enum Commands {
         /// read-only; store puts stay atomic / race-safe.
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Include only archive paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.2.0).
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude archive paths matching this pattern (repeatable): exact,
+        /// trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error exit. Applied after type
+        /// skip (symlink/special) and after `--path` includes.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+        /// Output format: `text` (default ≡ 1.2.0 stderr summary) or `json`
+        /// (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -488,9 +508,9 @@ enum StoreCommands {
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` / `store scrub` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3 + Phase 12 M2–M3).
+/// `push` / `pull` / `gc` / `store scrub` / `archive` (Phase 8–12 + Phase 13 M2).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
-/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0).
+/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -587,6 +607,9 @@ fn run() -> Result<()> {
             seed,
             seed_trust_mtime,
             jobs,
+            paths,
+            excludes,
+            format,
         } => {
             let jobs = parse_jobs(jobs)?;
             cmd_archive(
@@ -597,6 +620,9 @@ fn run() -> Result<()> {
                 dry_run,
                 seed.as_deref().map(|p| (p, seed_trust_mtime)),
                 jobs,
+                &paths,
+                &excludes,
+                format,
             )
         }
         Commands::Extract {
@@ -1044,6 +1070,7 @@ fn cmd_make(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_archive(
     store_path: &Path,
     output: &Path,
@@ -1052,6 +1079,9 @@ fn cmd_archive(
     dry_run: bool,
     seed: Option<(&Path, bool)>,
     jobs: usize,
+    paths: &[String],
+    excludes: &[String],
+    format: CliFormat,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -1061,6 +1091,9 @@ fn cmd_archive(
             src_dir.display()
         );
     }
+
+    let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let seed_trust_mtime = seed.map(|(_, t)| t).unwrap_or(false);
 
@@ -1096,6 +1129,7 @@ fn cmd_archive(
     }
 
     // Collect regular files first (sorted) so .cfdir output is deterministic.
+    // Order: type skip (symlink/special) inside walk, then PathFilter on candidates.
     let mut file_paths: Vec<PathBuf> = Vec::new();
     let mut skipped_symlinks = 0usize;
     let mut skipped_special = 0usize;
@@ -1108,7 +1142,21 @@ fn cmd_archive(
     )?;
     file_paths.sort();
 
-    if skipped_symlinks > 0 || skipped_special > 0 {
+    let mut excluded = 0usize;
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(file_paths.len());
+    for full in file_paths {
+        let rel = relative_archive_path(src_dir, &full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+        if path_filter.allows(&rel) {
+            kept.push(full);
+        } else {
+            excluded += 1;
+        }
+    }
+    let file_paths = kept;
+
+    if format == CliFormat::Text && (skipped_symlinks > 0 || skipped_special > 0) {
         eprintln!(
             "archive: symlink policy = skip+warn (not recorded / not followed); \
              skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
@@ -1160,40 +1208,68 @@ fn cmd_archive(
     }
 
     let file_count = entries.len();
+    // Empty Dir entries are omitted (≡ 1.2.0); dirs counter stays 0 for File-only listings.
+    let dir_count = entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::Dir { .. }))
+        .count();
 
     if dry_run {
-        if seeding {
-            eprintln!(
-                "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}; \
-                 would_seed_reuse={}, would_rechunk={}{}); \
-                 no store/.cfdir written (would write {})",
-                file_count,
-                if file_count == 1 { "" } else { "s" },
-                total_chunks,
-                if total_chunks == 1 { "" } else { "s" },
-                new_chunks,
-                reused_chunks,
-                seed_reused_files,
-                rechunked_files,
-                if seed_missing_chunks > 0 {
-                    format!(", seed_missing_chunks={seed_missing_chunks}")
+        match format {
+            CliFormat::Text => {
+                if seeding {
+                    eprintln!(
+                        "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}; \
+                         would_seed_reuse={}, would_rechunk={}{}; excluded={}); \
+                         no store/.cfdir written (would write {})",
+                        file_count,
+                        if file_count == 1 { "" } else { "s" },
+                        total_chunks,
+                        if total_chunks == 1 { "" } else { "s" },
+                        new_chunks,
+                        reused_chunks,
+                        seed_reused_files,
+                        rechunked_files,
+                        if seed_missing_chunks > 0 {
+                            format!(", seed_missing_chunks={seed_missing_chunks}")
+                        } else {
+                            String::new()
+                        },
+                        excluded,
+                        output.display()
+                    );
                 } else {
-                    String::new()
-                },
-                output.display()
-            );
-        } else {
-            eprintln!(
-                "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}); \
-                 no store/.cfdir written (would write {})",
-                file_count,
-                if file_count == 1 { "" } else { "s" },
-                total_chunks,
-                if total_chunks == 1 { "" } else { "s" },
-                new_chunks,
-                reused_chunks,
-                output.display()
-            );
+                    eprintln!(
+                        "archive: dry-run: {} file{}, {} chunk{} (would_write={}, would_reuse={}; \
+                         excluded={}); no store/.cfdir written (would write {})",
+                        file_count,
+                        if file_count == 1 { "" } else { "s" },
+                        total_chunks,
+                        if total_chunks == 1 { "" } else { "s" },
+                        new_chunks,
+                        reused_chunks,
+                        excluded,
+                        output.display()
+                    );
+                }
+            }
+            CliFormat::Json => {
+                let obj = serde_json::json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "files": file_count,
+                    "dirs": dir_count,
+                    "chunks": total_chunks,
+                    "would_write": new_chunks,
+                    "would_reuse": reused_chunks,
+                    "seed_reused_files": seed_reused_files,
+                    "rechunked_files": rechunked_files,
+                    "skipped_symlinks": skipped_symlinks,
+                    "skipped_special": skipped_special,
+                    "excluded": excluded,
+                });
+                println!("{obj}");
+            }
         }
         return Ok(());
     }
@@ -1215,38 +1291,61 @@ fn cmd_archive(
     file.sync_all()
         .with_context(|| format!("fsync archive {}", output.display()))?;
 
-    if seeding {
-        eprintln!(
-            "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}; \
-             seed_reused_files={}, rechunked_files={}{}) → store {}",
-            output.display(),
-            file_count,
-            if file_count == 1 { "" } else { "s" },
-            total_chunks,
-            if total_chunks == 1 { "" } else { "s" },
-            new_chunks,
-            reused_chunks,
-            seed_reused_files,
-            rechunked_files,
-            if seed_missing_chunks > 0 {
-                format!(", seed_missing_chunks={seed_missing_chunks}")
+    match format {
+        CliFormat::Text => {
+            if seeding {
+                eprintln!(
+                    "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}; \
+                     seed_reused_files={}, rechunked_files={}{}; excluded={}) → store {}",
+                    output.display(),
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    total_chunks,
+                    if total_chunks == 1 { "" } else { "s" },
+                    new_chunks,
+                    reused_chunks,
+                    seed_reused_files,
+                    rechunked_files,
+                    if seed_missing_chunks > 0 {
+                        format!(", seed_missing_chunks={seed_missing_chunks}")
+                    } else {
+                        String::new()
+                    },
+                    excluded,
+                    store_path.display()
+                );
             } else {
-                String::new()
-            },
-            store_path.display()
-        );
-    } else {
-        eprintln!(
-            "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}) → store {}",
-            output.display(),
-            file_count,
-            if file_count == 1 { "" } else { "s" },
-            total_chunks,
-            if total_chunks == 1 { "" } else { "s" },
-            new_chunks,
-            reused_chunks,
-            store_path.display()
-        );
+                eprintln!(
+                    "archive: wrote {} ({} file{}, {} chunk{}; new={}, reused={}; excluded={}) → store {}",
+                    output.display(),
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    total_chunks,
+                    if total_chunks == 1 { "" } else { "s" },
+                    new_chunks,
+                    reused_chunks,
+                    excluded,
+                    store_path.display()
+                );
+            }
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "dry_run": false,
+                "files": file_count,
+                "dirs": dir_count,
+                "chunks": total_chunks,
+                "written": new_chunks,
+                "reused": reused_chunks,
+                "seed_reused_files": seed_reused_files,
+                "rechunked_files": rechunked_files,
+                "skipped_symlinks": skipped_symlinks,
+                "skipped_special": skipped_special,
+                "excluded": excluded,
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }
@@ -1474,7 +1573,9 @@ fn load_seed_cfdir(path: &Path) -> Result<DirArchive> {
 /// Recursively collect regular-file paths under `dir` (relative walk from `root`).
 ///
 /// Symlinks (including symlink-to-dir) and special files are skipped with a
-/// per-path stderr warning. Does **not** follow directory symlinks (avoids loops).
+/// per-path stderr warning **before** any `--path`/`--exclude` filter (Phase 13
+/// M2 order: type skip → PathFilter on candidates). Does **not** follow
+/// directory symlinks (avoids loops).
 fn collect_archive_files(
     root: &Path,
     dir: &Path,

@@ -5,7 +5,7 @@
 //! - [seed helpers](seed_file_map) — prior path index + content-blake3 reuse (+ optional mtime trust, Phase 7)
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //! - [extract match](judge_extract_unchanged) — dest vs listing size+blake3 for `--skip-unchanged` (Phase 9); optional mtime trust (Phase 11)
-//! - [`PathFilter`] — `--path` / `--exclude` matching for archive paths (Phase 13; library only, CLI unwired)
+//! - [`PathFilter`] — `--path` / `--exclude` matching for archive paths (Phase 13; wired into `archive`)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
 //! `docs/dir-format.md`. Seed / diff / extract-match / path-filter helpers do **not** change those layouts.

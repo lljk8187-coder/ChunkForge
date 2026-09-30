@@ -18,6 +18,7 @@
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
+| **Phase 13** | *(Unreleased → 1.3.0)* | Path scope: `archive --path`/`--exclude` + `archive --format json` (M1–M2 landed; extract/pull path + ops-json + compat_1_2 still open) |
 
 ## Non-goals (Phase 10 / 1.0)
 

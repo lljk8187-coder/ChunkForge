@@ -9,10 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Phase13-M1 `PathFilter`** (library, CLI not wired): `chunkforge-index::PathFilter` /
+- **Phase13-M1 `PathFilter`** (library): `chunkforge-index::PathFilter` /
   `ExcludePat` — `--path` prefix include (OR) + `--exclude` exact / trailing-`/`
   directory / edge `*` wildcards (`*.o`, `temp*`); no `ignore`/`globset`; illegal
   middle `*` / `**` → `Error::InvalidExcludePattern`. Unit tests in-crate.
+- **Phase13-M2 `archive --path` / `--exclude` + `--format json`**: repeatable
+  path/exclude → `PathFilter` (illegal exclude → clear error); walk order type
+  skip then filter; excluded files not chunked / not in `.cfdir`; orthogonal to
+  seed / dry-run / jobs. Default **`--format text`** ≡ 1.2.0 stderr summary
+  (includes `excluded=`); **`json`**: one stdout object (`ok` / `dry_run` /
+  `files` / `dirs` / `chunks` / `written`|`would_write` / `reused`|`would_reuse`
+  / `seed_reused_files` / `rechunked_files` / `skipped_symlinks` /
+  `skipped_special` / `excluded`); no text dual-write; exit format-independent.
+  Docs: `docs/archive.md`. **Not** bumping 1.3.0 yet; ops-json matrix archive
+  row deferred to M5.
 
 ## [1.2.0] — 2026-09-29
 

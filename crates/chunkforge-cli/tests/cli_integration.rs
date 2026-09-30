@@ -8170,3 +8170,269 @@ fn push_progress_with_stub_emits_and_default_silent() {
         "push without --progress must be silent on progress:; stderr={err0}"
     );
 }
+
+// --- Phase 13 M2: archive --path/--exclude + --format json ---
+
+#[test]
+fn archive_help_lists_path_exclude_format() {
+    let help = run_ok(&["archive", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--path"),
+        "archive --help should list --path:\n{s}"
+    );
+    assert!(
+        s.contains("--exclude"),
+        "archive --help should list --exclude:\n{s}"
+    );
+    assert!(
+        s.contains("--format"),
+        "archive --help should list --format:\n{s}"
+    );
+}
+
+#[test]
+fn archive_exclude_omit_junk_from_cfdir() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkg")).unwrap();
+    fs::create_dir_all(src.join(".git")).unwrap();
+    fs::create_dir_all(src.join("junk")).unwrap();
+    fs::write(src.join("pkg").join("a.txt"), b"keep-me\n").unwrap();
+    fs::write(src.join(".git").join("config"), b"ign\n").unwrap();
+    fs::write(src.join("junk").join("noise.txt"), b"noise\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("app.cfdir");
+    let result = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        ".git/",
+        "--exclude",
+        "junk/",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("excluded=") && !err.contains("excluded=0"),
+        "stderr should report excluded≥1; stderr={err}"
+    );
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode .cfdir");
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["pkg/a.txt"], "paths={paths:?}");
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.starts_with(".git") || p.starts_with("junk")),
+        "listing must omit junk; paths={paths:?}"
+    );
+}
+
+#[test]
+fn archive_format_json_dry_run_and_write_parseable() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"json-a\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"json-b\n").unwrap();
+    fs::write(src.join("skip.o"), b"obj\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("app.cfdir");
+
+    let dry = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "*.o",
+        "--dry-run",
+        "--format",
+        "json",
+        src.to_str().unwrap(),
+    ]);
+    let dry_stdout = String::from_utf8_lossy(&dry.stdout);
+    let dry_stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        !dry_stderr.contains("archive: dry-run:"),
+        "json must not dual-write text summary; stderr={dry_stderr}"
+    );
+    let dry_v: serde_json::Value =
+        serde_json::from_str(dry_stdout.trim()).expect("dry-run json parse");
+    assert_eq!(dry_v["ok"], true);
+    assert_eq!(dry_v["dry_run"], true);
+    assert!(dry_v.get("would_write").is_some(), "{dry_v}");
+    assert!(dry_v.get("would_reuse").is_some(), "{dry_v}");
+    assert!(
+        dry_v.get("written").is_none(),
+        "dry-run must use would_*; {dry_v}"
+    );
+    assert!(dry_v["excluded"].as_u64().unwrap_or(0) >= 1, "{dry_v}");
+    assert!(!out.exists(), "dry-run must not write .cfdir");
+
+    let wrote = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "*.o",
+        "--format",
+        "json",
+        src.to_str().unwrap(),
+    ]);
+    let wrote_stdout = String::from_utf8_lossy(&wrote.stdout);
+    let wrote_stderr = String::from_utf8_lossy(&wrote.stderr);
+    assert!(
+        !wrote_stderr.contains("archive: wrote"),
+        "json must not dual-write text summary; stderr={wrote_stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(wrote_stdout.trim()).expect("write json parse");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], false);
+    assert!(v.get("written").is_some(), "{v}");
+    assert!(v.get("reused").is_some(), "{v}");
+    assert!(
+        v.get("would_write").is_none(),
+        "normal write must use written/reused; {v}"
+    );
+    for key in [
+        "files",
+        "dirs",
+        "chunks",
+        "seed_reused_files",
+        "rechunked_files",
+        "skipped_symlinks",
+        "skipped_special",
+        "excluded",
+    ] {
+        assert!(v.get(key).is_some(), "missing {key} in {v}");
+    }
+    assert!(v["excluded"].as_u64().unwrap_or(0) >= 1, "{v}");
+    assert_eq!(v["files"].as_u64().unwrap(), 2, "{v}");
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(!paths.iter().any(|p| p.ends_with(".o")), "{paths:?}");
+}
+
+#[test]
+fn archive_default_format_is_text() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"text-default\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("a.cfdir");
+    let result = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("archive: wrote"),
+        "default format ≡ text summary on stderr; stderr={stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty() || !stdout.trim().starts_with('{'),
+        "default must not emit JSON on stdout; stdout={stdout}"
+    );
+}
+
+#[test]
+fn archive_no_filter_flags_full_tree_regression() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"full-a\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"full-b\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("full.cfdir");
+    let result = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(err.contains("excluded=0"), "stderr={err}");
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+    let mut paths: Vec<_> = arch.entries.iter().map(|e| e.path.clone()).collect();
+    paths.sort();
+    assert_eq!(paths, vec!["a.txt".to_string(), "sub/b.txt".to_string()]);
+}
+
+#[test]
+fn archive_path_include_then_exclude() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkg").join("foo")).unwrap();
+    fs::create_dir_all(src.join("pkg").join("bar")).unwrap();
+    fs::create_dir_all(src.join("other")).unwrap();
+    fs::write(src.join("pkg").join("foo").join("a.txt"), b"foo\n").unwrap();
+    fs::write(src.join("pkg").join("bar").join("b.txt"), b"bar\n").unwrap();
+    fs::write(src.join("other").join("c.txt"), b"other\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("scoped.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--path",
+        "pkg",
+        "--exclude",
+        "pkg/bar/",
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).expect("decode");
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["pkg/foo/a.txt"], "{paths:?}");
+}
+
+#[test]
+fn archive_illegal_exclude_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("bad.cfdir");
+    let fail = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "a*b",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("invalid exclude pattern") || err.contains("exclude pattern"),
+        "stderr={err}"
+    );
+    assert!(!out.exists());
+}

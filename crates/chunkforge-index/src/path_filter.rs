@@ -1,6 +1,6 @@
 //! Path include/exclude filter for archive paths (Phase 13).
 //!
-//! Library-only helper for future `--path` / `--exclude` wiring. Matching is
+//! Used by `archive --path` / `--exclude` (Phase 13 M2). Matching is
 //! literal UTF-8 / byte-oriented (no casefold). No `ignore` / `globset`.
 //!
 //! Archive paths follow the same conventions as [`crate::validate_archive_path`]

@@ -7,7 +7,7 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed`: reuse unchanged files' chunk tables; `--seed-trust-mtime`: with `--seed`, size+mtime match → skip content BLAKE3; `--dry-run`: stats only; `--jobs`: per-file parallel chunking, default 1) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] [--path P]… [--exclude PAT]… [--format text\|json] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` as before; `--path`/`--exclude`: filter which files are chunked+listed, default full tree ≡ 1.2.0; `--format`: `text` default ≡ 1.2.0 stderr summary, `json` one object on stdout) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir> [--force]` | Materialize the tree (parents created; existing paths → non-zero unless `--force`) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
@@ -155,12 +155,64 @@ chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
 # stderr: … would_seed_reuse=…, would_rechunk=1 …; no store/.cfdir written …
 ```
 
+## Path filter (`--path` / `--exclude`)
+
+Phase 13 opt-in. Repeatable `--path P` and `--exclude PAT` build a
+`PathFilter` (same rules as `chunkforge-index::PathFilter`):
+
+- **`--path P`**: keep iff `path == P` or `path` is under `P/` (OR across flags).
+- **`--exclude PAT`**: exact match; trailing `/` → directory prefix; single `*`
+  only at start (`*.o`) or end (`temp*`). Illegal middle `*` / `**` → non-zero
+  with a clear error.
+- If any `--path` is given, a candidate must hit an include **before** excludes.
+- **No** `--path` / `--exclude` ⇒ full tree (≡ **1.2.0**).
+- Orthogonal to `--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` /
+  `--format`.
+
+Filtered-out regular files are **not** chunked and **do not** appear in the
+written `.cfdir`; they increment `excluded` in the text summary / JSON.
+
+### Walk order vs symlink / special
+
+1. **Type skip first**: symlinks and special files (fifo/socket/device) are
+   skipped with a stderr warning and counted in `skipped_symlinks` /
+   `skipped_special` (not followed, not recorded).
+2. **Then path filter**: remaining regular-file candidates are checked with
+   `PathFilter::allows`; rejects increment `excluded` and are omitted from the
+   listing.
+
+## `--format text|json`
+
+Default **`text`** ≡ 1.2.0: human summary on stderr (`archive: wrote …` /
+`archive: dry-run: …`), including `excluded=N`.
+
+**`--format json`**: one JSON object on **stdout** (no duplicate text summary).
+Exit codes are format-independent.
+
+| Field | Meaning |
+|---|---|
+| `ok` | `true` on success |
+| `dry_run` | whether `--dry-run` was set |
+| `files` / `dirs` / `chunks` | listing file count, Dir entries (usually 0 — empty dirs omitted), total chunk refs |
+| `written` / `reused` | chunk put outcomes (**normal write only**) |
+| `would_write` / `would_reuse` | same accounting under **`--dry-run` only** (not both with written/reused) |
+| `seed_reused_files` / `rechunked_files` | seed file-level counters (0 when no `--seed`) |
+| `skipped_symlinks` / `skipped_special` | type-skip counts |
+| `excluded` | regular files rejected by `--path`/`--exclude` (0 when no filter) |
+
+```bash
+chunkforge archive --store ./store -o app.cfdir \
+  --exclude .git/ --exclude '*.o' --format json ./src
+# stdout: {"ok":true,"dry_run":false,"files":…,"excluded":…,…}
+```
+
 ## Archive policy (P0)
 
-
 - **Regular files** only are recorded (optional empty `Dir` entries omitted).
-- **Symlinks**: skipped with a stderr warning (not followed, not recorded).
-- **fifo / socket / device**: skipped with a stderr warning.
+- **Symlinks**: skipped with a stderr warning (not followed, not recorded) —
+  **before** `--path`/`--exclude`.
+- **fifo / socket / device**: skipped with a stderr warning — **before** path
+  filter.
 - Chunk params default to FastCDC 16KiB / 64KiB / 256KiB; override with
   `--chunk-size min:avg:max`.
 
