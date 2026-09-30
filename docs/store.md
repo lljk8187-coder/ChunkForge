@@ -48,7 +48,7 @@ chunkforge store create --store ./store-z --compression zstd
 
 Smoke: [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh).
 
-## `store list` (Phase 21 / 1.11 opt-in; Cargo still 1.10.0 until M7)
+## `store list` (Phase 21 / 1.11.0 opt-in)
 
 Enumerate every loose chunk id in a local CAS via library
 **`Store::list_chunk_ids`**. Read-only observation.

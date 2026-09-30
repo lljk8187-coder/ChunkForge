@@ -69,7 +69,7 @@ chunkforge mount \
   chain. **≠ cache ≠ sync ≠ prune ≠ write-back** (see below).
 - `--jobs` does **not** apply to mount.
 
-### Path scope (Phase 21 / 1.11 opt-in; Cargo still 1.10.0 until M7)
+### Path scope (Phase 21 / 1.11.0 opt-in)
 
 Repeatable **`--path` / `--path-from` / `--exclude` / `--exclude-from`**
 restrict which **`.cfdir` File** paths appear under the mount point (kept

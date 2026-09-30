@@ -809,7 +809,6 @@ mod tests {
         );
     }
 
-
     // --- Phase 21 M1: filter_dir_archive → DirFs (no real FUSE) ---
 
     fn filter_sample_tree() -> (DirArchive, MemSource) {
@@ -897,7 +896,10 @@ mod tests {
         assert!(fs.is_dir_path("pkgs/foo"));
         assert!(fs.is_file_path("pkgs/foo/a.txt"));
         assert!(fs.is_file_path("pkgs/foo/b.txt"));
-        assert_eq!(fs.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(), b"foo-a\n");
+        assert_eq!(
+            fs.read_at_path("pkgs/foo/a.txt", 0, 64).unwrap(),
+            b"foo-a\n"
+        );
 
         // Non-matching paths absent from lookup / readdir.
         assert!(fs.lookup_path("pkgs/bar").is_none());

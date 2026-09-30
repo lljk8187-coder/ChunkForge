@@ -65,12 +65,12 @@ now.
 > do not change product defaults. Promotion checklist condition 1 stays unmet;
 > pack stays deferred.
 >
-> **Phase 21 / planned 1.11.0 still does not implement pack.** `mount` path
-> scope (DirFs / `filter_dir_archive`) is additive opt-in only (defaults ≡
-> 1.10 full tree; Cargo version remains **1.10.0** until M7). It keeps the
-> loose `.cnk` layout and does not change product defaults. Promotion
-> checklist condition 1 stays unmet on local stub evidence; pack stays
-> deferred.
+> **1.11.0 / Phase 21 still does not implement pack.** `mount` path scope
+> (DirFs / `filter_dir_archive`), P1 `push --compression` (local/`file://`
+> dest create), and P1 `store list` are additive opt-in only (defaults ≡ 1.10
+> full tree). They keep the loose `.cnk` layout and do not change product
+> defaults. Promotion checklist condition 1 stays unmet on local stub
+> evidence; pack stays deferred.
 
 ## What we measure
 

@@ -139,10 +139,12 @@ flags ⇒ full set). JSON field **names** unchanged; filtered counts may shrink.
 Gated by **`check_compat_1_9.sh`** (calls 1_8; no absolute perf SLA). Workspace
 reports **1.10.0**. Smoke:
 [`scripts/demo_path_from_doctor_verify.sh`](../scripts/demo_path_from_doctor_verify.sh).
-Phase 21 / planned **1.11.0** (workspace still **1.10.0** until M7) adds
-**`mount` path** quartet only — **`mount` still has no `--format json`**
-(session-typed FUSE; no natural ops-json object / no mount `--progress`
-done/TOTAL). Smoke:
+Phase 21 / **1.11.0** adds **`mount` path** quartet + P1 **`store list`**
+JSON (`ok` / `chunks` / `ids`) + P1 **`push --compression`** (create-time;
+omit ≡ none; no new push JSON fields). **`mount` still has no `--format
+json`** (session-typed FUSE; no natural ops-json object / no mount
+`--progress` done/TOTAL). Gated by **`check_compat_1_10.sh`** (calls 1_9; no
+absolute perf SLA). Workspace reports **1.11.0**. Smoke:
 [`scripts/demo_mount_path.sh`](../scripts/demo_mount_path.sh).
 
 

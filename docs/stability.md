@@ -84,17 +84,17 @@ would mis-delete). Defaults stay ≡ **1.9.0**. Responsibility:
 dest ≠ `--fallback` / multi-dest**. The workspace reports **1.10.0**.
 Gate **`check_compat_1_9.sh`** gates 1.10 flags (calls 1_8).
 
-**1.11.0** (Phase 21 — **unpublished draft**; workspace / CLI still report
-**1.10.0** until M7 bump) adds further **opt-in** only: **`mount` path
-quartet** (`--path` / `--exclude` / `--exclude-from` / `--path-from`) on
-read-only `.cfdir` DirFs (library `filter_dir_archive`; empty filter ≡
-identity ≡ **1.10** full tree; `.cfidx` + any path flag → non-zero). Planned
-gate **`check_compat_1_10.sh`** (M4; calls 1_9 + mount path help asserts).
+**1.11.0** adds further **opt-in** only: **`mount` path quartet**
+(`--path` / `--exclude` / `--exclude-from` / `--path-from`) on read-only
+`.cfdir` DirFs (library `filter_dir_archive`; empty filter ≡ identity ≡
+**1.10** full tree; `.cfidx` + any path flag → non-zero). P1: **`push
+--compression`** (local/`file://` dest **create**; omit ≡ none ≡ 1.10) and
+**`store list`** (sorted hex / `--format json`; **≠** GC/scrub/trim/LRU).
 **Hard ban unchanged:** **`gc --path`**, write mount, prune, pack, default
 zstd, push `--fallback`, mount `--progress`. Responsibility:
 **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**. Defaults stay
-≡ **1.10.0** (no mount path flags ⇒ full tree). Do **not** treat this
-paragraph as a released version bump.
+≡ **1.10.0** (no mount path flags ⇒ full tree). The workspace reports
+**1.11.0**. Gate **`check_compat_1_10.sh`** gates 1.11 flags (calls 1_9).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -123,8 +123,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--path-from`, `doctor`/`verify` path scope, `mount` path quartet) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), **1.10.0** (Phase20), and planned **1.11.0** (Phase21;
-draft until M7) are such
+**1.9.0** (Phase19), **1.10.0** (Phase20), and **1.11.0** (Phase21) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
@@ -179,7 +178,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.10.0** and Phase21 / planned **1.11** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -245,5 +244,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.9 `store create` / `pull --compression` / `diff --progress`; calls 1_7).
 [`scripts/check_compat_1_9.sh`](../scripts/check_compat_1_9.sh)
 (1.10 `--path-from` / doctor·verify `--path`; no gc `--path`; calls 1_8).
-Planned **`check_compat_1_10.sh`** (Phase21-M4; mount path help + calls 1_9) —
-not required by M3 demo. No absolute perf SLA.
+[`scripts/check_compat_1_10.sh`](../scripts/check_compat_1_10.sh)
+(1.11 mount path quartet; no gc `--path`; no mount `--progress`; calls 1_9).
+No absolute perf SLA.

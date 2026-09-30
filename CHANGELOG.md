@@ -7,22 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.11.0] — 2026-09-30
+
+Phase 21 closeout — **`mount` path quartet** (`--path` / `--exclude` /
+`--exclude-from` / `--path-from` → library `filter_dir_archive` → DirFs;
+default no flags ≡ 1.10 full tree; `.cfidx` + any path flag → non-zero); docs +
+`demo_mount_path.sh`; `check_compat_1_10.sh`; P1 **`push --compression`**
+(local/`file://` dest **create**; omit ≡ none ≡ 1.10); P1 **`store list`**
+(+ thin docs). Defaults remain ≡ **1.10.0**. No pack / write mount / aws-sdk /
+remote scrub / extract prune / bidirectional sync / push listing / LRU / store
+trim / **default** zstd / HTTP wire compression / `store recompress` /
+`push --fallback` / multi dest / **`gc --path`** / mount `--progress`.
+
 ### Added
 
+- **`mount` path quartet** (Phase 21 M1–M2): `--path` / `--exclude` /
+  `--exclude-from` / `--path-from` on read-only `.cfdir` DirFs; library
+  **`filter_dir_archive`** (empty filter ≡ identity ≡ 1.10 full tree; keeps
+  matching Files + ancestor Dirs); `.cfidx` + any path flag → clear non-zero.
+  Still **RO** (≠ write mount). See `docs/mount.md`.
+- **Docs + `demo_mount_path.sh`** (Phase 21 M3): mount / stability / ops-json /
+  perf / README Phase 21 narrative; local smoke for DirFs /
+  `filter_dir_archive` subset (PRIMARY), optional real FUSE, quiet full
+  default, exclude-from+path-from, `.cfidx`+path non-zero, missing path-from
+  non-zero, `gc` has no `--path`, mount has no `--progress` / `--format`.
+- **`check_compat_1_10.sh`** (Phase 21 M4): calls `check_compat_1_9` + asserts
+  mount path help quartet; no gc `--path`; no mount `--progress`; requires
+  `demo_mount_path.sh` present + executable.
 - **`push --compression`** (Phase 21 M5 / P1 O1): local/`file://` `--dest`
   **create** only (`none`|`zstd`; omit ≡ **none** ≡ 1.10); existing dest by
   `meta.toml` / explicit mismatch → non-zero (reuses `open_or_create_store`);
   **`http(s)://` dest + any `--compression` (including explicit `none`) → clear
   non-zero**; still single dest (**≠** `--fallback` / multi-dest). **≠** `store
   recompress` / default zstd / HTTP wire compression. Thin `docs/push.md`.
-  Workspace version still **1.10.0** (bump → M7).
 - **`store list`** (Phase 21 M6 / P1 O2): CLI over `Store::list_chunk_ids`;
   default **text** = one lowercase hex id per line (**stably sorted**); empty
   store → no lines; **`--format json`** → `{ok, chunks, ids}` (additive;
   orthogonal field set). Read-only — **≠** GC / scrub / trim / LRU. Thin
   `docs/store.md` / `docs/ops-json.md` (+ responsibility nail **mount path ≠
-  write mount ≠ prune ≠ gc-path ≠ sync ≠ pack** where thin). Workspace version
-  still **1.10.0** (bump → M7).
+  write mount ≠ prune ≠ gc-path ≠ sync ≠ pack** where thin).
+- Workspace version **1.11.0** (Phase 21 M7 closeout).
+
+### Not delivered / deferred (Phase 21)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
+- **`mount --progress`** — non-goal (session-typed; no natural done/TOTAL)
+
+### Compatibility
+
+- CLI defaults match **1.10.0**: no mount path flags ⇒ full tree; create
+  compression **none**; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default
+  **text**, progress **off**, mount prefetch depth **1**; no `--path-from` /
+  no doctor·verify path flags ⇒ full set; no `diff --progress` ⇒ quiet;
+  `make --jobs` default **1**; no `--verify` on pull ⇒ quiet; no
+  `--cache-stats` ⇒ no cache noise; no `--fallback` ⇒ single origin; no
+  `--cache-max-bytes` ⇒ unbounded cache fill; omit push `--compression` ≡
+  create none; no `store list` side effects on old paths
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged
+- **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**
+- **`push --compression` ≠ `store recompress` ≠ default zstd ≠ wire compression**
+- **`store list` ≠ GC ≠ scrub ≠ trim ≠ LRU**
+- Disk zstd orthogonal to HTTP plaintext body; no silent break of 1.10.0
+  behaviour
 
 ## [1.10.0] — 2026-09-30
 
@@ -1175,6 +1237,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.11.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.11.0
 [1.10.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.10.0
 [1.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.9.0
 [1.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.8.0

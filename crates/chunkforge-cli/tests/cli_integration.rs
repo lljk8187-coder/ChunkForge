@@ -14246,7 +14246,11 @@ fn store_list_help_lists_list_and_format() {
     );
     let lower = list_s.to_ascii_lowercase();
     assert!(
-        lower.contains("not") && (lower.contains("gc") || lower.contains("scrub") || lower.contains("trim") || lower.contains("lru")),
+        lower.contains("not")
+            && (lower.contains("gc")
+                || lower.contains("scrub")
+                || lower.contains("trim")
+                || lower.contains("lru")),
         "store list --help should nail ≠ GC/scrub/trim/LRU:\n{list_s}"
     );
 }
@@ -14328,7 +14332,8 @@ fn store_list_sorted_hex_and_json_fields() {
     for id in &lines {
         assert_eq!(id.len(), 64, "hex id length; id={id}");
         assert!(
-            id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
             "lowercase hex only; id={id}"
         );
     }
@@ -14346,7 +14351,9 @@ fn store_list_sorted_hex_and_json_fields() {
     ]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.lines().any(|l| l.len() == 64 && l.chars().all(|c| c.is_ascii_hexdigit())),
+        !stdout
+            .lines()
+            .any(|l| l.len() == 64 && l.chars().all(|c| c.is_ascii_hexdigit())),
         "json must not dual-write bare hex lines; stdout={stdout}"
     );
     let v: serde_json::Value = serde_json::from_str(stdout.trim())

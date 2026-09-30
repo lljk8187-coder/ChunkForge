@@ -713,7 +713,7 @@ enum Commands {
     /// explicit `zstd` only for **new** local/`file://` dest) via `Store` as
     /// `ChunkSink`. **`http(s)://` dest + any `--compression` (including
     /// explicit `none`) → clear non-zero.** Still **single** dest (**≠**
-    /// `--fallback` / multi-dest; **≠** `store recompress` / default zstd /
+    /// read-side fallback / multi-dest; **≠** `store recompress` / default zstd /
     /// HTTP wire compression). HTTP template flags
     /// (`--url-template` / `--prefix` / `--header` / `--aws-sigv4` /
     /// `--http-retries`) apply only to `http(s)://` dest — with a local dest
@@ -801,7 +801,7 @@ enum Commands {
         /// non-zero error). **`http(s)://` dest + any `--compression`
         /// (including explicit `none`) → clear non-zero.** Disk zstd is **not**
         /// HTTP wire compression. **≠** `store recompress` / default zstd /
-        /// `--fallback` / multi-dest. Orthogonal to `--verify` / `--jobs` /
+        /// read-side fallback / multi-dest. Orthogonal to `--verify` / `--jobs` /
         /// `--progress` / path scope.
         #[arg(
             long = "compression",

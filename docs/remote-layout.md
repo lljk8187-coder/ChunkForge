@@ -286,7 +286,7 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
-## Cache observation vs failover vs sync (Phase 18 / 1.8.0; still holds through Phase 20 / 1.10.0)
+## Cache observation vs failover vs sync (Phase 18 / 1.8.0; still holds through Phase 21 / 1.11.0)
 
 | Flag / layer | Role | Not |
 |---|---|---|
@@ -297,19 +297,19 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 
 **`--cache-stats` ≠ LRU ≠ sync ≠ fallback.** Observation only; default quiet ≡ 1.7.
 
-## Disk zstd ≠ wire compression ≠ pack (Phase 17–20 / 1.10.0)
+## Disk zstd ≠ wire compression ≠ pack (Phase 17–21 / 1.11.0)
 
 | Layer | Contract |
 |---|---|
 | Local store create | Opt-in `--compression none\|zstd` on `make` / `archive` / **`store create`** / **`pull`** (omit ≡ **none** ≡ 1.6/1.8); **`store create` ≠ recompress ≠ default zstd ≠ pack** |
 | On-disk `.cnk` | May be zstd-encoded when meta says `zstd` |
 | `get` / HTTP PUT·GET | Always **plaintext** body (BLAKE3 == id) |
-| Packfile | **Not** implemented — see [perf.md](perf.md); Phase20 / 1.10.0 still does not implement pack |
+| Packfile | **Not** implemented — see [perf.md](perf.md); Phase21 / 1.11.0 still does not implement pack |
 
 `--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 Store lifecycle + pull compression smoke: [`scripts/demo_store_create_pull_compression.sh`](../scripts/demo_store_create_pull_compression.sh).
 
-## Explicit non-goals (this layout / Phase 3–20 / through 1.10.0)
+## Explicit non-goals (this layout / Phase 3–21 / through 1.11.0)
 
 | Non-goal | Status |
 |---|---|
