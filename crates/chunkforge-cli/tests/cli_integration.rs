@@ -8682,3 +8682,394 @@ fn extract_illegal_exclude_errors_clearly() {
     );
     assert!(!out.exists());
 }
+
+// --- Phase 13 M4: pull --path/--exclude ---
+
+/// Like [`spawn_put_get_store_server`] but also counts GET requests (for subset pull proofs).
+fn spawn_put_get_store_server_counting_gets(
+    store_root: PathBuf,
+    put_count: Arc<AtomicUsize>,
+    get_count: Arc<AtomicUsize>,
+) -> (String, thread::JoinHandle<()>) {
+    let server = Server::http("127.0.0.1:0").expect("bind");
+    let port = server.server_addr().to_ip().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let method = request.method().clone();
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url);
+            let rel = path.trim_start_matches('/');
+            let file_path = store_root.join(rel);
+
+            match method {
+                Method::Head => {
+                    if file_path.is_file() {
+                        let len = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                        let response = Response::empty(200).with_header(
+                            Header::from_bytes(&b"Content-Length"[..], len.to_string()).unwrap(),
+                        );
+                        let _ = request.respond(response);
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Get => {
+                    get_count.fetch_add(1, Ordering::SeqCst);
+                    if file_path.is_file() {
+                        let data = fs::read(&file_path).unwrap_or_default();
+                        let _ = request.respond(Response::from_data(data));
+                    } else {
+                        let _ = request.respond(Response::empty(StatusCode(404)));
+                    }
+                }
+                Method::Put | Method::Post => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    put_count.fetch_add(1, Ordering::SeqCst);
+                    if let Some(parent) = file_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&file_path, &body);
+                    let _ = request.respond(
+                        Response::empty(StatusCode(200))
+                            .with_header(Header::from_bytes(&b"Content-Length"[..], "0").unwrap()),
+                    );
+                }
+                _ => {
+                    let _ = request.respond(Response::empty(StatusCode(405)));
+                }
+            }
+        }
+    });
+    thread::sleep(Duration::from_millis(20));
+    (base, handle)
+}
+
+#[test]
+fn pull_help_lists_path_exclude() {
+    let help = run_ok(&["pull", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--path"),
+        "pull --help should list --path:\n{s}"
+    );
+    assert!(
+        s.contains("--exclude"),
+        "pull --help should list --exclude:\n{s}"
+    );
+}
+
+#[test]
+fn pull_path_subset_gets_only_filtered_chunks() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("packages").join("foo")).unwrap();
+    fs::create_dir_all(src.join("packages").join("bar")).unwrap();
+    fs::create_dir_all(src.join("other")).unwrap();
+    // Distinct content ⇒ distinct chunk ids (small files stay single-chunk).
+    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-a-unique\n").unwrap();
+    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-b-unique\n").unwrap();
+    fs::write(src.join("other").join("c.txt"), b"other-c-unique\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let get_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server_counting_gets(
+        mirror.clone(),
+        Arc::clone(&put_count),
+        Arc::clone(&get_count),
+    );
+
+    run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        listing.to_str().unwrap(),
+    ]);
+    assert!(
+        put_count.load(Ordering::SeqCst) >= 3,
+        "push should upload all file chunks; puts={}",
+        put_count.load(Ordering::SeqCst)
+    );
+
+    // Full pull (no path filter) — baseline GET count.
+    let full_store = dir.path().join("full_pull");
+    get_count.store(0, Ordering::SeqCst);
+    let full_json = run_ok(&[
+        "pull",
+        "--store",
+        full_store.to_str().unwrap(),
+        "--source",
+        &base,
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full_json.stdout).trim())
+            .expect("full pull json");
+    let full_unique = full_v["unique_chunks"].as_u64().unwrap();
+    let full_gets = get_count.load(Ordering::SeqCst);
+    assert!(
+        full_unique >= 3,
+        "full pull unique_chunks should cover 3 files; v={full_v}"
+    );
+    assert_eq!(
+        full_gets as u64, full_unique,
+        "empty store full pull: GET count should equal unique_chunks; gets={full_gets} v={full_v}"
+    );
+
+    // Subset pull --path packages/foo — fewer GETs / unique_chunks.
+    let sub_store = dir.path().join("sub_pull");
+    get_count.store(0, Ordering::SeqCst);
+    let sub_json = run_ok(&[
+        "pull",
+        "--store",
+        sub_store.to_str().unwrap(),
+        "--source",
+        &base,
+        "--path",
+        "packages/foo",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&sub_json.stdout).trim())
+            .expect("subset pull json");
+    let sub_unique = sub_v["unique_chunks"].as_u64().unwrap();
+    let sub_gets = get_count.load(Ordering::SeqCst);
+    assert!(
+        sub_unique < full_unique,
+        "subset unique_chunks must be < full; sub={sub_unique} full={full_unique} sub_v={sub_v}"
+    );
+    assert!(
+        sub_unique >= 1,
+        "subset should still fetch foo chunks; sub_v={sub_v}"
+    );
+    assert_eq!(
+        sub_gets as u64, sub_unique,
+        "empty store subset pull: GET count should equal filtered unique_chunks; gets={sub_gets} v={sub_v}"
+    );
+    assert!(
+        sub_gets < full_gets,
+        "subset GET count must be < full; sub={sub_gets} full={full_gets}"
+    );
+}
+
+#[test]
+fn pull_path_dry_run_json_unique_chunks_filtered() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("packages").join("foo")).unwrap();
+    fs::create_dir_all(src.join("packages").join("bar")).unwrap();
+    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-dry\n").unwrap();
+    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-dry\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let empty = dir.path().join("empty");
+    let full = run_ok(&[
+        "pull",
+        "--store",
+        empty.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full.stdout).trim()).expect("full dry json");
+    assert_eq!(full_v["dry_run"], true);
+    let full_uc = full_v["unique_chunks"].as_u64().unwrap();
+    assert!(full_uc >= 2, "full dry-run unique_chunks; v={full_v}");
+
+    let sub = run_ok(&[
+        "pull",
+        "--store",
+        empty.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--path",
+        "packages/foo",
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&sub.stdout).trim()).expect("sub dry json");
+    assert_eq!(sub_v["dry_run"], true);
+    let sub_uc = sub_v["unique_chunks"].as_u64().unwrap();
+    assert!(
+        sub_uc < full_uc && sub_uc >= 1,
+        "filtered unique_chunks; full={full_uc} sub={sub_uc} sub_v={sub_v}"
+    );
+    // dry-run must not create store
+    assert!(!empty.join("meta.toml").is_file());
+}
+
+#[test]
+fn pull_exclude_filters_junk_unique_chunks() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkg")).unwrap();
+    fs::create_dir_all(src.join("junk")).unwrap();
+    fs::write(src.join("pkg").join("keep.txt"), b"keep-me\n").unwrap();
+    fs::write(src.join("junk").join("noise.txt"), b"noise-data\n").unwrap();
+    fs::write(src.join("skip.o"), b"object\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let empty = dir.path().join("empty");
+    let full = run_ok(&[
+        "pull",
+        "--store",
+        empty.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full.stdout).trim()).unwrap();
+    let full_uc = full_v["unique_chunks"].as_u64().unwrap();
+
+    let filtered = run_ok(&[
+        "pull",
+        "--store",
+        empty.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--exclude",
+        "junk/",
+        "--exclude",
+        "*.o",
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let fv: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&filtered.stdout).trim()).unwrap();
+    let filtered_uc = fv["unique_chunks"].as_u64().unwrap();
+    assert!(
+        filtered_uc < full_uc && filtered_uc >= 1,
+        "exclude should shrink unique_chunks; full={full_uc} filtered={filtered_uc} fv={fv}"
+    );
+}
+
+#[test]
+fn pull_no_filter_flags_full_set_regression() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"aa-pull\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"bb-pull\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let newstore = dir.path().join("newstore");
+    let out = run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(
+        v["unique_chunks"].as_u64().unwrap() >= 2,
+        "no filter ⇒ full set; v={v}"
+    );
+    assert!(
+        v["fetched"].as_u64().unwrap() >= 2 || v["skipped"].as_u64().unwrap() >= 2,
+        "should fetch or skip all; v={v}"
+    );
+    assert!(count_cnk(&newstore.join("chunks")) >= 2);
+}
+
+#[test]
+fn pull_illegal_exclude_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let empty = dir.path().join("empty");
+    let fail = run_fail(&[
+        "pull",
+        "--store",
+        empty.to_str().unwrap(),
+        "--source",
+        store.to_str().unwrap(),
+        "--exclude",
+        "a*b",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("invalid exclude pattern") || err.contains("exclude pattern"),
+        "stderr={err}"
+    );
+}

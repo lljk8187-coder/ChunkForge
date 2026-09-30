@@ -421,13 +421,19 @@ enum Commands {
     /// For each id: if already present in `--store`, skip; otherwise `source.get`
     /// then `store.put` (plaintext into the local CAS). Does **not** extract a
     /// file tree, delete extras (`gc`), or download the listing itself.
-    /// `--source` accepts a local path, `file://`, or `http(s)://` (same templates
-    /// as `verify` / `cat`). `--http-retries N` (default 0) applies to HTTP sources
-    /// only. Symmetric to `push` (store→dest) but source→store. Default
-    /// **`--format text`** (≡ 1.0.0): summary on stderr. **`--format json`**:
-    /// one JSON object on stdout (`ok` / `skipped` / `fetched` / `failed` /
-    /// `failed_transient` / `failed_permanent` / `retries` / `unique_chunks` /
-    /// `listings` / `dry_run`); no duplicate stderr summary; exit codes are
+    /// Optional repeatable `--path` / `--exclude` restrict which **File** entries
+    /// in a `.cfdir` contribute chunk ids (Dir entries never contribute; listing
+    /// file unchanged / not downloaded). Omit all path/exclude ⇒ full reference
+    /// set (≡ 1.2.0). Orthogonal to `--dry-run` / `--format` / `--jobs` /
+    /// `--progress` / retries / SigV4. `--source` accepts a local path,
+    /// `file://`, or `http(s)://` (same templates as `verify` / `cat`).
+    /// `--http-retries N` (default 0) applies to HTTP sources only. Symmetric
+    /// to `push` (store→dest) but source→store. Default **`--format text`**
+    /// (≡ 1.0.0): summary on stderr. **`--format json`**: one JSON object on
+    /// stdout (`ok` / `skipped` / `fetched` / `failed` / `failed_transient` /
+    /// `failed_permanent` / `retries` / `unique_chunks` / `listings` /
+    /// `dry_run`); field names unchanged — `unique_chunks` is the **filtered**
+    /// unique id count; no duplicate stderr summary; exit codes are
     /// format-independent.
     Pull {
         /// Local CAS store to fill (created if missing; not written in `--dry-run`)
@@ -452,6 +458,17 @@ enum Commands {
         /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
         #[arg(long = "progress")]
         progress: bool,
+        /// Include only `.cfdir` File paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.2.0 full set).
+        /// Dir entries never contribute chunks; does not download/alter listings.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude `.cfdir` File paths matching this pattern (repeatable): exact,
+        /// trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are fetched
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -822,11 +839,23 @@ fn run() -> Result<()> {
             dry_run,
             format,
             progress,
+            paths,
+            excludes,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             cmd_pull(
-                &store, &source, &http_tmpl, dry_run, &indexes, jobs, format, progress,
+                &store,
+                &source,
+                &http_tmpl,
+                dry_run,
+                &indexes,
+                jobs,
+                format,
+                progress,
+                &path_filter,
             )
         }
         Commands::Diff {
@@ -2084,8 +2113,23 @@ fn peek_listing_kind(path: &Path) -> Result<ListingKind> {
 
 /// Collect chunk ids referenced by a `.cfidx` or `.cfdir` listing (validated).
 fn listing_chunk_ids(path: &Path) -> Result<Vec<ChunkId>> {
+    listing_chunk_ids_filtered(path, &PathFilter::new(Vec::<String>::new(), Vec::<String>::new())
+        .expect("empty PathFilter"))
+}
+
+/// Collect chunk ids from a listing, applying [`PathFilter`] to `.cfdir` File
+/// entries only (Dir entries never contribute). Empty filter ≡ full reference
+/// set (≡ 1.2.0). `--path`/`--exclude` on a `.cfidx` is an error (no File paths).
+fn listing_chunk_ids_filtered(path: &Path, filter: &PathFilter) -> Result<Vec<ChunkId>> {
+    let filter_active = !filter.paths().is_empty() || !filter.excludes().is_empty();
     match peek_listing_kind(path)? {
         ListingKind::Index => {
+            if filter_active {
+                bail!(
+                    "pull --path/--exclude applies to `.cfdir` File entries; {} looks like a `.cfidx`",
+                    path.display()
+                );
+            }
             let index = load_index(path)?;
             index
                 .validate()
@@ -2096,17 +2140,40 @@ fn listing_chunk_ids(path: &Path) -> Result<Vec<ChunkId>> {
             let arch = load_dir_archive(path)?;
             arch.validate()
                 .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", path.display()))?;
-            Ok(arch.all_chunk_ids().collect())
+            let mut ids = Vec::new();
+            for entry in &arch.entries {
+                if !filter.allows(&entry.path) {
+                    continue;
+                }
+                match &entry.kind {
+                    DirEntryKind::File { chunks, .. } => {
+                        ids.extend(chunks.iter().map(|c| c.chunk_id));
+                    }
+                    DirEntryKind::Dir { .. } => {}
+                }
+            }
+            Ok(ids)
         }
     }
 }
 
 /// Union of chunk ids across mixed `.cfidx` / `.cfdir` listing args.
 fn union_listing_chunk_ids(paths: &[PathBuf]) -> Result<(HashSet<ChunkId>, usize)> {
+    union_listing_chunk_ids_filtered(
+        paths,
+        &PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).expect("empty PathFilter"),
+    )
+}
+
+/// Union of chunk ids with path filtering (Phase 13 M4 pull).
+fn union_listing_chunk_ids_filtered(
+    paths: &[PathBuf],
+    filter: &PathFilter,
+) -> Result<(HashSet<ChunkId>, usize)> {
     let mut referenced = HashSet::new();
     let mut listings_ok = 0usize;
     for path in paths {
-        for id in listing_chunk_ids(path)? {
+        for id in listing_chunk_ids_filtered(path, filter)? {
             referenced.insert(id);
         }
         listings_ok += 1;
@@ -3324,11 +3391,12 @@ fn cmd_pull(
     jobs: usize,
     format: CliFormat,
     progress: bool,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     let source = open_primary_source(source_spec, http_tmpl)
         .with_context(|| format!("open chunk source {source_spec:?}"))?;
 
-    let (referenced, listings_ok) = union_listing_chunk_ids(index_paths)?;
+    let (referenced, listings_ok) = union_listing_chunk_ids_filtered(index_paths, path_filter)?;
 
     let mut ids: Vec<ChunkId> = referenced.into_iter().collect();
     ids.sort();

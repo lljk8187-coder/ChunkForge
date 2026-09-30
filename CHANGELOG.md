@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--dry-run` / `--format` / `--jobs`. Default (no path/exclude) ≡ 1.2.0 full
   tree; dry-run / JSON `would_*` / counts reflect the filtered set. Docs:
   `docs/extract.md` (path ≠ prune).
+- **Phase13-M4 `pull --path` / `--exclude`**: repeatable path/exclude →
+  `PathFilter` (illegal exclude → clear error); reads full listing, fetches
+  only chunk ids from matching **File** entries (Dir never contributes);
+  does **not** download or rewrite the listing. Orthogonal to `--dry-run` /
+  `--format` / `--jobs` / `--progress` / retries / SigV4. Default (no flags)
+  ≡ 1.2.0 full reference set. JSON field names unchanged; `unique_chunks` =
+  filtered unique id count. Docs: `docs/pull.md`.
 
 ## [1.2.0] — 2026-09-29
 

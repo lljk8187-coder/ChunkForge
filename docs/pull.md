@@ -20,6 +20,7 @@ chunkforge pull \
   [--http-retries N] \
   [--dry-run] \
   [--format text|json] \
+  [--path P]... [--exclude PAT]... \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -32,11 +33,13 @@ chunkforge pull \
 | `--jobs N` | Bounded concurrency for has/get/put (default **1** = serial) |
 | `--dry-run` | Probe + count only; **no** store writes (does not create `meta.toml`) |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
-| listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** |
+| `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.2.0** full reference set). Does **not** download or alter the listing |
+| `--exclude PAT` | Exclude matching File paths (repeatable): exact, trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. Applied after `--path` |
+| listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (after path filter for `.cfdir` Files; Dir entries never contribute) |
 
 ### What pull does
 
-1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s.
+1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s. With `--path`/`--exclude`, only matching `.cfdir` **File** entries contribute (Dir entries never do); empty flags ≡ full set (≡ 1.2.0). Listing files themselves are not downloaded.
 2. For each id (sorted): local `store.has` → **skip**; otherwise `source.get` →
    `store.put` (plaintext into the local CAS; hash checked on put).
 3. Emit a summary (`--format text`, default ≡ **1.0.0**): stderr line
@@ -56,12 +59,32 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 | `failed_transient` | number | Transient HTTP class |
 | `failed_permanent` | number | Permanent / missing / corrupt |
 | `retries` | number | `--http-retries` value (configured max extra attempts) |
-| `unique_chunks` | number | Union of listing chunk ids |
+| `unique_chunks` | number | Union of listing chunk ids **after** `--path`/`--exclude` (filtered set; field name unchanged) |
 | `listings` | number | Listings successfully loaded |
 | `dry_run` | bool | `--dry-run` was set |
 
 ```json
 {"ok":true,"skipped":0,"fetched":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
+```
+
+### `--path` / `--exclude` (Phase 13 M4)
+
+Optional, repeatable, **opt-in**. Default (no flags) ≡ **1.2.0** full reference set.
+
+| Rule | Detail |
+|---|---|
+| `--path P` | Hit iff `path == P` or `path` starts with `P/` (subtree) |
+| `--exclude` | Exact; trailing `/` directory prefix; single edge `*` only (`*.o`, `temp*`) — **no** `**` / middle `*` |
+| Combine | If any `--path` is given: must hit include first, then excludes reject |
+| Scope | Only `.cfdir` **File** entries contribute chunk ids; **Dir** entries never do |
+| Listing | Full listing is read locally; pull still does **not** download or rewrite the listing |
+| Orthogonal | `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 do **not** change match rules |
+| JSON | Field names unchanged; `unique_chunks` = filtered unique id count |
+
+```bash
+# Only pull chunks for packages/foo (subset of a full .cfdir)
+chunkforge pull --store ./store2 --source http://127.0.0.1:8766 \
+  --path packages/foo --format json ./app.cfdir
 ```
 
 ### What pull does **not** do
@@ -72,7 +95,8 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 | ❌ Delete extra local chunks | That is `gc` |
 | ❌ Download / upload the listing | Listings stay local out-of-band artifacts |
 | ❌ Bidirectional sync / watch | Explicit one-way fill only |
-| ❌ Remote GC / packfiles / SigV4 | Same posture as `push` / `verify` |
+| ❌ Extract / prune / rewrite listing | Path filter only shrinks the fetch set |
+| ❌ Remote GC / packfiles | Same posture as `push` / `verify` |
 
 ## End-to-end (push stub → empty store → pull → verify)
 
