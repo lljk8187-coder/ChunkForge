@@ -156,6 +156,11 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
+        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
+        /// fill (still serves primary); never evicts / LRU.
+        #[arg(long = "cache-max-bytes", value_name = "N")]
+        cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial)
@@ -233,6 +238,11 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
+        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
+        /// fill (still serves primary); never evicts / LRU.
+        #[arg(long = "cache-max-bytes", value_name = "N")]
+        cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
@@ -262,6 +272,11 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
+        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
+        /// fill (still serves primary); never evicts / LRU.
+        #[arg(long = "cache-max-bytes", value_name = "N")]
+        cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
@@ -294,6 +309,11 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
+        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
+        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
+        /// fill (still serves primary); never evicts / LRU.
+        #[arg(long = "cache-max-bytes", value_name = "N")]
+        cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
         /// Override the virtual file name for `.cfidx` mounts (default: stem without `.cfidx`; ignored for `.cfdir`)
@@ -732,6 +752,7 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            cache_max_bytes,
             http_tmpl,
             jobs,
             archive,
@@ -768,6 +789,7 @@ fn run() -> Result<()> {
                     store.as_deref(),
                     source.as_deref(),
                     cache.as_deref(),
+                    cache_max_bytes,
                     &http_tmpl,
                 )?;
                 cmd_extract(
@@ -788,6 +810,7 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            cache_max_bytes,
             http_tmpl,
             jobs,
             index,
@@ -798,6 +821,7 @@ fn run() -> Result<()> {
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
+                cache_max_bytes,
                 &http_tmpl,
             )?;
             cmd_cat(src.as_ref(), &index, &output, jobs)
@@ -806,6 +830,7 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            cache_max_bytes,
             http_tmpl,
             jobs,
             format,
@@ -816,6 +841,7 @@ fn run() -> Result<()> {
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
+                cache_max_bytes,
                 &http_tmpl,
             )?;
             cmd_verify(src.as_ref(), &index, jobs, format)
@@ -825,6 +851,7 @@ fn run() -> Result<()> {
             store,
             source,
             cache,
+            cache_max_bytes,
             http_tmpl,
             name,
             no_prefetch,
@@ -837,6 +864,7 @@ fn run() -> Result<()> {
                 store.as_deref(),
                 source.as_deref(),
                 cache.as_deref(),
+                cache_max_bytes,
                 &http_tmpl,
             )?;
             cmd_mount(
@@ -859,7 +887,7 @@ fn run() -> Result<()> {
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            let src = open_chunk_source(store.as_deref(), source.as_deref(), None, &http_tmpl)?;
+            let src = open_chunk_source(store.as_deref(), source.as_deref(), None, None, &http_tmpl)?;
             let origin_spec = match (store.as_deref(), source.as_deref()) {
                 (Some(path), None) => path.to_string_lossy().into_owned(),
                 (None, Some(s)) => s.to_string(),
@@ -1028,13 +1056,19 @@ fn open_or_create_store(root: &Path) -> Result<Store> {
 ///
 /// `--store PATH` is a Phase 1 synonym for `--source PATH` (local only).
 /// With `--cache`, reads go through [`CacheSource`] (fill on miss; never write primary).
+/// `--cache-max-bytes N` sets a soft fill budget (requires `--cache`); omit ≡ 1.4 unbounded.
 /// `--url-template` / `--prefix` / `--header` apply only to `http(s)://` sources.
 fn open_chunk_source(
     store: Option<&Path>,
     source: Option<&str>,
     cache: Option<&Path>,
+    cache_max_bytes: Option<u64>,
     http_tmpl: &HttpTemplateArgs,
 ) -> Result<Box<dyn ChunkSource>> {
+    if cache_max_bytes.is_some() && cache.is_none() {
+        bail!("--cache-max-bytes requires --cache <DIR>");
+    }
+
     let spec = match (store, source) {
         (Some(path), None) => path.to_string_lossy().into_owned(),
         (None, Some(s)) => s.to_string(),
@@ -1047,7 +1081,12 @@ fn open_chunk_source(
         None => Ok(primary),
         Some(cache_path) => {
             let cache_store = open_or_create_store(cache_path)?;
-            Ok(Box::new(CacheSource::new(primary, cache_store)))
+            // `None` ≡ CacheSource::new (1.4 unbounded); Some(N) soft-refuses fill.
+            Ok(Box::new(CacheSource::with_max_bytes(
+                primary,
+                cache_store,
+                cache_max_bytes,
+            )))
         }
     }
 }

@@ -9828,3 +9828,268 @@ fn extract_pull_push_exclude_from_missing_file_nonzero() {
         );
     }
 }
+
+// --- Phase 15 M2: CLI --cache-max-bytes ---
+
+fn cache_stats_bytes(store: &Path) -> u64 {
+    let out = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stats json");
+    v["bytes_on_disk"].as_u64().expect("bytes_on_disk")
+}
+
+#[test]
+fn help_lists_cache_max_bytes_on_cat_verify_extract_mount() {
+    for cmd in ["cat", "verify", "extract", "mount"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--cache-max-bytes"),
+            "{cmd} --help must list --cache-max-bytes:\n{s}"
+        );
+        assert!(
+            s.contains("--cache"),
+            "{cmd} --help must still list --cache:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn cache_max_bytes_without_cache_errors_on_four_commands() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+    let archive = dir.path().join("tree.cfdir");
+    let extract_out = dir.path().join("extracted");
+    let mnt = dir.path().join("mnt");
+    fs::create_dir_all(&mnt).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    // Minimal .cfdir for extract/mount error path (origin opens before materialize).
+    let src_tree = dir.path().join("src");
+    fs::create_dir_all(src_tree.join("a")).unwrap();
+    fs::write(src_tree.join("a/f.txt"), b"x").unwrap();
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        src_tree.to_str().unwrap(),
+    ]);
+
+    let cases: Vec<Vec<&str>> = vec![
+        vec![
+            "cat",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-max-bytes",
+            "1024",
+            idx.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ],
+        vec![
+            "verify",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-max-bytes",
+            "1024",
+            idx.to_str().unwrap(),
+        ],
+        vec![
+            "extract",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-max-bytes",
+            "1024",
+            "-o",
+            extract_out.to_str().unwrap(),
+            archive.to_str().unwrap(),
+        ],
+        vec![
+            "mount",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache-max-bytes",
+            "1024",
+            idx.to_str().unwrap(),
+            mnt.to_str().unwrap(),
+        ],
+    ];
+
+    for args in cases {
+        let fail = run_fail(&args);
+        let err = String::from_utf8_lossy(&fail.stderr);
+        assert!(
+            err.contains("--cache-max-bytes") && err.contains("--cache"),
+            "args={args:?} stderr={err}"
+        );
+    }
+}
+
+#[test]
+fn cat_verify_cache_max_bytes_caps_disk_and_still_serves() {
+    let dir = tempdir().unwrap();
+    let primary = dir.path().join("primary");
+    let cache_budget = dir.path().join("cache-budget");
+    let cache_unbounded = dir.path().join("cache-unbounded");
+    let cache_zero = dir.path().join("cache-zero");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("reassembled");
+    let input = dir.path().join("multi.bin");
+    // Patterned 64 KiB → many distinct chunks under small FastCDC params.
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    for i in 0..(64 * 1024) {
+        bytes.push(((i * 17) ^ (i >> 3)) as u8);
+    }
+    fs::write(&input, &bytes).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        primary.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // Unbounded --cache fills (baseline).
+    run_ok(&[
+        "verify",
+        "--store",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache_unbounded.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let unbounded = cache_stats_bytes(&cache_unbounded);
+    assert!(
+        unbounded > 0,
+        "unbounded cache should fill, got bytes_on_disk={unbounded}"
+    );
+
+    // Soft budget smaller than full fill: disk must not exceed N.
+    let max = unbounded / 2;
+    assert!(max > 0, "need positive half-budget from unbounded={unbounded}");
+    let max_s = max.to_string();
+    run_ok(&[
+        "verify",
+        "--store",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache_budget.to_str().unwrap(),
+        "--cache-max-bytes",
+        &max_s,
+        idx.to_str().unwrap(),
+    ]);
+    let capped = cache_stats_bytes(&cache_budget);
+    assert!(
+        capped <= max,
+        "budgeted cache bytes_on_disk={capped} must be <= max={max} (unbounded={unbounded})"
+    );
+    assert!(
+        capped < unbounded,
+        "budgeted cache ({capped}) should be strictly under unbounded ({unbounded})"
+    );
+
+    // max=0 → refuse all fills; cat still reassembles from primary.
+    run_ok(&[
+        "cat",
+        "--store",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache_zero.to_str().unwrap(),
+        "--cache-max-bytes",
+        "0",
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(cache_stats_bytes(&cache_zero), 0);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+}
+
+#[test]
+fn extract_cache_max_bytes_caps_disk() {
+    let dir = tempdir().unwrap();
+    let primary = dir.path().join("primary");
+    let cache = dir.path().join("cache");
+    let archive = dir.path().join("tree.cfdir");
+    let extract_out = dir.path().join("out");
+    let src_tree = dir.path().join("src");
+    fs::create_dir_all(&src_tree).unwrap();
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    for i in 0..(64 * 1024) {
+        bytes.push(((i * 31) ^ 0x5a) as u8);
+    }
+    fs::write(src_tree.join("blob.bin"), &bytes).unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        primary.to_str().unwrap(),
+        "--chunk-size",
+        "2048:4096:8192",
+        "-o",
+        archive.to_str().unwrap(),
+        src_tree.to_str().unwrap(),
+    ]);
+
+    // First: unbounded fill to learn size.
+    let cache_full = dir.path().join("cache-full");
+    run_ok(&[
+        "extract",
+        "--store",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache_full.to_str().unwrap(),
+        "-o",
+        dir.path().join("out-full").to_str().unwrap(),
+        archive.to_str().unwrap(),
+    ]);
+    let unbounded = cache_stats_bytes(&cache_full);
+    assert!(unbounded > 0, "unbounded extract cache fill expected");
+
+    let max = unbounded / 2;
+    let max_s = max.to_string();
+    run_ok(&[
+        "extract",
+        "--store",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--cache-max-bytes",
+        &max_s,
+        "-o",
+        extract_out.to_str().unwrap(),
+        archive.to_str().unwrap(),
+    ]);
+    let capped = cache_stats_bytes(&cache);
+    assert!(
+        capped <= max,
+        "extract budgeted cache bytes_on_disk={capped} must be <= max={max}"
+    );
+    // Extracted content still correct (served from primary when fill refused).
+    assert_eq!(
+        fs::read(src_tree.join("blob.bin")).unwrap(),
+        fs::read(extract_out.join("blob.bin")).unwrap()
+    );
+}

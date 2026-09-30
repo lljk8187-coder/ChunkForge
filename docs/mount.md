@@ -31,6 +31,7 @@ If mount fails with a permission or missing-device error, the CLI prints short h
 chunkforge mount \
   --source <local-store|file:///path|http(s)://host/base> \
   [--cache <local-cache-store>] \
+  [--cache-max-bytes N] \
   [--name <filename>] \
   [--no-prefetch] \
   [--prefetch-chunks N] \
@@ -48,6 +49,11 @@ chunkforge mount \
   `fusermount3 -u <mountpoint>`).
 - Options always include kernel **RO**; optional `--cache` fills a local store
   on miss (never writes the primary source).
+- **`--cache-max-bytes N`** (Phase 15): soft fill budget in **bytes** (pure
+  integer; no KiB suffix). Requires `--cache` (without it → clear non-zero).
+  Over budget **skips fill** but still serves primary data; **never** evicts /
+  LRU / trim. Omit ≡ **1.4** unbounded fill. Orthogonal to prefetch / jobs /
+  retries / SigV4.
 - `--jobs` does **not** apply to mount.
 
 ### Sequential prefetch (Phase 10 + Phase 11 P1 O1)
@@ -65,7 +71,7 @@ cached plaintext **≤ 512 KiB**, whichever stricter). Hits skip a synchronous
 | `--no-prefetch` | Prefetch **off** ≡ 0.9.0 on-demand get; **takes priority** over `--prefetch-chunks` |
 | Invalidation | Seek backward, non-contiguous offset, or cross-file (`DirFs` inode change) → **cold-start** the window (drop cached chunks) |
 | Errors | Prefetch `get` failure **never** fails a read whose current range is already satisfied |
-| vs `--cache` | Prefetch is **process-local / mount-lifetime** and does **not** persist; `--cache` is a disk `CacheSource` layer under `get` |
+| vs `--cache` | Prefetch is **process-local / mount-lifetime** and does **not** persist; `--cache` is a disk `CacheSource` layer under `get` (optional `--cache-max-bytes` soft-refuses fill; not LRU) |
 
 Library: `BlobFs`/`DirFs::with_prefetch(bool)` and `with_prefetch_chunks(n)`
 (`PrefetchCache::enabled_with_max_chunks`; values `>2` clamp to 2).
