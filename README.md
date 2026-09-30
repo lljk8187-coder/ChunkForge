@@ -573,15 +573,7 @@ Workspace / CLI version is **1.3.0**.
 | `diff` | Listing↔listing; **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
-**Phase 14 (Unreleased, pre-1.4.0):** `store stats` / alias `du` +
-`--format text|json` (local chunk count + on-disk bytes; see
-[docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md));
-**`push --path` / `--exclude`** (subset upload; `.cfidx`+path → clear error;
-see [docs/push.md](docs/push.md)). **`--exclude-from <file>`** on archive /
-extract / pull / push (merged with `--exclude`; see those docs). Still pending:
-`check_compat_1_3`, 1.4.0 bump.
-
-**Not delivered / non-goals (carry forward):** packfile;
+**Not delivered in 1.3 / non-goals (carry forward):** packfile;
 write mount / COW; bidirectional sync; extract prune / `--delete`; remote
 scrub; aws-sdk; byte-range resume; push listing upload; changing default
 jobs·retries; video analysis. Pack remains measured-only in
@@ -604,6 +596,62 @@ Details: [docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md),
 [docs/stability.md](docs/stability.md),
 [docs/remote-layout.md](docs/remote-layout.md). Gate:
 [`scripts/check_compat_1_2.sh`](scripts/check_compat_1_2.sh).
+
+## Phase 14 / 1.4 (Unreleased): push path + store stats + exclude-from
+
+Phase 14 lands **publish symmetry** and **local CAS observability** as a
+compatible **1.4.0** (not tagged yet — workspace stays **1.3.0** until M7).
+All additive / opt-in; **defaults ≡ 1.3.0** (no path/exclude/exclude-from ⇒
+full reference set; jobs=1, retries=0, text, progress off).
+
+**Landed (capability surface — Unreleased):**
+
+- **`store stats`** (alias **`du`**) + `--format text|json`: local chunk count
+  + on-disk `.cnk` bytes via `Store::stats` (no plaintext decode; not GC /
+  scrub / trim / LRU). JSON: `ok` / `chunks` / `bytes_on_disk` / `compression`.
+  See [docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md).
+- **`push --path` / `--exclude`**: upload chunk ids from matching `.cfdir`
+  **File** entries only; listing **not** uploaded; `.cfidx`+path → clear error;
+  JSON field names unchanged (`unique_chunks` = filtered). See
+  [docs/push.md](docs/push.md).
+- **`--exclude-from <file>`** on archive / extract / pull / push: one
+  `ExcludePat` per line; ∪ with `--exclude`; no `ignore`/`globset`.
+- Smoke: [`scripts/demo_push_path_store_stats.sh`](scripts/demo_push_path_store_stats.sh)
+  (full-tree archive → store stats json → push `--path` PUT count < full →
+  `--exclude-from`; local `put_stub` only).
+
+**Still pending before 1.4.0 tag:** `check_compat_1_3.sh` (M6), version bump
+to **1.4.0** (M7).
+
+**`path` ≠ listing upload ≠ sync / prune:**
+
+| Flag / command | Role |
+|---|---|
+| `push --path` / `--exclude` / `--exclude-from` | Upload a **subset** of referenced chunk ids; **not** listing upload; **not** remote delete |
+| `store stats` / `du` | Observe local CAS size; **not** trim / LRU |
+| `extract --path` | Write fewer dest paths; **never** deletes extras |
+
+**Non-goals (Phase 14 / 1.4):** packfile; write mount / COW; bidirectional
+sync; extract prune / `--delete`; remote scrub; full aws-sdk / multipart /
+IMDS / SSO / ListObjects; byte-range resume; push listing upload; cache LRU;
+changing default jobs·retries·SigV4·progress; absolute perf SLA in CI; video
+analysis. Pack stance: [docs/perf.md](docs/perf.md) — **Phase 14 still does
+not implement pack**.
+
+```bash
+# Phase 14 push-path + store-stats smoke (~minutes; local put_stub only)
+cargo build -p chunkforge-cli
+bash scripts/demo_push_path_store_stats.sh
+# A: archive full tree → store stats --format json
+# B: push full vs push --path packages/foo (PUT count < full; no listing upload)
+# C: push --exclude-from (subset)
+
+./target/debug/chunkforge --version   # still chunkforge 1.3.0 until M7
+```
+
+Details: [docs/push.md](docs/push.md), [docs/ops-json.md](docs/ops-json.md),
+[docs/doctor-gc.md](docs/doctor-gc.md), [docs/stability.md](docs/stability.md),
+[docs/perf.md](docs/perf.md).
 
 ## Incremental dedup demo
 

@@ -40,7 +40,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
 | Path filter | `extract` / `pull` / `push` `--path`/`--exclude` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set |
-| Out of scope here | `make` / `cat` have **no** `--format json` in 1.3 P0 |
+| Out of scope here | `make` / `cat` have **no** `--format json` in 1.3 / 1.4 P0 (P1 optional) |
 
 ## Responsibility split (no remote scrub)
 
@@ -55,9 +55,28 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.
 
+
+## Push path filter (Phase 14)
+
+`--path` / `--exclude` / `--exclude-from` on **`push`** (and the same flags on
+`pull` / `archive` / `extract`) are **opt-in**. Default (no flags) ≡ **1.3.0**
+full tree / full reference set.
+
+| Rule | Detail |
+|---|---|
+| JSON fields | **Unchanged** names for the nine prior ops commands; only **`store stats`** is additive |
+| `unique_chunks` | = **post-filter** unique id count (push ≡ pull); field name stable |
+| `path` ≠ listing upload | Push still uploads **chunks only**; `.cfdir` / `.cfidx` stay local / out-of-band |
+| `path` ≠ sync / ≠ prune | Does **not** delete remote extras; extract path does **not** delete dest extras |
+| `.cfidx` + path flags | Clear **non-zero** error (no silent full upload) |
+
+See [push.md](push.md). Smoke: [`scripts/demo_push_path_store_stats.sh`](../scripts/demo_push_path_store_stats.sh).
+
 ## Compat gate
 
 Flag presence for ops JSON / 1.1+ CLIs is gated by
 [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh) (calls
 `check_compat_1_0.sh`; no absolute perf SLA). Phase 13 path / `archive --format`
 flags are gated by **`check_compat_1_2.sh`** (calls 1_1; no absolute perf SLA).
+Phase 14 (`store stats`, `push --path`/`--exclude`/`--exclude-from`) will be
+gated by **`check_compat_1_3.sh`** (M6; not yet required). No absolute perf SLA.

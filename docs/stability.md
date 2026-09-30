@@ -11,8 +11,13 @@ and the frozen surface stay ≡ **1.0.0**. **1.2.0** adds further opt-in only
 reports **1.2.0**. **1.3.0** adds further opt-in only
 (`archive`/`extract`/`pull --path`/`--exclude`, `archive --format json`,
 `check_compat_1_2`); defaults stay ≡ **1.2.0** (no path flags ⇒ full tree;
-archive format default **text**). The workspace reports **1.3.0**. See
-[ops-json.md](ops-json.md) for the expanded matrix (incl. **archive**).
+archive format default **text**). The workspace reports **1.3.0**. **1.4.0**
+(Unreleased / Phase 14) adds further opt-in only: `store stats`/`du`
+`--format json`, `push --path`/`--exclude`/`--exclude-from`, and
+`--exclude-from` on archive/extract/pull; defaults stay ≡ **1.3.0** (no new
+flags ⇒ full reference set; jobs=1, retries=0, text, progress off). See
+[ops-json.md](ops-json.md) for the expanded matrix (incl. **archive** /
+**store stats**).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -32,10 +37,11 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 
 Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`, `gc --jobs`,
-`--progress`, `--path` / `--exclude`, `archive --format json`) may ship in
-**minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**, and
-**1.3.0** are such minors: all new flags default off / text / jobs=1 / depth 1 /
-no path filter ≡ prior release.
+`--progress`, `--path` / `--exclude` / `--exclude-from`, `archive --format json`,
+`store stats`/`du`, `push --path`) may ship in
+**minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
+**1.3.0**, and **1.4.0** (Unreleased) are such minors: all new flags default
+off / text / jobs=1 / depth 1 / no path filter ≡ prior release.
 
 ## Breaking-change policy
 
@@ -66,8 +72,9 @@ At 1.0, ChunkForge promises:
    (`--aws-sigv4`, env + shared credentials file) — **no** `aws-sdk-*`
    ([sigv4.md](sigv4.md))
 4. Stable one-way ops: `make` / `archive` / `extract` / `cat` / `verify` /
-   `push` / `pull` / `diff` / `doctor` / `gc` / `store scrub` / `mount` with
-   documented defaults
+   `push` / `pull` / `diff` / `doctor` / `gc` / `store scrub` /
+   `store stats`/`du` / `mount` with documented defaults (1.4 adds stats as
+   opt-in observation; defaults unchanged)
 
 ## Non-promises / not guaranteed
 
@@ -90,6 +97,7 @@ At 1.0, ChunkForge promises:
 | `doctor` | Presence check (optional `--deep` = `get`) |
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
+| `store stats` / `du` | Local chunk count + on-disk bytes (observation; not trim) |
 | `diff` | Listing↔listing (+ `--tree`); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
@@ -102,13 +110,16 @@ There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
 Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
-`verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub`).
+`verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` /
+`store stats`).
 Default remains **text**. **Field rename → breaking** (same policy as above).
-Path filter on extract/pull does **not** rename fields (`unique_chunks` =
-filtered set).
+Path filter on extract/pull/push does **not** rename fields (`unique_chunks` =
+filtered set). Nine prior command field names stay stable; **store stats** is
+additive only.
 
 Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.0 defaults), [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)
 (1.1/1.2 additive flags; calls 1_0), and
 [`scripts/check_compat_1_2.sh`](../scripts/check_compat_1_2.sh)
-(1.3 path/archive flags; calls 1_1). No absolute perf SLA.
+(1.3 path/archive flags; calls 1_1). Phase 14 gate
+`check_compat_1_3.sh` is pending (M6). No absolute perf SLA.
