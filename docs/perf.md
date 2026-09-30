@@ -29,6 +29,12 @@ now.
 > change the loose `.cnk` layout or product defaults (`jobs=1`, `retries=0`).
 > Promotion checklist condition 1 (high RTT dominant) remains unmet on local
 > stub evidence; pack stays deferred.
+>
+> **Phase 16 / 1.6.0 Unreleased still does not implement pack.**
+> `--fallback`, human byte suffixes on `--cache-max-bytes`, and
+> `store stats` `bytes_plaintext`/`--decode` keep the loose `.cnk` layout and
+> do not change product defaults (`jobs=1`, `retries=0`). Promotion checklist
+> condition 1 remains unmet; pack stays deferred.
 
 ## What we measure
 

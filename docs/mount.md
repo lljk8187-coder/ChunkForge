@@ -30,8 +30,9 @@ If mount fails with a permission or missing-device error, the CLI prints short h
 ```text
 chunkforge mount \
   --source <local-store|file:///path|http(s)://host/base> \
+  [--fallback <PATH|URL>]... \
   [--cache <local-cache-store>] \
-  [--cache-max-bytes N] \
+  [--cache-max-bytes N|1M|64Mi|…] \
   [--name <filename>] \
   [--no-prefetch] \
   [--prefetch-chunks N] \
@@ -49,12 +50,19 @@ chunkforge mount \
   `fusermount3 -u <mountpoint>`).
 - Options always include kernel **RO**; optional `--cache` fills a local store
   on miss (never writes the primary source).
-- **`--cache-max-bytes N`** (Phase 15): soft fill budget in **bytes** (pure
-  integer; no KiB suffix). Requires `--cache` (without it → clear non-zero).
-  Over budget **skips fill** but still serves primary data; **never** evicts /
-  LRU / trim / GC / sync. Omit ≡ **1.4** unbounded fill. Orthogonal to
-  prefetch / jobs / retries / SigV4 / `--format`. Smoke:
-  [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).
+- **`--cache-max-bytes N`** (Phase 15 + Phase 16 suffixes): soft fill budget.
+  Accepts a plain decimal integer **or** `<num>[K|M|G|Ki|Mi|Gi]` (1024-base,
+  case-insensitive; no decimals; `KB`/`MB`/`GB` rejected). Requires `--cache`
+  (without it → clear non-zero). Over budget **skips fill** but still serves
+  primary data; **never** evicts / LRU / trim / GC / sync. Omit ≡ **1.4**
+  unbounded fill. Orthogonal to prefetch / jobs / retries / SigV4 / `--format`
+  / `--fallback`. Smoke:
+  [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh),
+  [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
+- **`--fallback <PATH|URL>`** (Phase 16 / 1.6 Unreleased): repeatable; ordered
+  Missing-only failover behind `--source`/`--store`. Zero times ≡ **1.5**
+  single origin. With `--cache`, outer Cache wraps the **whole** Fallback
+  chain. **≠ cache ≠ sync ≠ prune ≠ write-back** (see below).
 - `--jobs` does **not** apply to mount.
 
 ### Sequential prefetch (Phase 10 + Phase 11 P1 O1)
@@ -145,8 +153,20 @@ fusermount3 -u /path/to/mnt
 or interrupt the `chunkforge mount` process (`Ctrl-C`). With `AutoUnmount`, leaving the
 session also tears down the mount when possible.
 
+
+## `--fallback` ≠ `--cache` ≠ sync
+
+| Mechanism | Writes disk? | Role |
+|---|---|---|
+| **`--fallback`** | **No** (read-only multi-origin) | On Missing, try next origin in CLI order; Transient/Corrupt fail fast |
+| **`--cache`** (+ optional `--cache-max-bytes`) | **Yes** (cache store only) | Miss → `get` from chain → `put` into cache; over budget **refuse-fill**, still serves |
+| Sync / prune / write mount | n/a | **Not implemented** — FUSE stays RO; fallback is not write-back, not bidirectional sync, not prune |
+
+Composition (recommended): `CacheSource(Fallback([primary, …fallbacks]), cache)`.
+
 ## Out of scope
 
 - Writable mounts / COW write-back
 - Prefetch depth beyond the hard cap (`N≤2` / ≤512 KiB)
+- Treating `--fallback` as sync / prune / write-back / LRU
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

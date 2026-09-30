@@ -25,6 +25,15 @@ off). The workspace reports **1.5.0**. See [ops-json.md](ops-json.md) for
 the expanded matrix (incl. **archive** / **store stats** / **make** /
 **cat**).
 
+**1.6.0 Unreleased** (Phase 16; workspace still **1.5.0** until M7) adds
+further opt-in only: repeatable **`--fallback`** (Missing-only read failover;
+outer Cache wraps the whole chain), human-friendly **`--cache-max-bytes`**
+suffixes (`1M` / `64Mi` / …; plain integers still accepted ≡ 1.5), and
+**`store stats` `bytes_plaintext`** (+ opt-in **`--decode`** for zstd).
+Defaults stay ≡ **1.5.0** (no `--fallback` ⇒ single origin; no cache-max ⇒
+unbounded fill; no `--decode` ⇒ zstd does not force full-store `get`).
+`check_compat_1_5` lands in M6; version bump is M7.
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -45,11 +54,13 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`, `gc --jobs`,
 `--progress`, `--path` / `--exclude` / `--exclude-from`, `archive --format json`,
 `store stats`/`du`, `push --path`, `--cache-max-bytes`, `make`/`cat
---format json`) may ship in
+--format json`, `--fallback`, cache-max human suffixes, `store stats`
+`bytes_plaintext` / `--decode`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, and **1.5.0** are such minors: all new flags
 default off / text / jobs=1 / depth 1 / no path filter / no cache-max ≡ prior
 release. Soft budget is **refuse-fill only** (≠ LRU ≠ trim ≠ GC ≠ sync).
+**1.6.0 Unreleased** continues the same pattern (defaults ≡ 1.5.0).
 
 ## Breaking-change policy
 
@@ -93,7 +104,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** still does not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / Phase 16 (**1.6 Unreleased**) still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -111,7 +122,9 @@ At 1.0, ChunkForge promises:
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU) |
-| `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
+| `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
+| `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
+| `store stats` `bytes_plaintext` / `--decode` | Observation: none ⇒ plaintext ≡ on_disk; zstd needs `--decode`; **≠ trim ≠ LRU** |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
@@ -135,4 +148,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 [`scripts/check_compat_1_3.sh`](../scripts/check_compat_1_3.sh)
 (1.4 push path / store stats / exclude-from; calls 1_2), and
 [`scripts/check_compat_1_4.sh`](../scripts/check_compat_1_4.sh)
-(1.5 cache-max / make·cat format; calls 1_3). No absolute perf SLA.
+(1.5 cache-max / make·cat format; calls 1_3). Phase 16 / 1.6 Unreleased
+flags (`--fallback`, suffixes, `bytes_plaintext`/`--decode`) are documented
+here; **`check_compat_1_5.sh`** lands in M6. No absolute perf SLA.

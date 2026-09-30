@@ -18,6 +18,7 @@ conflict-fail; `--force` overwrites existing regular files). See also
 ```bash
 chunkforge extract \
   --store <cas> | --source <PATH|URL> \
+  [--fallback <PATH|URL>]... \
   -o <out-dir> \
   [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
   [--force] \
@@ -28,13 +29,14 @@ chunkforge extract \
   [--jobs N] \
   [--http-retries N] \
   [--cache <dir>] \
-  [--cache-max-bytes N] \
+  [--cache-max-bytes N|1M|…] \
   archive.cfdir
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--store` / `--source` | Chunk origin (local CAS path, `file://`, or `http(s)://`) — same as `cat` / `verify` |
+| `--fallback` | Repeatable extra origin tried **only on Missing** (CLI order). Zero times ≡ **1.5** single origin. **≠ cache ≠ sync ≠ prune**. Outer Cache wraps the whole Fallback chain when `--cache` is set |
 | `-o` / `--output` | Output directory (created if missing on a real extract; **not** created under `--dry-run`) |
 | `--path P` | Repeatable include prefix (OR). With any `--path`, listing paths must match at least one (`==` or `P/…`) before excludes. Omit all ⇒ include-all (≡ **1.2.0** full tree) |
 | `--exclude PAT` | Repeatable exclude: exact, trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. **Not** prune |
@@ -44,7 +46,7 @@ chunkforge extract \
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
 | `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Text: stderr `would_*` counters over the **filtered** set |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary). Exit codes are format-independent |
-| `--jobs` / `--http-retries` / `--cache` / `--cache-max-bytes` / templates / SigV4 | Same as other read-side commands; `--cache-max-bytes` requires `--cache` (soft refuse-fill; **≠ LRU ≠ trim ≠ GC ≠ sync**); skipped files issue **zero** chunk `get` |
+| `--jobs` / `--http-retries` / `--cache` / `--cache-max-bytes` / templates / SigV4 | Same as other read-side commands; `--cache-max-bytes` requires `--cache` (soft refuse-fill; accepts `1M`/`64Mi`/…; **≠ LRU ≠ trim ≠ GC ≠ sync**); skipped files issue **zero** chunk `get` |
 
 Matching is orthogonal to `--force` / `--skip-*` / `--dry-run` / `--format` /
 `--jobs`: those flags never change which listing paths are selected.
@@ -84,15 +86,18 @@ does **not** trust mtime. Symmetrical to `archive --seed-trust-mtime`.
 **Dry-run exit:** **0** when the listing is valid (even if `would_fail>0`);
 invalid listing → non-zero.
 
-## Explicitly **no prune** (`path` ≠ prune ≠ sync)
+## Explicitly **no prune** (`path` ≠ prune ≠ sync; `fallback` ≠ cache ≠ sync)
 
 `extract` is **one-way materialize**, not sync. Path filtering only **writes
-less**; it never removes destination paths:
+less**; it never removes destination paths. Read-path **`--fallback`** is
+Missing-only multi-origin failover — it does **not** fill a cache, does **not**
+write back to primary, and is **not** bidirectional sync (see [mount.md](mount.md)).
 
 | Non-goal | Detail |
 |---|---|
 | ❌ **Prune / `--delete`** | There is **no** `--delete` flag. Extra files under `-o` that are **not** in the listing stay. Listing paths that exist but are **filtered out** by `--path`/`--exclude` are also **not** deleted (and not written) |
-| ❌ Bidirectional sync / watch | Use explicit `archive` / `extract` / `diff`. Path scope is **not** sync |
+| ❌ Bidirectional sync / watch | Use explicit `archive` / `extract` / `diff`. Path scope is **not** sync; `--fallback` is **not** sync |
+| ❌ `--fallback` as cache / write-back | Fallback never writes origins; use `--cache` (+ optional `--cache-max-bytes`) to fill a local cache |
 | ❌ Rewrite matching files under `--force` | Match + `--skip-unchanged` always skips; no `--force-rewrite` |
 
 **`--path` / `--exclude` behaviour (Phase 13):**
@@ -154,6 +159,7 @@ chunkforge extract --store ./store -o /tmp/out \
 ```bash
 bash scripts/demo_extract_skip.sh
 bash scripts/demo_path_filter.sh  # Phase 13 path/exclude + non-prune
+bash scripts/demo_fallback_bytes_suffix.sh  # Phase 16 fallback + suffix + bytes_plaintext
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → optional dry-run glance
 ```

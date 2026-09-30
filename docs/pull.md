@@ -13,6 +13,7 @@ a file tree still uses `extract`; mounting still uses `mount`.
 chunkforge pull \
   --store <local-cas> \
   --source <PATH|URL> \
+  [--fallback <PATH|URL>]... \
   [--url-template '{base}/{path}'] \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
@@ -28,6 +29,7 @@ chunkforge pull \
 |---|---|
 | `--store` | Local CAS to **write** (created if missing; not written in `--dry-run`) |
 | `--source` | Chunk source: local store path, `file://`, or `http(s)://` |
+| `--fallback` | Repeatable extra origin tried **only on Missing** (CLI order). Zero times ≡ **1.5** single origin. Fills **`--store`** from the failover chain; **≠ cache fill of a separate cache dir ≠ sync ≠ prune**. Does **not** apply to `push --dest` |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (HTTP sources only; see [remote-layout.md](remote-layout.md)) |
 | `--http-retries N` | Extra HTTP attempts for transient failures (default **0**; HTTP sources only; ignored for local/`file://`) |
 | `--jobs N` | Bounded concurrency for has/get/put (default **1** = serial) |
@@ -70,7 +72,7 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 
 ### `--path` / `--exclude` / `--exclude-from` (Phase 13 M4 / Phase 14 M4)
 
-**`path` ≠ prune ≠ sync:** pull path/exclude only **shrinks the fetch set**. It does not extract a tree, does not delete local extras, and does not rewrite the listing. Extract path filtering is likewise non-prune — see [extract.md](extract.md).
+**`path` ≠ prune ≠ sync; `fallback` ≠ cache ≠ sync:** pull path/exclude only **shrinks the fetch set**. `--fallback` only adds Missing-only read origins for the fetch (still one-way into `--store`). It does not extract a tree, does not delete local extras, and does not rewrite the listing. Extract path filtering is likewise non-prune — see [extract.md](extract.md).
 
 Optional, repeatable, **opt-in**. Default (no `--path` / `--exclude` / `--exclude-from`) ≡ **1.2.0** full reference set.
 
@@ -98,8 +100,9 @@ chunkforge pull --store ./store2 --source http://127.0.0.1:8766 \
 | ❌ Extract a file tree | Use `extract` after the CAS is filled |
 | ❌ Delete extra local chunks | That is `gc` |
 | ❌ Download / upload the listing | Listings stay local out-of-band artifacts |
-| ❌ Bidirectional sync / watch | Explicit one-way fill only |
+| ❌ Bidirectional sync / watch | Explicit one-way fill only; `--fallback` is **not** sync |
 | ❌ Extract / prune / rewrite listing | Path filter only shrinks the fetch set |
+| ❌ Treating `--fallback` as a disk cache | Fallback never writes origins; pull writes only `--store` |
 | ❌ Remote GC / packfiles | Same posture as `push` / `verify` |
 
 ## End-to-end (push stub → empty store → pull → verify)
@@ -155,4 +158,5 @@ Partial progress may leave some chunks in `--store`; re-run is safe (existing id
 - HTTP layout / templates: [remote-layout.md](remote-layout.md)
 - Directory archive workflow: [archive.md](archive.md)
 - Path-filter smoke: [`scripts/demo_path_filter.sh`](../scripts/demo_path_filter.sh)
+- Fallback / suffix / `bytes_plaintext` smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh)
 - Ops JSON: [ops-json.md](ops-json.md)

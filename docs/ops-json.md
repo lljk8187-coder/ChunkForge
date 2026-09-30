@@ -42,7 +42,8 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
 | Path filter | `extract` / `pull` / `push` `--path`/`--exclude` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set |
-| Cache soft budget | **`--cache-max-bytes N`** (with `--cache` on `cat`/`verify`/`extract`/`mount`) = **refuse-fill** when `bytes_on_disk + plaintext_len > N`; still serves primary. **≠ LRU ≠ trim ≠ GC ≠ sync**. Omit ≡ 1.4 unbounded fill. See [mount.md](mount.md). Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh). |
+| Cache soft budget | **`--cache-max-bytes N`** (with `--cache` on `cat`/`verify`/`extract`/`mount`) = **refuse-fill** when `bytes_on_disk + plaintext_len > N`; still serves primary. **≠ LRU ≠ trim ≠ GC ≠ sync**. Accepts plain decimal **or** human suffixes `K`/`M`/`G`/`Ki`/`Mi`/`Gi` (1024-base; Phase 16). Omit ≡ 1.4 unbounded fill. See [mount.md](mount.md). Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh). |
+| Read-path `--fallback` | Repeatable on `cat`/`verify`/`extract`/`mount`/`pull`/`doctor`. Missing-only failover; **≠ cache ≠ sync**. Outer Cache wraps the whole Fallback chain. Zero times ≡ 1.5 single origin. Smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh). |
 
 ## Responsibility split (no remote scrub)
 
@@ -57,6 +58,25 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 There is **no** remote-scrub first-class command. For listing-referenced remote
 integrity use **`verify --source`**; for presence use **`doctor`**.
 
+## Read-path `--fallback` (Phase 16 / 1.6 Unreleased)
+
+Repeatable **`--fallback <PATH|URL>`** on read commands (`cat` / `verify` /
+`extract` / `mount` / `pull` / `doctor`) appends ordered extra origins behind
+`--store` / `--source`. Default (flag omitted zero times) ≡ **1.5.0** single
+origin. Failover is **Missing-only** (`SourceError::NotFound`); Transient /
+Permanent / Corrupt fail fast (no silent switch).
+
+| Rule | Detail |
+|---|---|
+| Composition | Recommended: **outer Cache wraps the whole Fallback chain** — `CacheSource(Fallback([primary, …fallbacks]), cache)`. One fill budget, one refuse-fill policy |
+| `fallback` ≠ `cache` | `--fallback` is **read-only multi-origin**; never writes any origin. `--cache` **writes** the cache store on miss (optional `--cache-max-bytes` refuse-fill) |
+| `fallback` ≠ sync / prune | Not bidirectional sync, not watch, not prune / `--delete`, not write-back to primary |
+| Push dest | **`--fallback` does not apply** to `push --dest` (write stays single dest) |
+| HTTP flags | Templates / retries / SigV4 apply **isomorphically** to each HTTP origin in the chain (primary and HTTP fallbacks) |
+| Orthogonal | `--jobs` / `--format` / `--progress` / path filter / cache-max |
+
+Smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
+See [mount.md](mount.md), [extract.md](extract.md), [pull.md](pull.md).
 
 ## Push path filter (Phase 14)
 
@@ -86,3 +106,8 @@ Phase 15 finalizes **`make`/`cat`** in this matrix and soft cache budget
 (`--cache-max-bytes`); gated by **`check_compat_1_4.sh`** (calls 1_3; no
 absolute perf SLA).
 Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).
+Phase 16 / **1.6.0 Unreleased** adds `--fallback`, human byte suffixes on
+`--cache-max-bytes`, and `store stats` `bytes_plaintext` / `--decode` (all
+opt-in; defaults ≡ 1.5). Workspace remains **1.5.0** until M7.
+`check_compat_1_5.sh` lands in M6. Smoke:
+[`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
