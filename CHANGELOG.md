@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jobs=0` via shared `parse_jobs`. Dry-run path listing stays ordered/serial;
   `--apply` uses `parallel::map_indexed` for per-id `Store::remove` (result set
   ≡ jobs=1). Symmetric to `store scrub --jobs`. See `docs/doctor-gc.md`.
+- **`gc --format text|json`** (Phase 12 M2): default **text** ≡ 1.1.0 path list
+  + stderr summary. JSON: one object on stdout (`ok` / `dry_run` / `applied` /
+  `listings` / `referenced` / `unreferenced` / `deleted`); no path listing and
+  no duplicate stderr summary; exit codes format-independent; `--jobs`
+  orthogonal. Shared `CliFormat`. See `docs/doctor-gc.md`.
 
 ## [1.1.0] — 2026-09-29
 

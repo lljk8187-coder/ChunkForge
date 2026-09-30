@@ -299,6 +299,13 @@ enum Commands {
         indexes: Vec<PathBuf>,
     },
     /// List (or delete) unreferenced loose chunks in a local store
+    ///
+    /// Default **`--format text`** (≡ 1.1.0): unreferenced `.cnk` paths on
+    /// stdout (ordered) + summary on stderr. **`--format json`**: one JSON
+    /// object on stdout (`ok` / `dry_run` / `applied` / `listings` /
+    /// `referenced` / `unreferenced` / `deleted`); no path listing and no
+    /// duplicate stderr summary; exit codes are format-independent.
+    /// `--jobs` is orthogonal to `--format`.
     Gc {
         /// Local CAS store directory
         #[arg(long)]
@@ -311,6 +318,10 @@ enum Commands {
         /// speeds `--apply` (symmetric to `store scrub --jobs`).
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Output format: `text` (default ≡ 1.1.0 path list + stderr summary)
+        /// or `json` (one object on stdout; no duplicate stderr summary)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are retained
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -456,9 +467,9 @@ enum StoreCommands {
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3).
+/// `push` / `pull` / `gc` (Phase 8 M4 + Phase 10 M6 O1 + Phase 11 M2–M3 + Phase 12 M2).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
-/// `extract` / `push` / `pull` ≡ 1.0.0).
+/// `extract` / `push` / `pull` ≡ 1.0.0; `gc` ≡ 1.1.0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -711,10 +722,11 @@ fn run() -> Result<()> {
             store,
             apply,
             jobs,
+            format,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_gc(&store, &indexes, apply, jobs)
+            cmd_gc(&store, &indexes, apply, jobs, format)
         }
         Commands::Push {
             store,
@@ -2804,7 +2816,13 @@ fn cmd_doctor(
     }
 }
 
-fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool, jobs: usize) -> Result<()> {
+fn cmd_gc(
+    store_path: &Path,
+    index_paths: &[PathBuf],
+    apply: bool,
+    jobs: usize,
+    format: CliFormat,
+) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
 
@@ -2820,22 +2838,47 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool, jobs: usize) 
         .collect();
     unreferenced.sort();
 
+    let dry_run = !apply;
+    let candidate_count = unreferenced.len();
+    let deleted_count = if apply { candidate_count } else { 0 };
+
     if unreferenced.is_empty() {
-        eprintln!(
-            "gc: nothing to reclaim ({} listing{}, {} referenced chunk id{}, dry_run={})",
-            listings_ok,
-            if listings_ok == 1 { "" } else { "s" },
-            referenced.len(),
-            if referenced.len() == 1 { "" } else { "s" },
-            !apply
-        );
+        match format {
+            CliFormat::Text => {
+                eprintln!(
+                    "gc: nothing to reclaim ({} listing{}, {} referenced chunk id{}, dry_run={})",
+                    listings_ok,
+                    if listings_ok == 1 { "" } else { "s" },
+                    referenced.len(),
+                    if referenced.len() == 1 { "" } else { "s" },
+                    dry_run
+                );
+            }
+            CliFormat::Json => {
+                // Phase12-M2: always emit both unreferenced (candidates) and
+                // deleted (0 on dry-run); see docs/doctor-gc.md / Phase12 §3.2.
+                let obj = serde_json::json!({
+                    "ok": true,
+                    "dry_run": dry_run,
+                    "applied": apply,
+                    "listings": listings_ok,
+                    "referenced": referenced.len(),
+                    "unreferenced": 0,
+                    "deleted": 0,
+                });
+                println!("{obj}");
+            }
+        }
         return Ok(());
     }
 
-    // Ordered stdout paths (serial) so dry-run output stays stable across --jobs.
-    for id in &unreferenced {
-        let path = store.chunk_path(id);
-        println!("{}", path.display());
+    // Text: ordered stdout paths (serial) so dry-run stays stable across --jobs.
+    // Json: do not list paths — the JSON object is the sole stdout payload.
+    if format == CliFormat::Text {
+        for id in &unreferenced {
+            let path = store.chunk_path(id);
+            println!("{}", path.display());
+        }
     }
 
     if apply {
@@ -2850,23 +2893,42 @@ fn cmd_gc(store_path: &Path, index_paths: &[PathBuf], apply: bool, jobs: usize) 
         for r in outcomes {
             r?;
         }
-        eprintln!(
-            "gc: deleted {} unreferenced chunk{} ({} listing{}, {} referenced retained)",
-            unreferenced.len(),
-            if unreferenced.len() == 1 { "" } else { "s" },
-            listings_ok,
-            if listings_ok == 1 { "" } else { "s" },
-            referenced.len()
-        );
-    } else {
-        eprintln!(
-            "gc: dry-run: {} unreferenced chunk{} (pass --apply to delete; {} listing{}, {} referenced)",
-            unreferenced.len(),
-            if unreferenced.len() == 1 { "" } else { "s" },
-            listings_ok,
-            if listings_ok == 1 { "" } else { "s" },
-            referenced.len()
-        );
+    }
+
+    match format {
+        CliFormat::Text => {
+            if apply {
+                eprintln!(
+                    "gc: deleted {} unreferenced chunk{} ({} listing{}, {} referenced retained)",
+                    candidate_count,
+                    if candidate_count == 1 { "" } else { "s" },
+                    listings_ok,
+                    if listings_ok == 1 { "" } else { "s" },
+                    referenced.len()
+                );
+            } else {
+                eprintln!(
+                    "gc: dry-run: {} unreferenced chunk{} (pass --apply to delete; {} listing{}, {} referenced)",
+                    candidate_count,
+                    if candidate_count == 1 { "" } else { "s" },
+                    listings_ok,
+                    if listings_ok == 1 { "" } else { "s" },
+                    referenced.len()
+                );
+            }
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "dry_run": dry_run,
+                "applied": apply,
+                "listings": listings_ok,
+                "referenced": referenced.len(),
+                "unreferenced": candidate_count,
+                "deleted": deleted_count,
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }

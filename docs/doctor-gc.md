@@ -68,6 +68,13 @@ chunkforge gc --store ./store hello.cfidx release.cfdir --apply
 
 # Parallel deletes on --apply (default --jobs 1 ≡ 1.1.0 serial; symmetric to store scrub)
 chunkforge gc --store ./store --jobs 4 --apply hello.cfidx release.cfdir
+
+# Machine-readable report (Phase 12 M2); jobs orthogonal to format
+chunkforge gc --store ./store --format json hello.cfidx release.cfdir
+# → {"ok":true,"dry_run":true,"applied":false,"listings":2,"referenced":N,"unreferenced":M,"deleted":0}
+
+chunkforge gc --store ./store --apply --format json --jobs 4 hello.cfidx
+# → {"ok":true,"dry_run":false,"applied":true,"listings":1,"referenced":N,"unreferenced":M,"deleted":M}
 ```
 
 | Rule | Behaviour |
@@ -76,7 +83,8 @@ chunkforge gc --store ./store --jobs 4 --apply hello.cfidx release.cfdir
 | Scan | Walk local `store/chunks/**/*.cnk` via `Store::list_chunk_ids()` (layout-conforming only) |
 | Dry-run (default) | Print absolute paths of unreferenced `.cnk` files to **stdout** (ordered/serial); summary on stderr; **no deletes** |
 | `--apply` | `Store::remove` each unreferenced id; referenced chunks retained |
-| `--jobs N` | Bounded concurrency for `--apply` deletes (default **1** = serial ≡ 1.1.0); dry-run path listing stays ordered; result set (which ids) identical for any `N >= 1`; same helper as `store scrub --jobs` |
+| `--jobs N` | Bounded concurrency for `--apply` deletes (default **1** = serial ≡ 1.1.0); dry-run path listing stays ordered; result set (which ids) identical for any `N >= 1`; same helper as `store scrub --jobs`; orthogonal to `--format` |
+| `--format text\|json` | Default **text** ≡ 1.1.0 (paths on stdout + stderr summary). **json**: one object on stdout — `ok` (bool), `dry_run` (bool, `!apply`), `applied` (bool), `listings` (usize), `referenced` (usize), `unreferenced` (candidate count this run), `deleted` (actual deletes; **0** on dry-run). No path listing and no duplicate stderr summary. Exit code is format-independent. |
 | Remote | **Not supported** — `--store` is local only |
 | Exit code | 0 on success (including “nothing to reclaim”); non-zero on I/O / bad listing |
 

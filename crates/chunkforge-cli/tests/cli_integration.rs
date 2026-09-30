@@ -1719,6 +1719,218 @@ fn gc_apply_jobs_four_deletes_orphan() {
     ]);
 }
 
+// --- Phase 12 M2: gc --format text|json ---
+
+#[test]
+fn gc_help_lists_format() {
+    let g = run_ok(&["gc", "--help"]);
+    let s = String::from_utf8_lossy(&g.stdout);
+    assert!(s.contains("--format"), "gc --help must list --format:\n{s}");
+}
+
+#[test]
+fn gc_format_json_dry_run_parseable() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("a.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let orphan_plain = b"orphan-gc-format-json-dry";
+    let orphan_id = chunkforge_store::ChunkId::hash(orphan_plain);
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(orphan_plain).unwrap();
+        assert!(s.has(&orphan_id));
+    }
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("gc: dry-run") && !stderr.contains("nothing to reclaim"),
+        "json must not duplicate text stderr summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("gc json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["applied"], false);
+    assert_eq!(v["listings"].as_u64(), Some(1));
+    assert!(v["referenced"].as_u64().unwrap() >= 1, "referenced={v}");
+    assert_eq!(v["unreferenced"].as_u64(), Some(1));
+    assert_eq!(v["deleted"].as_u64(), Some(0));
+    // No path lines — sole stdout payload is the JSON object.
+    assert!(
+        !stdout.contains(".cnk"),
+        "json stdout must not list .cnk paths; got {stdout}"
+    );
+
+    // Dry-run must not delete.
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        assert!(s.has(&orphan_id), "orphan must remain after json dry-run");
+    }
+}
+
+#[test]
+fn gc_format_json_apply_deleted() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("a.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let orphan_plain = b"orphan-gc-format-json-apply";
+    let orphan_id = chunkforge_store::ChunkId::hash(orphan_plain);
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(orphan_plain).unwrap();
+        assert!(s.has(&orphan_id));
+    }
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--apply",
+        "--format",
+        "json",
+        "--jobs",
+        "2",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("gc: deleted"),
+        "json must not duplicate text stderr summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("gc apply json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["listings"].as_u64(), Some(1));
+    assert_eq!(v["unreferenced"].as_u64(), Some(1));
+    assert_eq!(v["deleted"].as_u64(), Some(1));
+
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        assert!(
+            !s.has(&orphan_id),
+            "orphan must be gone after --apply --format json"
+        );
+    }
+}
+
+#[test]
+fn gc_default_format_is_text_not_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("a.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    {
+        use chunkforge_store::Store;
+        let s = Store::open(&store).unwrap();
+        s.put(b"orphan-gc-default-text").unwrap();
+    }
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Default ≡ text: path(s) on stdout, summary on stderr — not a pure JSON object.
+    assert!(
+        stdout.contains(".cnk") || stdout.lines().any(|l| !l.trim().is_empty()),
+        "default text should list paths on stdout; got {stdout:?}"
+    );
+    assert!(
+        stderr.contains("dry-run") || stderr.contains("unreferenced"),
+        "default text should keep stderr summary; stderr={stderr}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
+        "default (no --format) stdout must not be pure JSON; got {stdout}"
+    );
+}
+
+#[test]
+fn gc_format_json_nothing_to_reclaim() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "gc",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("gc clean json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["applied"], false);
+    assert_eq!(v["unreferenced"].as_u64(), Some(0));
+    assert_eq!(v["deleted"].as_u64(), Some(0));
+    assert!(v["referenced"].as_u64().unwrap() >= 1);
+}
+
 // --- Phase 4 M3: push (serial) + dry-run ---
 
 use std::sync::atomic::{AtomicUsize, Ordering};
