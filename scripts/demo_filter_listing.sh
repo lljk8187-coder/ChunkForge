@@ -15,9 +15,9 @@
 #
 # Version gate expects chunkforge 1.13.0 (Phase24 mid-stream; M7 bumps 1.14.0).
 #
-# Compat note-only (CRITICAL lesson from Phase22/23): do NOT hard-assert
-# check_compat_1_13.sh must-exist OR must-not-exist. That gate lands in M5.
-# Existing check_compat_1_12.sh may be noted present; do not force-run it.
+# Gate (Phase24-M5): require check_compat_1_13.sh present + executable
+# (same pattern as Phase23-M5 demo_diff_tree_symlink ↔ compat_1_12).
+# Do not force-run the long gate here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -290,7 +290,7 @@ echo "no pack subcommand: OK"
 echo "G: help / ≠ prune / ≠ gc-path / ≠ pack: OK"
 
 echo
-echo "==> H. version 1.13.0 + Cargo 1.13.0; compat_1_13 note-only (M5)"
+echo "==> H. version 1.13.0 + Cargo 1.13.0 + compat_1_13 (Phase24-M5)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
 if ! grep -F '1.13.0' <<<"$VER" >/dev/null; then
@@ -302,14 +302,28 @@ if ! grep -E '^version = "1\.13\.0"' "$ROOT/Cargo.toml" >/dev/null; then
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
-# CRITICAL: do NOT assert check_compat_1_13.sh must-exist or must-not-exist.
-# Note-only: that gate lands in Phase24-M5.
-echo "H: note-only — scripts/check_compat_1_13.sh lands in Phase24-M5 (not asserted here)"
-# Existing 1_12 gate may be present (from Phase23); soft presence note only.
-if [[ -f "$ROOT/scripts/check_compat_1_12.sh" ]]; then
-  echo "H: note: check_compat_1_12.sh present (Phase23; not force-run)"
+# Existing gate that already exists must stay present (1_12 from Phase23).
+COMPAT112="$ROOT/scripts/check_compat_1_12.sh"
+if [[ ! -f "$COMPAT112" ]]; then
+  echo "error: check_compat_1_12.sh must exist" >&2
+  exit 1
 fi
-echo "H: version 1.13.0 / Cargo 1.13.0: OK"
+if [[ ! -x "$COMPAT112" ]]; then
+  echo "error: check_compat_1_12.sh must be executable" >&2
+  exit 1
+fi
+# Phase24-M5: compat_1_13 must exist + executable (same pattern as
+# demo_diff_tree_symlink ↔ compat_1_12). Do not force-run the long gate here.
+COMPAT113="$ROOT/scripts/check_compat_1_13.sh"
+if [[ ! -f "$COMPAT113" ]]; then
+  echo "error: check_compat_1_13.sh must exist" >&2
+  exit 1
+fi
+if [[ ! -x "$COMPAT113" ]]; then
+  echo "error: check_compat_1_13.sh must be executable" >&2
+  exit 1
+fi
+echo "H: version 1.13.0 / Cargo 1.13.0 / compat_1_12 + compat_1_13 present+executable: OK"
 
 echo
 echo "demo_filter_listing: ALL OK / PASS"
