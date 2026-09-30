@@ -8436,3 +8436,249 @@ fn archive_illegal_exclude_errors_clearly() {
     );
     assert!(!out.exists());
 }
+
+// --- Phase 13 M3: extract --path/--exclude (non-prune) ---
+
+#[test]
+fn extract_help_lists_path_exclude_no_delete() {
+    let help = run_ok(&["extract", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--path"),
+        "extract --help should list --path:\n{s}"
+    );
+    assert!(
+        s.contains("--exclude"),
+        "extract --help should list --exclude:\n{s}"
+    );
+    // Flag listing uses leading spaces + `--name`; about text must not advertise a delete mode.
+    assert!(
+        !s.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("--delete") || t.starts_with("-d, --delete")
+        }),
+        "extract --help must NOT list a --delete flag (non-prune):\n{s}"
+    );
+}
+
+#[test]
+fn extract_path_subset_does_not_prune_extra_dest() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("packages").join("foo")).unwrap();
+    fs::create_dir_all(src.join("packages").join("bar")).unwrap();
+    fs::create_dir_all(src.join("other")).unwrap();
+    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-a\n").unwrap();
+    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-b\n").unwrap();
+    fs::write(src.join("other").join("c.txt"), b"other-c\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out");
+    fs::create_dir_all(&out).unwrap();
+    // Pre-seed an unselected path that must survive subset extract (non-prune).
+    let preset = out.join("preset-extra.txt");
+    fs::write(&preset, b"i-must-remain\n").unwrap();
+    // Also pre-seed a path that exists in the listing but will be filtered out.
+    fs::create_dir_all(out.join("packages").join("bar")).unwrap();
+    let filtered_existing = out.join("packages").join("bar").join("b.txt");
+    fs::write(&filtered_existing, b"stale-bar\n").unwrap();
+
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--path",
+        "packages/foo",
+        "--force",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("1 file") || err.contains("wrote=1") || err.contains("(1 file"),
+        "subset extract should write the one matching file; stderr={err}"
+    );
+
+    let foo = out.join("packages").join("foo").join("a.txt");
+    assert!(
+        foo.is_file(),
+        "subset file should be written: {}",
+        foo.display()
+    );
+    assert_eq!(fs::read(&foo).unwrap(), b"foo-a\n");
+
+    // Non-prune: preset extra and filtered-out listing path must remain.
+    assert!(
+        preset.is_file(),
+        "preset unselected dest file must survive (non-prune)"
+    );
+    assert_eq!(fs::read(&preset).unwrap(), b"i-must-remain\n");
+    assert!(
+        filtered_existing.is_file(),
+        "filtered-out listing path must not be deleted"
+    );
+    assert_eq!(
+        fs::read(&filtered_existing).unwrap(),
+        b"stale-bar\n",
+        "filtered-out path content must be untouched"
+    );
+
+    // Unselected listing siblings must not be written.
+    assert!(
+        !out.join("other").join("c.txt").exists(),
+        "unselected listing path must not be materialized"
+    );
+}
+
+#[test]
+fn extract_exclude_skips_junk_dry_run_json_orthogonal() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkg")).unwrap();
+    fs::create_dir_all(src.join("junk")).unwrap();
+    fs::write(src.join("pkg").join("keep.txt"), b"keep\n").unwrap();
+    fs::write(src.join("junk").join("noise.txt"), b"noise\n").unwrap();
+    fs::write(src.join("skip.o"), b"obj\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out");
+    let dry = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "junk/",
+        "--exclude",
+        "*.o",
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let dry_stdout = String::from_utf8_lossy(&dry.stdout);
+    let dry_stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        !dry_stderr.contains("extract: dry-run:"),
+        "json must not dual-write text summary; stderr={dry_stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(dry_stdout.trim()).expect("dry-run json parse");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(
+        v["would_write"].as_u64().unwrap(),
+        1,
+        "only pkg/keep.txt should would_write; got {v}"
+    );
+    assert!(!out.exists(), "dry-run must not create output root");
+
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "junk/",
+        "--exclude",
+        "*.o",
+        listing.to_str().unwrap(),
+    ]);
+    assert!(out.join("pkg").join("keep.txt").is_file());
+    assert!(!out.join("junk").join("noise.txt").exists());
+    assert!(!out.join("skip.o").exists());
+}
+
+#[test]
+fn extract_no_filter_flags_full_tree_regression() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"aa\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"bb\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out");
+    let result = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("2 file"),
+        "no filter ⇒ full tree (2 files); stderr={err}"
+    );
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"aa\n");
+    assert_eq!(fs::read(out.join("sub").join("b.txt")).unwrap(), b"bb\n");
+}
+
+#[test]
+fn extract_illegal_exclude_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let out = dir.path().join("out");
+    let fail = run_fail(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude",
+        "a*b",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("invalid exclude pattern") || err.contains("exclude pattern"),
+        "stderr={err}"
+    );
+    assert!(!out.exists());
+}

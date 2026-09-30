@@ -117,23 +117,27 @@ enum Commands {
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
-    /// Reads the `.cfdir` listing and reconstitutes regular files under `-o`
-    /// from `--store` / `--source` (same origin flags as `cat` / `verify`).
-    /// Parent directories are created as needed. If a destination path already
-    /// exists, extract fails (non-zero) unless `--force` is set (overwrites
-    /// existing regular files; type mismatches still error). With
-    /// `--skip-unchanged`, files whose size and content BLAKE3 already match
-    /// the listing are left untouched (no chunk fetch / write), even if
-    /// `--force` is also set. With `--skip-trust-mtime` (requires
-    /// `--skip-unchanged`), size+mtime match skips content BLAKE3. With
-    /// `--dry-run`, no target paths are created
-    /// or modified (output root included); stderr reports would_skip /
-    /// would_write / would_dirs / would_fail and exit is 0 unless the listing
+    /// Reads the **full** `.cfdir` listing and reconstitutes matching regular
+    /// files under `-o` from `--store` / `--source` (same origin flags as
+    /// `cat` / `verify`). Parent directories are created as needed for written
+    /// files. Optional repeatable `--path` / `--exclude` restrict which
+    /// listing entries are materialized (default: full tree ≡ 1.2.0). Path
+    /// filtering is **not** prune: filtered-out listing paths and extra
+    /// files already under `-o` are left alone — there is no delete/prune mode.
+    /// If a destination path already exists, extract fails (non-zero) unless
+    /// `--force` is set (overwrites existing regular files; type mismatches
+    /// still error). With `--skip-unchanged`, files whose size and content
+    /// BLAKE3 already match the listing are left untouched (no chunk fetch /
+    /// write), even if `--force` is also set. With `--skip-trust-mtime`
+    /// (requires `--skip-unchanged`), size+mtime match skips content BLAKE3.
+    /// With `--dry-run`, no target paths are created or modified (output root
+    /// included); stderr reports would_skip / would_write / would_dirs /
+    /// would_fail for the **filtered** set and exit is 0 unless the listing
     /// is invalid. Default **`--format text`** (≡ 1.0.0): summaries on stderr.
     /// **`--format json`**: one JSON object on stdout (`ok` / `skipped` /
     /// `wrote` / `dirs`, or dry-run `would_*`); exit codes are format-
-    /// independent. Empty `Dir` entries create directories; file modes are
-    /// restored on Unix when recorded.
+    /// independent. Empty matching `Dir` entries create directories; file
+    /// modes are restored on Unix when recorded.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Extract {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -190,6 +194,18 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// Include only listing paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.2.0 full tree).
+        /// Does **not** delete filtered-out or extra dest paths (not prune).
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude listing paths matching this pattern (repeatable): exact,
+        /// trailing-`/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error exit. Orthogonal to
+        /// `--force` / `--skip-*` / `--dry-run` / `--format` / `--jobs`.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -638,8 +654,12 @@ fn run() -> Result<()> {
             skip_trust_mtime,
             dry_run,
             format,
+            paths,
+            excludes,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             // Dry-run never opens store/source (no chunk get; G2 / §3.2).
             if dry_run {
                 cmd_extract(
@@ -652,6 +672,7 @@ fn run() -> Result<()> {
                     skip_trust_mtime,
                     true,
                     format,
+                    &path_filter,
                 )
             } else {
                 let src = open_chunk_source(
@@ -670,6 +691,7 @@ fn run() -> Result<()> {
                     skip_trust_mtime,
                     false,
                     format,
+                    &path_filter,
                 )
             }
         }
@@ -2447,6 +2469,7 @@ fn cmd_extract(
     skip_trust_mtime: bool,
     dry_run: bool,
     format: CliFormat,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     match peek_listing_kind(archive_path)? {
         ListingKind::DirArchive => {}
@@ -2469,6 +2492,7 @@ fn cmd_extract(
             skip_unchanged,
             skip_trust_mtime,
             format,
+            path_filter,
         );
     }
 
@@ -2491,7 +2515,13 @@ fn cmd_extract(
     let mut dir_count = 0usize;
     let mut skipped_count = 0usize;
 
+    // Phase 13 M3: read full listing; only materialize matching File + Dir
+    // entries (parents of written files via create_dir_all). Unmatched paths
+    // are skipped (not written, never deleted — non-prune).
     for entry in &archive.entries {
+        if !path_filter.allows(&entry.path) {
+            continue;
+        }
         let dest = join_archive_path(out_dir, &entry.path)?;
         match &entry.kind {
             DirEntryKind::Dir { mode } => {
@@ -2686,6 +2716,7 @@ fn cmd_extract_dry_run(
     skip_unchanged: bool,
     skip_trust_mtime: bool,
     format: CliFormat,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     // Refuse only when the named output root already exists as a file — same
     // hard gate as real extract; we still create/modify nothing.
@@ -2702,6 +2733,9 @@ fn cmd_extract_dry_run(
     let mut would_fail = 0usize;
 
     for entry in &archive.entries {
+        if !path_filter.allows(&entry.path) {
+            continue;
+        }
         let dest = join_archive_path(out_dir, &entry.path)?;
         match &entry.kind {
             DirEntryKind::Dir { .. } => {

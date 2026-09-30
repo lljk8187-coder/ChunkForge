@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `skipped_special` / `excluded`); no text dual-write; exit format-independent.
   Docs: `docs/archive.md`. **Not** bumping 1.3.0 yet; ops-json matrix archive
   row deferred to M5.
+- **Phase13-M3 `extract --path` / `--exclude` (non-prune)**: repeatable
+  path/exclude → `PathFilter` (illegal exclude → clear error); reads full
+  listing, materializes only matching File + necessary parent dirs; **never**
+  deletes filtered-out listing paths or extra dest files; **no** `--delete`.
+  Orthogonal to `--force` / `--skip-unchanged` / `--skip-trust-mtime` /
+  `--dry-run` / `--format` / `--jobs`. Default (no path/exclude) ≡ 1.2.0 full
+  tree; dry-run / JSON `would_*` / counts reflect the filtered set. Docs:
+  `docs/extract.md` (path ≠ prune).
 
 ## [1.2.0] — 2026-09-29
 
