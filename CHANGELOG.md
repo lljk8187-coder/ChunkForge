@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-29
+
+Phase 12 closeout — `gc --jobs`; `gc`/`store scrub --format json`;
+`docs/ops-json.md` field matrix; `check_compat_1_1.sh`; opt-in `--progress`;
+defaults remain ≡ **1.1.0**. No pack / write mount / aws-sdk / remote scrub /
+`archive --format json` / extract prune / bidirectional sync.
+
 ### Added
 
 - **`gc --jobs N`** (Phase 12 M1): default **1** ≡ 1.1.0 serial; rejects
@@ -28,9 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/ops-json.md` (eight-command minimum stable fields; default text;
   field rename → breaking) linked from `docs/stability.md`;
   `scripts/demo_ops_maint.sh` (gc dry-run json + scrub json + `--jobs 4`,
-  local only); README Phase 12 / 1.2 draft section; `docs/doctor-gc.md`
-  aligned with §3.2; `docs/perf.md` notes Phase 12 still does not implement
-  pack.
+  local only); README Phase 12 / **1.2.0**; `docs/doctor-gc.md` aligned with
+  §3.2; `docs/perf.md` notes **1.2.0** still does not implement pack.
 - **`check_compat_1_1.sh` + 1.1 regression gate** (Phase 12 M5):
   `scripts/check_compat_1_1.sh` runs `check_compat_1_0.sh` (keeps 1_0
   independently runnable), then asserts 1.1/1.2 help flags
@@ -44,6 +50,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (total known). Orthogonal to `--format json` (progress → stderr; JSON →
   stdout only). Hand-rolled — **no** `indicatif` / tracing / otel. Help lists
   `--progress` on those commands.
+- Workspace version **1.2.0** (Phase 12 M7 closeout).
+
+### Not delivered / deferred (Phase 12)
+
+- **`archive --format json`** (P1) — not delivered
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.1.0**: `jobs=1` (incl. `gc`), `http-retries=0`,
+  SigV4 **off**, `diff`/`verify`/`doctor`/`extract`/`push`/`pull`/`gc`/
+  `store scrub` default **text**, `--progress` **off**, mount prefetch
+  default depth **1** ≡ 1.1.0 / 1.0.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; no silent break of 1.1.0 behaviour
 
 ## [1.1.0] — 2026-09-29
 
@@ -575,6 +603,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.2.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.2.0
 [1.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.1.0
 [1.0.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.0.0
 [0.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.9.0

@@ -17,7 +17,7 @@
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
 | **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
-| **Phase 12** | **1.2.0** (draft / Unreleased) | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
+| **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -41,7 +41,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), and FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**). **Phase 11 is closed at 1.1.0**: `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` — see [docs/stability.md](docs/stability.md).
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 is closed at 1.2.0**: `gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md).
 
 ## Quick start (local CAS)
 
@@ -447,7 +447,7 @@ multipart / packfile / write mount / bidirectional sync / extract prune /
 remote scrub / byte-range resume / push listing upload / changing default
 jobs·retries / video analysis. Pack stays measured-only in
 [docs/perf.md](docs/perf.md). **`gc --jobs N`**, **`gc`/`store scrub --format json`**, and the ops JSON
-matrix land in Unreleased / Phase 12 — see [Phase 12](#phase-12--12-draft--unreleased-local-maint-ops-json)
+matrix landed in **1.2.0** — see [Phase 12](#phase-12--12-local-maint-ops-json)
 and [docs/doctor-gc.md](docs/doctor-gc.md).
 
 ```bash
@@ -464,16 +464,16 @@ Details: [docs/extract.md](docs/extract.md), [docs/push.md](docs/push.md),
 [docs/pull.md](docs/pull.md), [docs/mount.md](docs/mount.md).
 
 
-## Phase 12 / 1.2 (draft / Unreleased): local maint ops JSON
+## Phase 12 / 1.2: local maint ops JSON
 
 Phase 12 closes local maintenance symmetry with **1.1.0**: **`gc --jobs N`**
 (default **1** ≡ serial, symmetric to `store scrub --jobs`), expands ops
-**`--format json`** to **`gc`** and **`store scrub`**, and publishes the
-**[Ops JSON field matrix](docs/ops-json.md)**. Defaults stay ≡ **1.1.0** (text
-summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
-(**1.2.0** bump is **not** this milestone).
+**`--format json`** to **`gc`** and **`store scrub`**, publishes the
+**[Ops JSON field matrix](docs/ops-json.md)**, adds **`check_compat_1_1.sh`**,
+and ships opt-in **`--progress`**. All additive; **defaults ≡ 1.1.0** (text
+summaries, jobs=1, progress off). Workspace / CLI version is **1.2.0**.
 
-**Delivered so far (M1–M6):**
+**Delivered:**
 
 - **`gc --jobs N`**: default **1**; `--apply` parallel per-id delete; dry-run
   path listing stays ordered.
@@ -507,10 +507,10 @@ summaries, jobs=1). Workspace version remains **1.1.0** until M7 closeout
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash (no listing) |
 
-**Not in this milestone / still deferred:** **1.2.0** bump (M7), packfile,
-write mount, remote scrub, aws-sdk, extract prune, bidirectional sync,
-`archive --format json`. Pack stays measured-only in
-[docs/perf.md](docs/perf.md).
+**Not delivered / non-goals (carry forward):** `archive --format json` (P1);
+packfile; write mount; remote scrub; aws-sdk; extract prune; bidirectional
+sync; byte-range resume; push listing upload; changing default jobs·retries;
+video analysis. Pack stays measured-only in [docs/perf.md](docs/perf.md).
 
 ```bash
 # Phase 12 maint smoke + compat gate (~minutes; no internet)
@@ -519,6 +519,8 @@ bash scripts/demo_ops_maint.sh
 # A: archive v1 → change → archive --seed v2 (orphan chunks vs v2-only)
 # B: gc --format json (unreferenced>0) + store scrub --format json + --jobs 4
 bash scripts/check_compat_1_1.sh   # includes check_compat_1_0 + 1.1/1.2 flags
+
+./target/debug/chunkforge --version   # → chunkforge 1.2.0
 ```
 
 Details: [docs/doctor-gc.md](docs/doctor-gc.md), [docs/ops-json.md](docs/ops-json.md),

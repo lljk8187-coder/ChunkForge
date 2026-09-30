@@ -9,9 +9,9 @@ now.
 > one object per chunk (`chunks/<2hex>/<62hex>.cnk`). Product defaults stay
 > `--jobs 1` and `--http-retries 0`.
 
-> **Phase 12 still does not implement pack.** Evidence and the promotion
-> checklist below continue to govern any future dual-mode layout; Phase 12
-> delivers local maint ops (`gc --jobs`, gc/scrub JSON) only.
+> **1.2.0 / Phase 12 still does not implement pack.** Evidence and the
+> promotion checklist below continue to govern any future dual-mode layout;
+> Phase 12 delivered local maint ops (`gc --jobs`, gc/scrub JSON) only.
 
 ## What we measure
 

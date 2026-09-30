@@ -5,7 +5,10 @@ rely on across minor releases, what counts as a breaking change, and what this
 project does **not** promise. **ChunkForge 1.0.0** is released (annotated tag
 `v1.0.0`). **1.1.0** adds opt-in flags only (`extract --skip-trust-mtime`,
 `extract`/`push`/`pull --format json`, `mount --prefetch-chunks N`); defaults
-and the frozen surface stay ≡ **1.0.0**. The workspace reports **1.1.0**.
+and the frozen surface stay ≡ **1.0.0**. **1.2.0** adds further opt-in only
+(`gc --jobs`, `gc`/`store scrub --format json`, ops-json matrix,
+`check_compat_1_1`, `--progress`); defaults stay ≡ **1.1.0**. The workspace
+reports **1.2.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -24,9 +27,10 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 | **Mount prefetch** | Default **prefetch on** (conservative). `--no-prefetch` ≡ 0.9.0 on-demand `get` (RO-compatible; result bytes unchanged). See [mount.md](mount.md). |
 
 Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
-`--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`) may ship in
-**minor** releases when defaults stay compatible. **1.1.0** is such a minor:
-all new flags default off / text / depth 1 ≡ 1.0.0.
+`--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`, `gc --jobs`,
+`--progress`) may ship in **minor** releases when defaults stay compatible.
+**1.1.0** and **1.2.0** are such minors: all new flags default off / text /
+jobs=1 / depth 1 ≡ prior release.
 
 ## Breaking-change policy
 
