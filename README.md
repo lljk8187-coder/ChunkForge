@@ -20,7 +20,7 @@
 | **Phase 12** | **1.2.0** | `gc --jobs` + `gc`/`store scrub --format json` + ops JSON field matrix + `demo_ops_maint` + `check_compat_1_1` + opt-in `--progress` |
 | **Phase 13** | **1.3.0** | Path scope: `archive`/`extract`/`pull --path`/`--exclude` + `archive --format json` + ops-json archive row + `demo_path_filter` + `check_compat_1_2`; path **≠** prune **≠** sync; **not** pack / write mount |
 | **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
-| **Phase 15** | **1.5** (Unreleased) | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json`; defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU / `check_compat_1_4` yet (M6) / **1.5.0** tag yet (M7) |
+| **Phase 15** | **1.5** (Unreleased) | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU / **1.5.0** tag yet (M7) |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -45,7 +45,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 / 1.5 is in progress (Unreleased)**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` — **no** `1.5.0` tag yet; workspace may still report **1.4.0**.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 / 1.5 is in progress (Unreleased)**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — **no** `1.5.0` tag yet; workspace may still report **1.4.0**.
 
 ## Quick start (local CAS)
 
@@ -672,7 +672,7 @@ still report **1.4.0**). Opt-in only; **defaults ≡ 1.4.0** (no `--cache-max-by
 ⇒ unbounded cache fill; `make`/`cat` default **text**; jobs=1, retries=0,
 SigV4 off, progress off, mount prefetch depth 1).
 
-**Delivered so far (Unreleased / M1–M5):**
+**Delivered so far (Unreleased / M1–M6):**
 
 - **`--cache-max-bytes N`** on `cat` / `verify` / `extract` / `mount` (requires
   `--cache`): soft fill budget in pure integer bytes. Over budget **refuse-fill**
@@ -687,6 +687,13 @@ SigV4 off, progress off, mount prefetch depth 1).
   final; Out of scope make/cat removed; cache-max = refuse-fill explicitly.
 - Smoke: [`scripts/demo_cache_budget_ops_json.sh`](scripts/demo_cache_budget_ops_json.sh)
   (make/cat json parse + first miss fills / second miss no disk growth).
+- **Compat gate**: [`scripts/check_compat_1_4.sh`](scripts/check_compat_1_4.sh)
+  — runs `check_compat_1_3.sh`, asserts 1.5 help flags (`make`/`cat --format`,
+  `--cache-max-bytes` on cat/verify/extract/mount); thin non-goals (no pack /
+  prune / LRU); demo presence. No absolute perf SLA.
+- **P1 `store scrub --listing <index>`**: local referenced-id rehash only
+  (default ≡ 1.4 full-store); **not** remote scrub. `bytes_plaintext` **not**
+  delivered.
 
 **`cache-max-bytes` ≠ LRU ≠ trim ≠ GC ≠ sync:**
 
@@ -696,13 +703,13 @@ SigV4 off, progress off, mount prefetch depth 1).
 | `store stats` / `du` | Observe local CAS size; **not** an eviction knob |
 | `gc` / `store scrub` | Local unreferenced / bitrot; **not** cache policy |
 
-**Not yet / non-goals this phase:** `check_compat_1_4` (M6); **1.5.0** tag /
-version bump (M7); packfile; write mount / COW; bidirectional sync; extract
-prune / `--delete`; remote scrub; full aws-sdk / multipart / IMDS / SSO /
-ListObjects; byte-range resume; push listing upload; **cache LRU** / auto
-trim; changing default jobs·retries·SigV4·progress; absolute perf SLA in CI;
-video analysis. Pack stance: [docs/perf.md](docs/perf.md) — **Phase15 still
-does not implement pack**.
+**Not yet / non-goals this phase:** **1.5.0** tag / version bump (M7);
+`bytes_plaintext` (store stats P1 — deferred); packfile; write mount / COW;
+bidirectional sync; extract prune / `--delete`; remote scrub; full aws-sdk /
+multipart / IMDS / SSO / ListObjects; byte-range resume; push listing upload;
+**cache LRU** / auto trim; changing default jobs·retries·SigV4·progress;
+absolute perf SLA in CI; video analysis. Pack stance: [docs/perf.md](docs/perf.md)
+— **Phase15 still does not implement pack**.
 
 ```bash
 # Phase 15 cache-budget + ops-json smoke (~minutes; local file primary)
@@ -713,16 +720,21 @@ bash scripts/demo_cache_budget_ops_json.sh
 #    first blob fills; second distinct blob: disk unchanged, read OK
 # C: --cache-max-bytes without --cache → clear non-zero
 
+# Compat gate (includes 1_3 → 1_2 → 1_1 → 1_0 + 1.5 flags)
+bash scripts/check_compat_1_4.sh
+
 # Manual sketch (same semantics):
 # ./target/debug/chunkforge make --store ./store -o a.cfidx --format json ./a.bin
 # ./target/debug/chunkforge cat --source ./store --cache ./cache \
 #   --cache-max-bytes 10000 -o /tmp/out.bin --format json ./a.cfidx
 # ./target/debug/chunkforge store stats --store ./cache --format json
+# ./target/debug/chunkforge store scrub --store ./store --listing ./a.cfidx
 ```
 
 Details: [docs/ops-json.md](docs/ops-json.md), [docs/mount.md](docs/mount.md),
-[docs/stability.md](docs/stability.md), [docs/perf.md](docs/perf.md).
-Gate `check_compat_1_4.sh` and the **1.5.0** release land in later milestones.
+[docs/stability.md](docs/stability.md), [docs/perf.md](docs/perf.md),
+[docs/doctor-gc.md](docs/doctor-gc.md).
+**1.5.0** tag / version bump lands in M7.
 
 ## Incremental dedup demo
 

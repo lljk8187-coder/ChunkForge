@@ -92,9 +92,12 @@ chunkforge gc --store ./store --apply --format json --jobs 4 hello.cfidx
 
 ## `chunkforge store scrub`
 
-Local-only **bitrot / integrity** check of every loose `.cnk` under `--store`.
-Does **not** take a listing: it walks `Store::list_chunk_ids()` and re-verifies
-plaintext BLAKE3 via `get_verify` (must equal the chunk id).
+Local-only **bitrot / integrity** check of loose `.cnk` under `--store`.
+Default (no `--listing`): walks `Store::list_chunk_ids()` and re-verifies
+plaintext BLAKE3 via `get_verify` (must equal the chunk id). With
+**`--listing <index>`** (Phase 15 P1): only rehashes chunk ids referenced by
+that `.cfidx` / `.cfdir` (unique set; missing ids → unreadable). **Not** remote
+scrub / ListObjects.
 
 **Read-only** — never deletes. Pair with `doctor` (presence of referenced chunks)
 and `gc` (reclaim unreferenced). See also [`diff.md`](diff.md) responsibility table.
@@ -111,6 +114,10 @@ chunkforge store scrub --store ./store --jobs 4
 chunkforge store scrub --store ./store --format json
 chunkforge store scrub --store ./store --jobs 4 --format json
 
+# Listing-scoped rehash (Phase 15 P1; local only)
+chunkforge store scrub --store ./store --listing ./v1.cfidx
+chunkforge store scrub --store ./store --listing ./tree.cfdir --format json
+
 # Empty store → ok=0 corrupt=0 unreadable=0, exit 0
 chunkforge store scrub --store ./empty-store
 
@@ -122,7 +129,7 @@ chunkforge store scrub --store ./empty-store
 
 | Rule | Behaviour |
 |---|---|
-| Scope | All layout-conforming loose chunks under local `--store` (no listing required) |
+| Scope | Default: all layout-conforming loose chunks under local `--store`. With `--listing`: only ids referenced by that listing (local store; **not** remote scrub) |
 | Check | `get_verify(id, true)` — decompress (if any) then plaintext BLAKE3 ≡ id |
 | Outcome | success → `ok++`; hash mismatch / corrupt payload → `corrupt++` + `scrub: corrupt <id>`; I/O / decode / other read failure → `unreadable++` + `scrub: unreadable <id>` |
 | Summary | One line: `scrub: ok=… corrupt=… unreadable=…` |
@@ -165,7 +172,7 @@ chunkforge store stats --store ./store --format json
 | Tool | Question it answers |
 |---|---|
 | **`doctor`** | Are chunks **referenced by listings** present? (`has`, optional `--deep` = `get`) |
-| **`store scrub`** | Are **objects already in the local CAS** bit-rot free? (re-BLAKE3; no listing) |
+| **`store scrub`** | Are **objects already in the local CAS** bit-rot free? (re-BLAKE3; optional `--listing` scopes to refs; **not** remote) |
 | **`store stats` / `du`** | How many loose chunks / how many **on-disk** bytes? (observation; not trim) |
 | **`gc`** | Which loose chunks are **unreferenced** and can be reclaimed? (dry-run / `--apply`) |
 

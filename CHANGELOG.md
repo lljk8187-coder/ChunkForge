@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phase15-M3 — `make --format text|json`**: Shared `CliFormat`; default **text** ≡ 1.4.0 stderr summary. **json**: one stdout object `{ok, bytes, chunks, new, reused}` (no text dual-write); exit format-independent. `docs/ops-json.md` make row (finalized in M5). No version bump.
 - **Phase15-M4 — `cat --format text|json`**: Shared `CliFormat`; default **text** ≡ 1.4.0 (still writes `-o`; almost silent on success). **json**: one stdout object `{ok, bytes}` (`bytes` = written / `index.total_size`); still writes `-o`; no text dual-write; exit format-independent. Orthogonal to `--cache` / `--cache-max-bytes` / `--jobs`. `docs/ops-json.md` cat row (finalized in M5). No version bump.
 - **Phase15-M5 — ops-json finalize + demo + README**: `docs/ops-json.md` make/cat rows **final** (`make`: `ok`/`bytes`/`chunks`/`new`/`reused`; `cat`: `ok`/`bytes`); Out of scope make/cat removed; explicit `--cache-max-bytes` = refuse-fill (**≠ LRU ≠ trim ≠ GC ≠ sync**). New `scripts/demo_cache_budget_ops_json.sh` (make/cat json parse + first-fill / second-miss no disk growth). README Phase 15 / 1.5 draft (Unreleased; **no** 1.5.0 tag yet). Thin brush: mount/extract/stability/perf («Phase15 still does not implement pack»). No version bump; no `check_compat_1_4` (M6).
+- **Phase15-M6 — `check_compat_1_4.sh` + 1.4 regression / P1 scrub listing**: New `scripts/check_compat_1_4.sh` runs `check_compat_1_3.sh`, then asserts 1.5 help flags (`make`/`cat --format`; `cat`/`verify`/`extract`/`mount --cache-max-bytes`); thin non-goals: no `--delete`/prune, no pack, no `--cache-lru` / `store trim`; asserts `demo_cache_budget_ops_json.sh` present + executable (does not force-run). **No** absolute perf SLA. P1: `store scrub --listing <index>` (local referenced-id rehash only; default no flag ≡ 1.4 full-store; **not** remote scrub). README Phase 15 notes compat_1_4. No version bump (**1.5.0** = M7).
+
+### Not delivered (Phase15 Unreleased / M6)
+
+- **`bytes_plaintext` (store stats)** — P1 O2 **not** delivered (decode cost; do not alter `.cnk`; deferred)
+- **1.5.0** version bump / tag — M7
+- packfile / write mount / aws-sdk / prune / LRU / remote scrub — non-goals (unchanged)
 
 ## [1.4.0] — 2026-09-29
 

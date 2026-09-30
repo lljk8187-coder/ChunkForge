@@ -612,10 +612,18 @@ enum StoreCommands {
         hex_id: String,
     },
     /// Rehash every loose chunk in a local store (bitrot / integrity scrub)
+    ///
+    /// Default (no `--listing`) ≡ 1.4.0 full-store traversal. With
+    /// `--listing <index>`: only rehash chunk ids referenced by that
+    /// `.cfidx` / `.cfdir` (local store only — **not** remote scrub).
     Scrub {
         /// Local CAS store directory
         #[arg(long)]
         store: PathBuf,
+        /// Optional `.cfidx` / `.cfdir`: scrub only its referenced chunk ids
+        /// (local store). Omit ≡ full-store list (≡ 1.4.0). Not remote scrub.
+        #[arg(long = "listing", value_name = "INDEX")]
+        listing: Option<PathBuf>,
         /// Parallel verify workers (default 1 = serial)
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
@@ -1011,13 +1019,14 @@ fn run() -> Result<()> {
             command:
                 StoreCommands::Scrub {
                     store,
+                    listing,
                     jobs,
                     format,
                     progress,
                 },
         } => {
             let jobs = parse_jobs(jobs)?;
-            cmd_store_scrub(&store, jobs, format, progress)
+            cmd_store_scrub(&store, listing.as_deref(), jobs, format, progress)
         }
         Commands::Store {
             command: StoreCommands::Stats { store, format },
@@ -3829,20 +3838,37 @@ fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
 
 /// Read-only CAS integrity scrub: list loose chunks and `get_verify` each id.
 ///
+/// With `listing`: only the chunk ids referenced by that `.cfidx` / `.cfdir`
+/// (unique, sorted). Missing ids count as unreadable. **Local store only** —
+/// not remote scrub / ListObjects.
+///
 /// Prints per-bad-chunk lines (`scrub: corrupt <id>` / `scrub: unreadable <id>`)
 /// and a summary `scrub: ok=… corrupt=… unreadable=…`. Never deletes. Exit
-/// non-zero iff corrupt+unreadable > 0 (empty store → all zeros, exit 0).
+/// non-zero iff corrupt+unreadable > 0 (empty store / empty listing → zeros, exit 0).
 fn cmd_store_scrub(
     store_path: &Path,
+    listing: Option<&Path>,
     jobs: usize,
     format: CliFormat,
     progress: bool,
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
-    let mut ids = store
-        .list_chunk_ids()
-        .with_context(|| format!("list chunks in {}", store_path.display()))?;
+    let mut ids = if let Some(listing_path) = listing {
+        let raw = listing_chunk_ids(listing_path)
+            .with_context(|| format!("load listing {}", listing_path.display()))?;
+        let mut set: HashSet<ChunkId> = HashSet::new();
+        for id in raw {
+            set.insert(id);
+        }
+        let mut v: Vec<ChunkId> = set.into_iter().collect();
+        v.sort();
+        v
+    } else {
+        store
+            .list_chunk_ids()
+            .with_context(|| format!("list chunks in {}", store_path.display()))?
+    };
     ids.sort();
 
     #[derive(Clone, Copy)]

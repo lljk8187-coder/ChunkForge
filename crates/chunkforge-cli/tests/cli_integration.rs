@@ -5565,6 +5565,10 @@ fn store_scrub_help_lists_flags() {
         scrub_s.contains("--progress"),
         "store scrub --help must list --progress:\n{scrub_s}"
     );
+    assert!(
+        scrub_s.contains("--listing"),
+        "store scrub --help must list --listing (Phase15 P1):\n{scrub_s}"
+    );
 }
 
 #[test]
@@ -5594,6 +5598,65 @@ fn store_scrub_healthy_store_ok() {
     assert!(
         !stdout.contains("scrub: corrupt "),
         "healthy store must not print corrupt lines; stdout={stdout}"
+    );
+}
+
+#[test]
+fn store_scrub_listing_only_referenced_ids() {
+    // Phase15 P1: --listing <index> rehashes only referenced ids (local).
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx_a = dir.path().join("a.cfidx");
+    let idx_b = dir.path().join("b.cfidx");
+    let a = dir.path().join("a.bin");
+    let b = dir.path().join("b.bin");
+    fs::write(&a, b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    fs::write(&b, b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_a.to_str().unwrap(),
+        a.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx_b.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+
+    // Full scrub sees both blobs' chunks (at least 2).
+    let full = run_ok(&["store", "scrub", "--store", store.to_str().unwrap(), "--format", "json"]);
+    let full_s = String::from_utf8_lossy(&full.stdout);
+    let full_v: serde_json::Value = serde_json::from_str(full_s.trim()).unwrap();
+    let full_checked = full_v["checked"].as_u64().unwrap();
+    assert!(full_checked >= 2, "full scrub checked={full_checked}; json={full_s}");
+
+    // Listing a only → fewer (or equal) checked; still healthy.
+    let listed = run_ok(&[
+        "store",
+        "scrub",
+        "--store",
+        store.to_str().unwrap(),
+        "--listing",
+        idx_a.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let listed_s = String::from_utf8_lossy(&listed.stdout);
+    let listed_v: serde_json::Value = serde_json::from_str(listed_s.trim()).unwrap();
+    assert_eq!(listed_v["ok"], true, "listing scrub ok; json={listed_s}");
+    assert_eq!(listed_v["corrupt"], 0);
+    assert_eq!(listed_v["unreadable"], 0);
+    let listed_checked = listed_v["checked"].as_u64().unwrap();
+    assert!(
+        listed_checked > 0 && listed_checked < full_checked,
+        "listing scrub should check a proper subset: listed={listed_checked} full={full_checked}; json={listed_s}"
     );
 }
 
