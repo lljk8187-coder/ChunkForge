@@ -1,5 +1,6 @@
 //! ChunkForge CLI: make / archive / extract / cat / verify / mount / doctor / gc / push / pull / diff / store (+ chunk-id debug).
 
+mod bytesize;
 mod parallel;
 mod progress;
 
@@ -171,10 +172,17 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
-        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
-        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
-        /// fill (still serves primary); never evicts / LRU.
-        #[arg(long = "cache-max-bytes", value_name = "N")]
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
         cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
@@ -263,10 +271,17 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
-        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
-        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
-        /// fill (still serves primary); never evicts / LRU.
-        #[arg(long = "cache-max-bytes", value_name = "N")]
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
         cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
@@ -305,10 +320,17 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
-        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
-        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
-        /// fill (still serves primary); never evicts / LRU.
-        #[arg(long = "cache-max-bytes", value_name = "N")]
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
         cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
@@ -346,10 +368,17 @@ enum Commands {
         /// Optional local cache store (filled on miss; never writes primary)
         #[arg(long, value_name = "DIR")]
         cache: Option<PathBuf>,
-        /// Soft fill budget for `--cache` in bytes (pure integer; no KiB suffix).
-        /// Requires `--cache`. Omit ≡ 1.4 unbounded fill. Over budget skips
-        /// fill (still serves primary); never evicts / LRU.
-        #[arg(long = "cache-max-bytes", value_name = "N")]
+        /// Soft fill budget for `--cache` (bytes). Accepts a plain decimal
+        /// integer or `<num>[K|M|G|Ki|Mi|Gi]` (1024-base, case-insensitive;
+        /// `K`/`Ki`=2^10, `M`/`Mi`=2^20, `G`/`Gi`=2^30). No decimals; suffixes
+        /// with `B` (KB/MB/GB) are rejected. Requires `--cache`. Omit ≡ 1.4
+        /// unbounded fill. Over budget skips fill (still serves primary);
+        /// never evicts / LRU.
+        #[arg(
+            long = "cache-max-bytes",
+            value_name = "SIZE",
+            value_parser = bytesize::parse_byte_size
+        )]
         cache_max_bytes: Option<u64>,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
@@ -1138,7 +1167,7 @@ fn open_or_create_store(root: &Path) -> Result<Store> {
 /// [`FallbackSource`] (Missing-only failover). Zero fallbacks ≡ 1.5 single-origin.
 /// With `--cache`, an outer [`CacheSource`] wraps the **whole** fallback chain
 /// (fill on miss; never write primary / fallbacks).
-/// `--cache-max-bytes N` sets a soft fill budget (requires `--cache`); omit ≡ 1.4 unbounded.
+/// `--cache-max-bytes SIZE` sets a soft fill budget (requires `--cache`; plain int or K/M/G/Ki/Mi/Gi); omit ≡ 1.4 unbounded.
 /// `--url-template` / `--prefix` / `--header` / `--aws-sigv4` apply isomorphically to
 /// every `http(s)://` origin in the chain (primary and HTTP fallbacks). They are
 /// no-ops for non-HTTP origins; an error is raised only when those flags are set

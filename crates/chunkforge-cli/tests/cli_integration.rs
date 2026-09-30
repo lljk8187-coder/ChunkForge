@@ -9930,6 +9930,97 @@ fn help_lists_cache_max_bytes_on_cat_verify_extract_mount() {
             s.contains("--cache"),
             "{cmd} --help must still list --cache:\n{s}"
         );
+        // Phase16-M3: value_name SIZE + human suffix hint in help.
+        assert!(
+            s.contains("SIZE") || s.contains("<SIZE>"),
+            "{cmd} --help must use SIZE value_name for --cache-max-bytes:\n{s}"
+        );
+        assert!(
+            s.contains("K/M/G") || (s.contains("Ki") && s.contains("Mi")),
+            "{cmd} --help must mention K/M/G/Ki/Mi/Gi suffixes:\n{s}"
+        );
+    }
+}
+
+// --- Phase 16 M3: human byte suffixes on --cache-max-bytes ---
+
+#[test]
+fn cache_max_bytes_accepts_human_suffix_1m() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--cache-max-bytes",
+        "1M",
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out).unwrap());
+    // hello.txt is tiny; 1M budget easily fits → cache should have filled.
+    assert!(
+        cache_stats_bytes(&cache) > 0,
+        "1M budget should allow fill of tiny hello.txt"
+    );
+}
+
+#[test]
+fn cache_max_bytes_rejects_decimal_and_b_suffix() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    for bad in ["1.5M", "64MB", "1KB"] {
+        let fail = run_fail(&[
+            "cat",
+            "--store",
+            store.to_str().unwrap(),
+            "--cache",
+            cache.to_str().unwrap(),
+            "--cache-max-bytes",
+            bad,
+            idx.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        let err = format!(
+            "{}{}",
+            String::from_utf8_lossy(&fail.stderr),
+            String::from_utf8_lossy(&fail.stdout)
+        );
+        assert!(
+            !err.is_empty(),
+            "expected clear error for --cache-max-bytes {bad}"
+        );
     }
 }
 
