@@ -15413,3 +15413,304 @@ fn diff_listing_listing_unchanged_without_symlinks_flag() {
         run_ok(&["diff", listing.to_str().unwrap(), listing.to_str().unwrap()]);
     }
 }
+
+// --- Phase23-M2: diff path filter + progress honesty for symlink ---
+
+#[test]
+fn diff_tree_symlinks_record_path_filter_orthogonal() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let keep = src.join("keep");
+        let drop = src.join("drop");
+        fs::create_dir_all(&keep).unwrap();
+        fs::create_dir_all(&drop).unwrap();
+        fs::write(keep.join("a.txt"), b"keep\n").unwrap();
+        fs::write(drop.join("b.txt"), b"drop\n").unwrap();
+        symlink("a.txt", keep.join("link-keep")).unwrap();
+        symlink("b.txt", drop.join("link-drop")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // --path keep: identical under matching filter (symlink under keep participates).
+        let scoped = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--path",
+            "keep",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let scoped_out = String::from_utf8_lossy(&scoped.stdout);
+        let v: serde_json::Value = serde_json::from_str(scoped_out.trim()).expect("json");
+        assert!(
+            v["added"].as_array().map(|a| a.is_empty()).unwrap_or(false)
+                && v["removed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+                && v["changed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+                && v["meta_changed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false),
+            "--path keep + record identical must be empty categories; json={scoped_out}"
+        );
+        // drop/* must not appear in any category under --path keep.
+        for key in ["added", "removed", "changed", "meta_changed"] {
+            let arr = v[key].as_array().cloned().unwrap_or_default();
+            assert!(
+                arr.iter()
+                    .all(|p| !p.as_str().unwrap_or("").starts_with("drop")),
+                "--path keep must not report drop/* in {key}; json={scoped_out}"
+            );
+        }
+
+        // --exclude drop/: still identical; drop symlink not compared.
+        let excl = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--exclude",
+            "drop/",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let excl_out = String::from_utf8_lossy(&excl.stdout);
+        let v2: serde_json::Value = serde_json::from_str(excl_out.trim()).expect("json");
+        assert!(
+            v2["added"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false)
+                && v2["removed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false),
+            "--exclude drop/ + record identical; json={excl_out}"
+        );
+        for key in ["added", "removed", "changed", "meta_changed"] {
+            let arr = v2[key].as_array().cloned().unwrap_or_default();
+            assert!(
+                arr.iter()
+                    .all(|p| !p.as_str().unwrap_or("").starts_with("drop")),
+                "excluded drop/* must be absent from {key}; json={excl_out}"
+            );
+        }
+
+        // --path-from with keep → same as --path keep.
+        let from_file = dir.path().join("includes.txt");
+        fs::write(&from_file, "keep\n").unwrap();
+        let from = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--path-from",
+            from_file.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let from_out = String::from_utf8_lossy(&from.stdout);
+        let v3: serde_json::Value = serde_json::from_str(from_out.trim()).expect("json");
+        assert!(
+            v3["added"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false)
+                && v3["removed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+                && v3["changed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false),
+            "--path-from keep + record identical; json={from_out}"
+        );
+    }
+}
+
+#[test]
+fn diff_tree_default_skip_exclude_symlink_not_in_false_added() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello\n").unwrap();
+        symlink("a.txt", src.join("link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // Default skip vs record listing → false added link.txt (M1 baseline).
+        let unfiltered = run_fail(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let u_out = String::from_utf8_lossy(&unfiltered.stdout);
+        let u: serde_json::Value = serde_json::from_str(u_out.trim()).expect("json");
+        let added = u["added"].as_array().cloned().unwrap_or_default();
+        assert!(
+            added.iter().any(|p| p.as_str() == Some("link.txt")),
+            "baseline: skip vs record should false-add link.txt; json={u_out}"
+        );
+
+        // --exclude the symlink path → excluded symlink not in false-added.
+        let excl = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--exclude",
+            "link.txt",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let e_out = String::from_utf8_lossy(&excl.stdout);
+        let e: serde_json::Value = serde_json::from_str(e_out.trim()).expect("json");
+        let added_e = e["added"].as_array().cloned().unwrap_or_default();
+        assert!(
+            added_e.iter().all(|p| p.as_str() != Some("link.txt")),
+            "excluded symlink must not appear in false-added; json={e_out}"
+        );
+        assert!(
+            e["added"].as_array().map(|a| a.is_empty()).unwrap_or(false)
+                && e["removed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+                && e["changed"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false),
+            "excluding the only symlink false-diff should yield identical; json={e_out}"
+        );
+    }
+}
+
+#[test]
+fn diff_progress_help_mentions_file_or_symlink() {
+    let help = run_ok(&["diff", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--progress"),
+        "diff --help must list --progress:\n{s}"
+    );
+    // Honesty: TOTAL ticks File or Symlink (not File-only).
+    let progress_honest = s.contains("File or Symlink")
+        || s.contains("File+Symlink")
+        || (s.contains("Symlink") && s.to_lowercase().contains("progress"));
+    assert!(
+        progress_honest,
+        "diff --progress help must mention File or Symlink granularity:\n{s}"
+    );
+    // Path filter applies to Symlink (command long_about / path wording).
+    assert!(
+        s.contains("Symlink") && (s.contains("--path") || s.contains("PathFilter")),
+        "diff --help should note path filter covers Symlink:\n{s}"
+    );
+}
+
+#[test]
+fn diff_tree_symlinks_record_progress_counts_symlink_in_total() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"prog-a\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // 1 File + 1 Symlink → TOTAL=2 (not File-only 1).
+        let with = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            "--progress",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let err = String::from_utf8_lossy(&with.stderr);
+        let out = String::from_utf8_lossy(&with.stdout);
+        assert!(
+            err.lines()
+                .any(|l| l.starts_with("progress: op=diff done=")),
+            "progress lines expected; stderr={err}"
+        );
+        assert!(
+            err.contains("/2")
+                || err
+                    .lines()
+                    .any(|l| l.contains("done=") && l.ends_with("/2")),
+            "TOTAL must count File+Symlink (2); stderr={err}"
+        );
+        assert!(
+            !out.contains("progress:"),
+            "progress must stay on stderr; stdout={out}"
+        );
+        let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+        assert!(
+            v["added"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+            "record identical; json={out}"
+        );
+    }
+}

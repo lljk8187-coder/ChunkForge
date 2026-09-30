@@ -10,8 +10,8 @@ use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives_with_progress, entry_length,
-    hash_reader, judge_extract_unchanged_opts, load_exclude_file, load_path_file, seed_file_map,
-    validate_archive_path,
+    filter_dir_archive, hash_reader, judge_extract_unchanged_opts, load_exclude_file,
+    load_path_file, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -1018,10 +1018,12 @@ enum Commands {
         /// bad UTF-8 → clear non-zero error. Applied to both sides before compare.
         #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
         path_from: Vec<PathBuf>,
-        /// Emit `progress: op=diff done=N/TOTAL` on stderr per filtered File path
-        /// in the union of both sides (TOTAL = |left∪right| File paths after
-        /// `--path`/`--exclude`). Default **off** (≡ 1.8.0 quiet). Orthogonal to
-        /// `--format json` (progress→stderr, JSON→stdout) and path filters.
+        /// Emit `progress: op=diff done=N/TOTAL` on stderr per filtered **File
+        /// or Symlink** path in the union of both sides (TOTAL = |left∪right|
+        /// File+Symlink paths after `--path`/`--path-from`/`--exclude`/
+        /// `--exclude-from`; Dir-only ignored). Default **off** (≡ 1.8.0 quiet).
+        /// Orthogonal to `--format json` (progress→stderr, JSON→stdout) and
+        /// path filters.
         #[arg(long = "progress")]
         progress: bool,
         /// Symlink handling for `--tree` only: `skip` (default ≡ 1.12 tree
@@ -3229,20 +3231,10 @@ fn diff_file_path_union_len(left: &DirArchive, right: &DirArchive) -> usize {
 }
 
 /// Narrow a listing with [`PathFilter`] before compare (empty filter ≡ identity).
+/// Uses library [`filter_dir_archive`]: keeps matching **File** and **Symlink**
+/// leaves plus ancestor **Dir** entries (same policy as mount / archive filter).
 fn filter_dir_archive_entries(arch: &DirArchive, filter: &PathFilter) -> DirArchive {
-    if filter.paths().is_empty() && filter.excludes().is_empty() {
-        return arch.clone();
-    }
-    DirArchive {
-        format_version: arch.format_version,
-        flags: arch.flags,
-        entries: arch
-            .entries
-            .iter()
-            .filter(|e| filter.allows(&e.path))
-            .cloned()
-            .collect(),
-    }
+    filter_dir_archive(arch, filter)
 }
 
 fn cmd_diff_listings(

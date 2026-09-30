@@ -37,7 +37,7 @@ only. Default **off** ≡ **1.8.0** quiet.
 
 | Rule | Detail |
 |---|---|
-| Granularity | One tick per **File** path in the **union** of both sides after `--path` / `--path-from` / `--exclude` / `--exclude-from` (TOTAL = \|left ∪ right\| filtered File paths) |
+| Granularity | One tick per **File or Symlink** path in the **union** of both sides after `--path` / `--path-from` / `--exclude` / `--exclude-from` (TOTAL = \|left ∪ right\| filtered File+Symlink paths; Dir-only ignored) |
 | JSON | **Orthogonal** — progress never enters the `--format json` object (stdout stays the single diff object) |
 | Default | Flag omitted ⇒ no `progress:` lines (≡ 1.8) |
 
