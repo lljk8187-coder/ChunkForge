@@ -709,6 +709,28 @@ fn mount_help_mentions_symlink_file_plus_symlink() {
     );
 }
 
+/// Phase26-M6 / P1 O1: filter / ls / mount --help admit leaf-Dir / empty-dirs keep.
+#[test]
+fn path_scope_help_mentions_leaf_dir_keep() {
+    for cmd in ["filter", "ls", "mount"] {
+        let m = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&m.stdout);
+        let lower = s.to_lowercase();
+        let mentions = lower.contains("explicit dir")
+            || lower.contains("empty-dirs")
+            || lower.contains("empty dir")
+            || lower.contains("empty-dirs leaf");
+        assert!(
+            mentions,
+            "{cmd} --help must mention empty Dir / explicit Dir / empty-dirs path keep:\n{s}"
+        );
+        assert!(
+            lower.contains("ancestor"),
+            "{cmd} --help should still mention ancestor Dir keep:\n{s}"
+        );
+    }
+}
+
 /// Phase 21 M2: `.cfidx` + any path/exclude flag → clear non-zero (≡ doctor/verify).
 #[test]
 fn mount_cfidx_plus_path_nonzero() {

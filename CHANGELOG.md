@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Phase26-M6 / P1 O1 help honesty**: `filter` / `ls` / `mount` (and `diff`
+  path-scope) CLI `--help` now state that under a **non-empty** path 四件套,
+  matching **File/Symlink** + **ancestor Dirs** + **explicit Dir** when
+  `PathFilter::allows` (incl. empty-dirs leaf) are kept; empty filter / no path
+  flags ≡ identity / full tree; aligns with extract `allows` on Dir; **≠**
+  prune **≠** `gc --path` **≠** write mount; **no** ghost Dir synthesis.
+  Version stays **1.15.0** until M7.
+
+### Notes
+
+- **O2** (compat asserts demo present+executable): already satisfied by
+  Phase26-M5 `check_compat_1_15` — not re-done here.
+- **O3** (`store get` stdout without `-o`): **deferred**; `-o` stays required.
 
 ## [1.15.0] — 2026-09-30
 

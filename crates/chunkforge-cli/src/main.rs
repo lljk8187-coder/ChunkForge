@@ -567,12 +567,15 @@ enum Commands {
     /// Mount a `.cfidx` (single file) or `.cfdir` (directory tree) read-only (Linux + fuse3)
     ///
     /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from`
-    /// restrict which `.cfdir` **File+Symlink** paths appear in the FUSE tree
-    /// (filtered File∪Symlink + ancestor Dirs). Default: no flags ⇒ full tree
-    /// (≡ 1.10.0). `.cfidx` + any path/exclude flag (including `--path-from` /
+    /// scope a `.cfdir` via library [`filter_dir_archive`] (same as filter/ls):
+    /// under a **non-empty** path 四件套, keep matching **File+Symlink** leaves,
+    /// **ancestor Dirs**, and **explicit Dir** entries whose path
+    /// `PathFilter::allows` (incl. empty-dirs leaf). Aligns with extract
+    /// `allows` on Dir; **≠** prune **≠** `gc --path` **≠** write mount; **no**
+    /// ghost Dir synthesis. Default: no flags ⇒ full tree / identity (≡ 1.10.0).
+    /// `.cfidx` + any path/exclude flag (including `--path-from` /
     /// `--exclude-from`) → clear non-zero error. Still read-only; orthogonal to
-    /// `--fallback` / `--cache*` / prefetch / SigV4. Not write-mount / prune /
-    /// gc `--path` / sync.
+    /// `--fallback` / `--cache*` / prefetch / SigV4.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Mount {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -624,15 +627,16 @@ enum Commands {
             value_parser = clap::value_parser!(u32).range(1..=2)
         )]
         prefetch_chunks: u32,
-        /// Include only `.cfdir` File+Symlink paths under this prefix (repeatable; OR).
+        /// Include only `.cfdir` paths under this prefix (repeatable; OR).
         /// With any `--path`, a candidate must match at least one before
         /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.10.0 full tree).
-        /// Ancestor Dir entries retained for kept File/Symlink leaves. With
-        /// `.cfidx` → clear non-zero error.
+        /// Under a non-empty filter: kept **File+Symlink** leaves + **ancestor
+        /// Dirs** + **explicit Dir** when `allows(path)` (empty-dirs leaf).
+        /// With `.cfidx` → clear non-zero error.
         #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
         paths: Vec<String>,
-        /// Exclude `.cfdir` File+Symlink paths matching this pattern (repeatable):
-        /// exact, trailing `/` directory prefix, or single edge `*` (`*.o`,
+        /// Exclude `.cfdir` paths matching this pattern (repeatable): exact,
+        /// trailing `/` directory prefix, or single edge `*` (`*.o`,
         /// `temp*`). Illegal middle `*` / `**` → clear error. Applied after
         /// `--path`. With `.cfidx` → clear non-zero error.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
@@ -1041,9 +1045,12 @@ enum Commands {
     /// **`--format json`**: one JSON object with the same path arrays and chunk
     /// stats fields (full arrays; `--max-paths` applies to text listings only).
     /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from` narrow both
-    /// sides' File/Dir/Symlink entry sets via [`PathFilter`] **before** compare (default
-    /// no flags ≡ 1.9 full-listing diff). JSON field names unchanged (arrays may
-    /// be shorter). **Not** sync / prune. Exit codes are format-independent:
+    /// sides via shared [`filter_dir_archive`] / [`PathFilter`] **before** compare:
+    /// empty ≡ full-listing (≡ 1.9); non-empty keeps matching File/Symlink +
+    /// ancestor Dirs + **explicit Dir** when `allows(path)` (empty-dirs leaf);
+    /// aligns with extract `allows`; **≠** prune **≠** ghost Dir. JSON field
+    /// names unchanged (arrays may be shorter). **Not** sync / prune. Exit codes
+    /// are format-independent:
     /// **0** when identical, **1** when any path or chunk-set difference; usage /
     /// decode errors use the usual non-zero clap/anyhow path. See `docs/diff.md`.
     Diff {
@@ -1114,8 +1121,12 @@ enum Commands {
     /// `extract` / `mount` / `diff` (`--path` / `--path-from` / `--exclude` /
     /// `--exclude-from`) via library [`filter_dir_archive`], then
     /// [`DirArchive::encode`]s the result to `-o`. Empty path flags ≡
-    /// **identity** (re-encode / normalize; same File+Symlink leaf set). Keeps
-    /// matching **File** and **Symlink** leaves plus ancestor **Dir** entries.
+    /// **identity** (re-encode / normalize; full listing including every
+    /// explicit Dir). Under a **non-empty** path 四件套, keeps matching
+    /// **File** and **Symlink** leaves, **ancestor Dir** entries, and
+    /// **explicit Dir** entries whose path `PathFilter::allows` (incl.
+    /// empty-dirs leaf). Aligns with extract `allows` on Dir; **≠** prune
+    /// **≠** `gc --path` **≠** write mount; **no** ghost Dir synthesis.
     ///
     /// **Does not** open a store, rechunk, touch a source tree, prune a dest
     /// tree, or rewrite the input listing in place. **≠** prune / **≠**
@@ -1200,8 +1211,11 @@ enum Commands {
     ///
     /// Optional path 四件套 (`--path` / `--path-from` / `--exclude` /
     /// `--exclude-from`) scopes a `.cfdir` via the same [`PathFilter`] /
-    /// [`filter_dir_archive`] rules as mount/filter (empty ≡ full listing;
-    /// filter-same include/exclude/from semantics).
+    /// [`filter_dir_archive`] rules as mount/filter: empty ≡ full listing /
+    /// **identity**; under a **non-empty** filter, keep matching **File** /
+    /// **Symlink** + **ancestor Dirs** + **explicit Dir** when `allows(path)`
+    /// (incl. empty-dirs leaf). Aligns with extract `allows` on Dir; **≠**
+    /// prune **≠** `gc --path` **≠** write mount; **no** ghost Dir synthesis.
     /// `.cfidx` + any path/exclude flag → clear non-zero error (same contract as
     /// mount/verify/filter-on-cfidx). **≠** mount / **≠** extract / **≠** verify /
     /// **≠** pack / **≠** filter (read-only inventory; does not persist a subset).
@@ -4171,8 +4185,8 @@ fn diff_file_path_union_len(left: &DirArchive, right: &DirArchive) -> usize {
 }
 
 /// Narrow a listing with [`PathFilter`] before compare (empty filter ≡ identity).
-/// Uses library [`filter_dir_archive`]: keeps matching **File** and **Symlink**
-/// leaves plus ancestor **Dir** entries (same policy as mount / archive filter).
+/// Uses library [`filter_dir_archive`]: matching File/Symlink + ancestor Dirs +
+/// explicit Dir when `allows(path)` (empty-dirs leaf; same as mount/filter/ls).
 fn filter_dir_archive_entries(arch: &DirArchive, filter: &PathFilter) -> DirArchive {
     filter_dir_archive(arch, filter)
 }
