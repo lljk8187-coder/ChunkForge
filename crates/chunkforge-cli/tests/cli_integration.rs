@@ -9645,3 +9645,169 @@ fn push_cfidx_without_path_flags_unchanged() {
     );
     assert!(put_count.load(Ordering::SeqCst) >= 1);
 }
+
+// --- Phase 14 M4: --exclude-from ---
+
+#[test]
+fn exclude_from_help_on_archive_extract_pull_push() {
+    for cmd in ["archive", "extract", "pull", "push"] {
+        let help = run_ok(&[cmd, "--help"]);
+        let s = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            s.contains("--exclude-from"),
+            "{cmd} --help should list --exclude-from:\n{s}"
+        );
+    }
+}
+
+#[test]
+fn archive_exclude_from_filters_and_merges_with_cli_exclude() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("junk")).unwrap();
+    fs::write(src.join("a.txt"), b"keep\n").unwrap();
+    fs::write(src.join("skip.o"), b"obj\n").unwrap();
+    fs::write(src.join("junk").join("noise.txt"), b"noise\n").unwrap();
+    fs::write(src.join("secret.txt"), b"nope\n").unwrap();
+
+    let store = dir.path().join("store");
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&full).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(paths.contains(&"skip.o"), "no flags ≡ full tree; paths={paths:?}");
+    assert!(paths.contains(&"junk/noise.txt"), "paths={paths:?}");
+    assert!(paths.contains(&"secret.txt"), "paths={paths:?}");
+
+    let ex1 = dir.path().join("ex1.txt");
+    let ex2 = dir.path().join("ex2.txt");
+    fs::write(&ex1, "# objs\n\n  *.o  \n").unwrap();
+    fs::write(&ex2, "secret.txt\n").unwrap();
+
+    let filtered = dir.path().join("filt.cfdir");
+    let result = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        filtered.to_str().unwrap(),
+        "--exclude-from",
+        ex1.to_str().unwrap(),
+        "--exclude-from",
+        ex2.to_str().unwrap(),
+        "--exclude",
+        "junk/",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("excluded=") && !err.contains("excluded=0"),
+        "stderr={err}"
+    );
+    let bytes = fs::read(&filtered).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    assert_eq!(paths, vec!["a.txt".to_string()], "merged filter paths={paths:?}");
+}
+
+#[test]
+fn archive_exclude_from_illegal_line_and_missing_file() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let out = dir.path().join("app.cfdir");
+    let bad = dir.path().join("bad.txt");
+    fs::write(&bad, "# ok\na*b\n").unwrap();
+
+    let fail = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude-from",
+        bad.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("invalid exclude pattern"),
+        "illegal line should share --exclude error class; stderr={err}"
+    );
+
+    let missing = dir.path().join("no-such-excludes.txt");
+    let fail = run_fail(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--exclude-from",
+        missing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("exclude file") || err.contains("cannot read"),
+        "missing file should be a clear error; stderr={err}"
+    );
+}
+
+#[test]
+fn extract_pull_push_exclude_from_missing_file_nonzero() {
+    let dir = tempdir().unwrap();
+    let missing = dir.path().join("missing-excludes.txt");
+    let listing = dir.path().join("nope.cfdir");
+    let store = dir.path().join("store");
+
+    for args in [
+        vec![
+            "extract".to_string(),
+            "--store".into(),
+            store.display().to_string(),
+            "-o".into(),
+            dir.path().join("out").display().to_string(),
+            "--exclude-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+        vec![
+            "pull".into(),
+            "--store".into(),
+            store.display().to_string(),
+            "--source".into(),
+            store.display().to_string(),
+            "--exclude-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+        vec![
+            "push".into(),
+            "--store".into(),
+            store.display().to_string(),
+            "--dest".into(),
+            "http://127.0.0.1:9".into(),
+            "--exclude-from".into(),
+            missing.display().to_string(),
+            listing.display().to_string(),
+        ],
+    ] {
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let fail = run_fail(&refs);
+        let err = String::from_utf8_lossy(&fail.stderr);
+        assert!(
+            err.contains("exclude file") || err.contains("cannot read"),
+            "args={refs:?} stderr={err}"
+        );
+    }
+}

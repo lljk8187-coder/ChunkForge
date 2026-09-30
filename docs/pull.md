@@ -20,7 +20,7 @@ chunkforge pull \
   [--http-retries N] \
   [--dry-run] \
   [--format text|json] \
-  [--path P]... [--exclude PAT]... \
+  [--path P]... [--exclude PAT]... [--exclude-from FILE]... \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -35,6 +35,7 @@ chunkforge pull \
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
 | `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.2.0** full reference set). Does **not** download or alter the listing |
 | `--exclude PAT` | Exclude matching File paths (repeatable): exact, trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. Applied after `--path` |
+| `--exclude-from FILE` | Repeatable UTF-8 file of `--exclude` patterns (blank / `#` skipped, trim). Union with CLI `--exclude` → one `PathFilter`. Missing/unreadable file or illegal line → clear non-zero |
 | listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (after path filter for `.cfdir` Files; Dir entries never contribute) |
 
 ### What pull does
@@ -67,16 +68,17 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 {"ok":true,"skipped":0,"fetched":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
 ```
 
-### `--path` / `--exclude` (Phase 13 M4)
+### `--path` / `--exclude` / `--exclude-from` (Phase 13 M4 / Phase 14 M4)
 
 **`path` ≠ prune ≠ sync:** pull path/exclude only **shrinks the fetch set**. It does not extract a tree, does not delete local extras, and does not rewrite the listing. Extract path filtering is likewise non-prune — see [extract.md](extract.md).
 
-Optional, repeatable, **opt-in**. Default (no flags) ≡ **1.2.0** full reference set.
+Optional, repeatable, **opt-in**. Default (no `--path` / `--exclude` / `--exclude-from`) ≡ **1.2.0** full reference set.
 
 | Rule | Detail |
 |---|---|
 | `--path P` | Hit iff `path == P` or `path` starts with `P/` (subtree) |
 | `--exclude` | Exact; trailing `/` directory prefix; single edge `*` only (`*.o`, `temp*`) — **no** `**` / middle `*` |
+| `--exclude-from` | Same patterns from a file; merged with `--exclude`. No `--path-from` |
 | Combine | If any `--path` is given: must hit include first, then excludes reject |
 | Scope | Only `.cfdir` **File** entries contribute chunk ids; **Dir** entries never do |
 | Listing | Full listing is read locally; pull still does **not** download or rewrite the listing |

@@ -569,7 +569,7 @@ Workspace / CLI version is **1.3.0**.
 | `archive --path` / `--exclude` | Write a **smaller** `.cfdir` listing (subset of tree) |
 | `extract --path` / `--exclude` | Materialize **fewer** dest paths; **never** deletes extras |
 | `pull --path` / `--exclude` | Fetch a **subset** of referenced chunk ids into local CAS |
-| `push --path` / `--exclude` | Upload a **subset** of referenced chunk ids; **not** listing upload |
+| `push --path` / `--exclude` / `--exclude-from` | Upload a **subset** of referenced chunk ids; **not** listing upload |
 | `diff` | Listing↔listing; **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
@@ -577,10 +577,11 @@ Workspace / CLI version is **1.3.0**.
 `--format text|json` (local chunk count + on-disk bytes; see
 [docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md));
 **`push --path` / `--exclude`** (subset upload; `.cfidx`+path → clear error;
-see [docs/push.md](docs/push.md)). Still pending: `--exclude-from`,
+see [docs/push.md](docs/push.md)). **`--exclude-from <file>`** on archive /
+extract / pull / push (merged with `--exclude`; see those docs). Still pending:
 `check_compat_1_3`, 1.4.0 bump.
 
-**Not delivered / non-goals (carry forward):** `--exclude-from`; packfile;
+**Not delivered / non-goals (carry forward):** packfile;
 write mount / COW; bidirectional sync; extract prune / `--delete`; remote
 scrub; aws-sdk; byte-range resume; push listing upload; changing default
 jobs·retries; video analysis. Pack remains measured-only in

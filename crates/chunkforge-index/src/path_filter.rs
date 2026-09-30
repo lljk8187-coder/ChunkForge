@@ -1,7 +1,8 @@
 //! Path include/exclude filter for archive paths (Phase 13).
 //!
-//! Used by `archive` / `extract` / `pull --path` / `--exclude` (Phase 13 M2–M4). Matching is
-//! literal UTF-8 / byte-oriented (no casefold). No `ignore` / `globset`.
+//! Used by `archive` / `extract` / `pull` / `push` `--path` / `--exclude`
+//! (Phase 13–14). [`load_exclude_file`] reads `--exclude-from` text (Phase 14 M4).
+//! Matching is literal UTF-8 / byte-oriented (no casefold). No `ignore` / `globset`.
 //!
 //! Archive paths follow the same conventions as [`crate::validate_archive_path`]
 //! (usually `/`-separated, no leading `/`).
@@ -98,6 +99,34 @@ fn parse_wildcard(pat: &str) -> Result<ExcludePat, Error> {
 
 fn bytecount_star(s: &str) -> usize {
     s.bytes().filter(|&b| b == b'*').count()
+}
+
+/// Load exclude patterns from a UTF-8 text file (`--exclude-from`).
+///
+/// One pattern per line (same grammar as [`ExcludePat::parse`] / CLI `--exclude`).
+/// Blank lines and lines whose trimmed text starts with `#` are skipped.
+/// Leading and trailing whitespace on each line is trimmed.
+///
+/// Does **not** compile patterns — callers merge the strings with CLI
+/// `--exclude` and pass them to [`PathFilter::new`] so illegal patterns share
+/// [`Error::InvalidExcludePattern`].
+///
+/// Open / read failure and non-UTF-8 → [`Error::ExcludeFile`].
+pub fn load_exclude_file(path: impl AsRef<std::path::Path>) -> Result<Vec<String>, Error> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)
+        .map_err(|e| Error::ExcludeFile(format!("cannot read {}: {e}", path.display())))?;
+    let text = std::string::String::from_utf8(bytes)
+        .map_err(|_| Error::ExcludeFile(format!("{} is not valid UTF-8", path.display())))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    Ok(out)
 }
 
 /// Include/exclude filter over archive-relative paths.
@@ -311,5 +340,33 @@ mod tests {
             ExcludePat::parse("*.o").unwrap(),
             ExcludePat::EndsWith(".o".into())
         );
+    }
+
+    #[test]
+    fn load_exclude_file_skips_blank_hash_and_trims() {
+        let path = std::env::temp_dir().join(format!("cf-exclude-from-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "\n# comment\n  *.o  \n\n  # also comment\njunk/\n   \n",
+        )
+        .unwrap();
+        let v = load_exclude_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(v, vec!["*.o".to_string(), "junk/".to_string()]);
+    }
+
+    #[test]
+    fn load_exclude_file_missing_and_bad_utf8() {
+        let missing =
+            std::env::temp_dir().join(format!("cf-exclude-missing-{}", std::process::id()));
+        let err = load_exclude_file(&missing).unwrap_err();
+        assert!(matches!(err, Error::ExcludeFile(_)), "{err:?}");
+
+        let path =
+            std::env::temp_dir().join(format!("cf-exclude-badutf-{}.txt", std::process::id()));
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        let err = load_exclude_file(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(err, Error::ExcludeFile(_)), "{err:?}");
     }
 }

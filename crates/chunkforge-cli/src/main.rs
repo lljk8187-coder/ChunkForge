@@ -9,7 +9,7 @@ use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives, entry_length, hash_reader,
-    judge_extract_unchanged_opts, seed_file_map, validate_archive_path,
+    judge_extract_unchanged_opts, load_exclude_file, seed_file_map, validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -64,7 +64,7 @@ enum Commands {
     /// sockets, and device nodes are **skipped with a stderr warning** (P0
     /// policy: do not follow / do not record) **before** `--path`/`--exclude`
     /// filtering. Empty directories are omitted (extract can recreate parents
-    /// from file paths). Optional repeatable `--path` / `--exclude` restrict
+    /// from file paths). Optional repeatable `--path` / `--exclude` / `--exclude-from` restrict
     /// which regular files are chunked and listed (default: full tree ≡ 1.2.0).
     /// Default **`--format text`** (≡ 1.2.0): summary on stderr.
     /// **`--format json`**: one JSON object on stdout; no duplicate text
@@ -110,6 +110,13 @@ enum Commands {
         /// skip (symlink/special) and after `--path` includes.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
         excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
         /// Output format: `text` (default ≡ 1.2.0 stderr summary) or `json`
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
@@ -120,7 +127,7 @@ enum Commands {
     /// Reads the **full** `.cfdir` listing and reconstitutes matching regular
     /// files under `-o` from `--store` / `--source` (same origin flags as
     /// `cat` / `verify`). Parent directories are created as needed for written
-    /// files. Optional repeatable `--path` / `--exclude` restrict which
+    /// files. Optional repeatable `--path` / `--exclude` / `--exclude-from` restrict which
     /// listing entries are materialized (default: full tree ≡ 1.2.0). Path
     /// filtering is **not** prune: filtered-out listing paths and extra
     /// files already under `-o` are left alone — there is no delete/prune mode.
@@ -206,6 +213,13 @@ enum Commands {
         /// `--force` / `--skip-*` / `--dry-run` / `--format` / `--jobs`.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
         excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
     },
     /// Reassemble a blob from a .cfidx + chunk source
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
@@ -377,10 +391,11 @@ enum Commands {
     /// layout so a successful push is readable with `verify --source`.
     /// `--http-retries N` (default 0 ≡ 0.7.0) retries transient HTTP failures
     /// (extra attempts after the first try); see also `--http-retry-backoff-ms`.
-    /// Optional repeatable `--path` / `--exclude` restrict which **File** entries
-    /// in a `.cfdir` contribute chunk ids (Dir entries never contribute; listing
-    /// itself is **not** uploaded). Omit all path/exclude ⇒ full reference set
-    /// (≡ 1.3.0). `.cfidx` + any `--path`/`--exclude` → clear non-zero error.
+    /// Optional repeatable `--path` / `--exclude` / `--exclude-from` restrict which
+    /// **File** entries in a `.cfdir` contribute chunk ids (Dir entries never
+    /// contribute; listing itself is **not** uploaded). Omit all path/exclude
+    /// flags ⇒ full reference set (≡ 1.3.0). `.cfidx` + any path/exclude flag
+    /// (including `--exclude-from`) → clear non-zero error.
     /// Orthogonal to `--dry-run` / `--format` / `--jobs` / `--progress` /
     /// retries / SigV4 / `--verify`. With `--verify`, after a successful upload
     /// the same `--dest` is treated as a `ChunkSource` and each listing is
@@ -430,6 +445,13 @@ enum Commands {
         /// With `.cfidx` → clear non-zero error.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
         excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are uploaded
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -440,10 +462,11 @@ enum Commands {
     /// For each id: if already present in `--store`, skip; otherwise `source.get`
     /// then `store.put` (plaintext into the local CAS). Does **not** extract a
     /// file tree, delete extras (`gc`), or download the listing itself.
-    /// Optional repeatable `--path` / `--exclude` restrict which **File** entries
-    /// in a `.cfdir` contribute chunk ids (Dir entries never contribute; listing
-    /// file unchanged / not downloaded). Omit all path/exclude ⇒ full reference
-    /// set (≡ 1.2.0). Orthogonal to `--dry-run` / `--format` / `--jobs` /
+    /// Optional repeatable `--path` / `--exclude` / `--exclude-from` restrict which
+    /// **File** entries in a `.cfdir` contribute chunk ids (Dir entries never
+    /// contribute; listing file unchanged / not downloaded). Omit all path/exclude
+    /// flags ⇒ full reference set (≡ 1.2.0). Orthogonal to `--dry-run` / `--format` /
+    /// `--jobs` /
     /// `--progress` / retries / SigV4. `--source` accepts a local path,
     /// `file://`, or `http(s)://` (same templates as `verify` / `cat`).
     /// `--http-retries N` (default 0) applies to HTTP sources only. Symmetric
@@ -488,6 +511,13 @@ enum Commands {
         /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
         #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
         excludes: Vec<String>,
+
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
         /// One or more `.cfidx` / `.cfdir` listings whose chunk ids are fetched
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
@@ -680,9 +710,11 @@ fn run() -> Result<()> {
             jobs,
             paths,
             excludes,
+            exclude_from,
             format,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
             cmd_archive(
                 &store,
                 &output,
@@ -711,8 +743,10 @@ fn run() -> Result<()> {
             format,
             paths,
             excludes,
+            exclude_from,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             // Dry-run never opens store/source (no chunk get; G2 / §3.2).
@@ -864,9 +898,11 @@ fn run() -> Result<()> {
             progress,
             paths,
             excludes,
+            exclude_from,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             cmd_push(
@@ -892,9 +928,11 @@ fn run() -> Result<()> {
             progress,
             paths,
             excludes,
+            exclude_from,
             indexes,
         } => {
             let jobs = parse_jobs(jobs)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             cmd_pull(
@@ -935,6 +973,17 @@ fn run() -> Result<()> {
             command: StoreCommands::Stats { store, format },
         } => cmd_store_stats(&store, format),
     }
+}
+
+/// CLI `--exclude` patterns ∪ every `--exclude-from` file (in flag order).
+fn merged_excludes(cli: &[String], files: &[PathBuf]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(cli.len());
+    out.extend(cli.iter().cloned());
+    for path in files {
+        let more = load_exclude_file(path).map_err(|e| anyhow::anyhow!("{e}"))?;
+        out.extend(more);
+    }
+    Ok(out)
 }
 
 fn parse_jobs(jobs: u32) -> Result<usize> {

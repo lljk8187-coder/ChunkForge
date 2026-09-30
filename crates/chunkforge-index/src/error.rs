@@ -29,6 +29,9 @@ pub enum Error {
     #[error("invalid exclude pattern: {0}")]
     InvalidExcludePattern(String),
 
+    #[error("exclude file: {0}")]
+    ExcludeFile(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

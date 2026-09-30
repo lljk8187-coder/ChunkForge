@@ -7,7 +7,7 @@ Phase 5 multi-file workflow built on [`.cfdir` v1](dir-format.md). Single-blob
 
 | Command | Role |
 |---|---|
-| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] [--path P]… [--exclude PAT]… [--format text\|json] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` as before; `--path`/`--exclude`: filter which files are chunked+listed, default full tree ≡ 1.2.0; `--format`: `text` default ≡ 1.2.0 stderr summary, `json` one object on stdout) |
+| `chunkforge archive --store <cas> -o out.cfdir [--seed prior.cfdir] [--seed-trust-mtime] [--dry-run] [--jobs N] [--path P]… [--exclude PAT]… [--exclude-from FILE]… [--format text\|json] <src-dir>` | Recursively chunk regular files into the local CAS; write a `.cfdir` listing (`--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` as before; `--path`/`--exclude`/`--exclude-from`: filter which files are chunked+listed, default full tree ≡ 1.2.0; `--format`: `text` default ≡ 1.2.0 stderr summary, `json` one object on stdout) |
 | `chunkforge extract --store\|--source … archive.cfdir -o <out-dir> [--force]` | Materialize the tree (parents created; existing paths → non-zero unless `--force`) |
 | `chunkforge verify --store\|--source … archive.cfdir` | Magic-dispatch: tree structure + per-file `blob_blake3` |
 | `chunkforge mount --store\|--source … archive.cfdir <mnt>` | Read-only FUSE directory tree (see [mount.md](mount.md)) |
@@ -156,17 +156,21 @@ chunkforge archive --store ./store -o v2.cfdir --seed v1.cfdir --dry-run ./src
 # stderr: … would_seed_reuse=…, would_rechunk=1 …; no store/.cfdir written …
 ```
 
-## Path filter (`--path` / `--exclude`)
+## Path filter (`--path` / `--exclude` / `--exclude-from`)
 
 Phase 13 opt-in. Repeatable `--path P` and `--exclude PAT` build a
-`PathFilter` (same rules as `chunkforge-index::PathFilter`):
+`PathFilter` (same rules as `chunkforge-index::PathFilter`). Phase 14 M4 adds
+repeatable **`--exclude-from FILE`**: UTF-8, one pattern per line, blank lines
+and `#` comments skipped, trim; lines are merged with every `--exclude` into
+the **same** filter. Illegal pattern → same error as `--exclude`. Unreadable
+file → clear non-zero error. No `--path-from`.
 
 - **`--path P`**: keep iff `path == P` or `path` is under `P/` (OR across flags).
 - **`--exclude PAT`**: exact match; trailing `/` → directory prefix; single `*`
   only at start (`*.o`) or end (`temp*`). Illegal middle `*` / `**` → non-zero
   with a clear error.
 - If any `--path` is given, a candidate must hit an include **before** excludes.
-- **No** `--path` / `--exclude` ⇒ full tree (≡ **1.2.0**).
+- **No** `--path` / `--exclude` / `--exclude-from` ⇒ full tree (≡ **1.2.0** / **1.3.0**).
 - Orthogonal to `--seed` / `--seed-trust-mtime` / `--dry-run` / `--jobs` /
   `--format`.
 
