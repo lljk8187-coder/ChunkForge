@@ -16,9 +16,10 @@
 # Version gate expects chunkforge 1.11.0 (workspace still 1.11.0; M7 bumps
 # to 1.12.0). Docs may preview Phase22 / 1.12.0 without changing Cargo.toml.
 #
-# Gate lesson (Phase19-M7b / Phase21 / Phase22-M5): do NOT hard-assert that
-# scripts/check_compat_1_11.sh must exist OR must not exist. Note-only only
-# (M6 will add it). Do not test -f / test -x on check_compat_1_11.sh.
+# Gate (Phase22-M6 / Phase21 / Phase19-M7b lesson): require
+# check_compat_1_11.sh present + executable (same pattern as
+# demo_mount_path ↔ compat_1_10). Do NOT leave a soft "not yet" note,
+# and never assert that compat_1_11 must not exist.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -365,7 +366,7 @@ echo "mount has no --progress: OK"
 echo "G: help / ≠ prune / ≠ gc-path / ≠ write mount: OK"
 
 echo
-echo "==> H. version 1.11.0 + Cargo 1.11.0 (M7 bumps to 1.12.0)"
+echo "==> H. version 1.11.0 + Cargo 1.11.0 + compat_1_11 (M7 bumps to 1.12.0)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
 if ! grep -F '1.11.0' <<<"$VER" >/dev/null; then
@@ -387,9 +388,16 @@ if [[ ! -x "$COMPAT110" ]]; then
   echo "error: check_compat_1_10.sh must be executable" >&2
   exit 1
 fi
-echo "H: version 1.11.0 / Cargo 1.11.0 / compat_1_10: OK"
-# NOTE ONLY — do not test -f / -x on check_compat_1_11.sh (M6 will add it).
-echo "note: check_compat_1_11.sh will be added in Phase22-M6 (not asserted here)"
+COMPAT111="$ROOT/scripts/check_compat_1_11.sh"
+if [[ ! -f "$COMPAT111" ]]; then
+  echo "error: check_compat_1_11.sh must exist" >&2
+  exit 1
+fi
+if [[ ! -x "$COMPAT111" ]]; then
+  echo "error: check_compat_1_11.sh must be executable" >&2
+  exit 1
+fi
+echo "H: version 1.11.0 / Cargo 1.11.0 / compat_1_10 / compat_1_11: OK"
 
 echo
 echo "demo_symlink: ALL OK (assert_path=$ASSERT_PATH)"
