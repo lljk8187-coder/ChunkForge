@@ -35,7 +35,7 @@ chunkforge ls \
 |---|---|
 | Input | **`.cfidx` or `.cfdir`** (magic dispatch) |
 | `.cfidx` | One logical file path (stem without `.cfidx`, same naming as mount). **Any** path/exclude flag → clear non-zero |
-| `.cfdir` | Every **File** / **Dir** / **Symlink** entry present after PathFilter (empty 四件套 ≡ full listing). Dir rows appear only when the listing explicitly stores Dir entries (today's `archive` omits empty dirs → usually 0 Dir rows) |
+| `.cfdir` | Every **File** / **Dir** / **Symlink** entry present after PathFilter (empty 四件套 ≡ full listing). Dir rows appear only when the listing explicitly stores Dir entries (default `archive` omits empty dirs ≡ 1.14 → usually 0 Dir rows; **`archive --empty-dirs`** records empty leaf dirs → `dir\t…` rows) |
 | Sort | Path lexicographic (stable) |
 | Store / chunks | **Never** opens a store; **never** get/put. Pure listing decode. **≠** verify |
 | `--format text` | Default. One line per entry on stdout (tab-separated columns) |

@@ -3285,6 +3285,275 @@ fn archive_empty_dir_writes_empty_cfdir() {
     assert!(arch.entries.is_empty());
 }
 
+// --- Phase25-M6: archive --empty-dirs (opt-in; omit ≡ 1.14) ---
+
+#[test]
+fn archive_help_documents_empty_dirs() {
+    let help = run_ok(&["archive", "--help"]);
+    let help_s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_s.contains("--empty-dirs"),
+        "archive --help must list --empty-dirs; got:\n{help_s}"
+    );
+    assert!(
+        help_s.contains("omit") || help_s.contains("1.14") || help_s.contains("Empty directories"),
+        "archive --help should nail omit ≡ 1.14 empty-dir default; got:\n{help_s}"
+    );
+    assert!(
+        help_s.contains("prune") || help_s.contains("write mount") || help_s.contains("≠"),
+        "archive --help should nail ≠ prune ≠ write mount; got:\n{help_s}"
+    );
+}
+
+#[test]
+fn archive_default_omits_empty_dirs_equiv_1_14() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::create_dir_all(src.join("nested/also_empty")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"hello-empty-dirs\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("omit.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--format",
+        "json",
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["keep/a.txt"],
+        "default omit empty dirs; got {paths:?}"
+    );
+    assert!(
+        arch.entries
+            .iter()
+            .all(|e| matches!(e.kind, chunkforge_index::DirEntryKind::File { .. })),
+        "no Dir rows without --empty-dirs"
+    );
+}
+
+#[test]
+fn archive_empty_dirs_records_dir_ls_extract_roundtrip() {
+    use chunkforge_index::DirEntryKind;
+
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::create_dir_all(src.join("nested/also_empty")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"hello-empty-dirs\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("with-empty.cfdir");
+    let archived = run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--format",
+        "json",
+        src.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&archived.stdout).expect("archive json");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["files"], 1);
+    assert!(
+        v["dirs"].as_u64().unwrap() >= 2,
+        "expected empty leaf dirs recorded; json={v}"
+    );
+
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let mut dirs: Vec<&str> = arch
+        .entries
+        .iter()
+        .filter(|e| matches!(e.kind, DirEntryKind::Dir { .. }))
+        .map(|e| e.path.as_str())
+        .collect();
+    dirs.sort();
+    assert!(
+        dirs.contains(&"empty_leaf"),
+        "empty_leaf Dir missing; entries={:?}",
+        arch.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    assert!(
+        dirs.contains(&"nested/also_empty"),
+        "nested/also_empty Dir missing; dirs={dirs:?}"
+    );
+    // Parent `nested` has a child dir → not a filesystem-empty leaf; not recorded.
+    assert!(
+        !dirs.contains(&"nested"),
+        "non-empty parent nested must not get a Dir row; dirs={dirs:?}"
+    );
+    assert!(
+        arch.entries.iter().any(|e| e.path == "keep/a.txt"),
+        "file retained"
+    );
+
+    // ls shows dir\t…
+    let ls = run_ok(&["ls", out.to_str().unwrap()]);
+    let ls_out = String::from_utf8_lossy(&ls.stdout);
+    assert!(
+        ls_out.lines().any(|l| l == "dir\tempty_leaf"),
+        "ls must show dir\\tempty_leaf; stdout={ls_out}"
+    );
+    assert!(
+        ls_out.lines().any(|l| l == "dir\tnested/also_empty"),
+        "ls must show dir\\tnested/also_empty; stdout={ls_out}"
+    );
+
+    // extract recreates empty dirs
+    let dest = dir.path().join("extracted");
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        dest.to_str().unwrap(),
+        out.to_str().unwrap(),
+    ]);
+    assert!(
+        dest.join("empty_leaf").is_dir(),
+        "extract must recreate empty_leaf"
+    );
+    assert!(
+        dest.join("nested/also_empty").is_dir(),
+        "extract must recreate nested/also_empty"
+    );
+    assert_eq!(
+        fs::read(dest.join("keep/a.txt")).unwrap(),
+        b"hello-empty-dirs\n"
+    );
+}
+
+#[test]
+fn archive_empty_dirs_respects_path_filter() {
+    use chunkforge_index::DirEntryKind;
+
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep_empty")).unwrap();
+    fs::create_dir_all(src.join("drop_empty")).unwrap();
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"x\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("filtered.cfdir");
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--path",
+        "keep_empty",
+        "--path",
+        "keep",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let bytes = fs::read(&out).unwrap();
+    let arch = chunkforge_index::DirArchive::decode(&bytes).unwrap();
+    let paths: Vec<_> = arch.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        paths.contains(&"keep_empty"),
+        "included empty dir must survive PathFilter; paths={paths:?}"
+    );
+    assert!(
+        paths.contains(&"keep/a.txt"),
+        "included file kept; paths={paths:?}"
+    );
+    assert!(
+        !paths.contains(&"drop_empty"),
+        "excluded empty dir must be dropped; paths={paths:?}"
+    );
+    assert!(
+        arch.entries
+            .iter()
+            .any(|e| e.path == "keep_empty" && matches!(e.kind, DirEntryKind::Dir { .. })),
+        "keep_empty must be Dir kind"
+    );
+}
+
+#[test]
+fn chunk_id_format_json() {
+    let input = fixtures_dir().join("hello.txt");
+    let text = run_ok(&["chunk-id", input.to_str().unwrap()]);
+    let text_s = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        text_s.contains('\t'),
+        "default chunk-id text has tabs; stdout={text_s}"
+    );
+
+    let json = run_ok(&["chunk-id", "--format", "json", input.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).expect("chunk-id json");
+    assert_eq!(v["ok"], true);
+    let chunks = v["chunks"].as_array().expect("chunks array");
+    assert!(!chunks.is_empty(), "expected ≥1 chunk; json={v}");
+    assert!(chunks[0]["offset"].is_number());
+    assert!(chunks[0]["length"].is_number());
+    assert!(chunks[0]["id"].as_str().unwrap().len() == 64);
+}
+
+#[test]
+fn store_has_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    let store_h = chunkforge_store::Store::open(&store).unwrap();
+    let id = store_h.list_chunk_ids().unwrap()[0];
+
+    let present = run_ok(&[
+        "store",
+        "has",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        &id.to_string(),
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&present.stdout).expect("has json");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["present"], true);
+    assert_eq!(v["id"], id.to_string());
+
+    let missing_id = "0".repeat(64);
+    let missing = run_fail(&[
+        "store",
+        "has",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        &missing_id,
+    ]);
+    let mv: serde_json::Value = serde_json::from_slice(&missing.stdout).expect("missing json");
+    assert_eq!(mv["ok"], false);
+    assert_eq!(mv["present"], false);
+    assert_eq!(mv["id"], missing_id);
+}
+
 #[test]
 fn make_single_file_unchanged_alongside_archive() {
     // Regression: make still produces .cfidx for a single file.

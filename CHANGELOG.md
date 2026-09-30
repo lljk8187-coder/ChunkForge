@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Phase 25 M6 (P1) — **`archive --empty-dirs`** + thin UX JSON. Version stays
+**1.14.0** until M7 (**1.15.0**).
+
+### Added
+
+- **`archive --empty-dirs`** (Phase25-M6 / P1 O1): opt-in record of truly empty
+  leaf directories as `DirEntryKind::Dir` (mode from metadata; relative path;
+  same PathFilter as files). Default **off** ≡ **1.14.0** omit empty dirs
+  (parents of files remain implied by file paths). `ls` shows `dir\t…`;
+  extract recreates empty dirs when the flag was used. **≠** prune **≠** write
+  mount. Omit flag ≡ 1.14.
+- **`chunk-id --format json`** / **`store has --format json`** (Phase25-M6 / P1
+  O2): thin ops-json honesty; default text unchanged.
+
+### Changed
+
+- Docs (`dir-format` / `archive` / `ls` / `ops-json` / README Phase25): nail
+  `--empty-dirs` semantics (omit ≡ 1.14; ≠ prune ≠ write mount).
 
 ## [1.14.0] — 2026-09-30
 

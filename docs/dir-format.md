@@ -91,7 +91,9 @@ constants `DIR_FORMAT_VERSION_V1=1`, `DIR_FORMAT_VERSION_V2=2`,
 ## Archive CLI notes (Phase5-M2 + Phase22)
 
 - P0 `chunkforge archive` records **regular files** by default (optional empty
-  `Dir` entries omitted).
+  `Dir` entries **omitted** ≡ 1.14). Opt-in **`archive --empty-dirs`** records
+  truly empty leaf directories as `DirEntryKind::Dir` (mode from metadata;
+  relative path; same PathFilter as files). **≠** prune **≠** write mount.
 - **Default `--symlinks skip`** (≡ **1.11.0**): symlinks are skipped with a
   stderr warning (not followed, not recorded); listing stays **`format_version=1`**.
 - **Opt-in `--symlinks record`**: write `DirEntryKind::Symlink` (target as-is;

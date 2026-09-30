@@ -196,7 +196,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 **1.12.0** (Phase22 symlink opt-in), **1.13.0** (Phase23
 `diff --tree --symlinks` + P1 `would_symlinks`), and **1.14.0** (Phase24
 `chunkforge filter` + P1 `make --seed` / mount help Symlink honesty), and
-**Phase25 / toward 1.15.0** (`chunkforge ls` + `cat --path`; version still
+**Phase25 / toward 1.15.0** (`chunkforge ls` + `cat --path` + P1 `archive --empty-dirs` / `chunk-id`·`store has --format json`; version still
 **1.14.0** until M7) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull

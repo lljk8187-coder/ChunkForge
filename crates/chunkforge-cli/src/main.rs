@@ -137,10 +137,16 @@ enum Commands {
     /// through PathFilter (orthogonal to the path 四件套); recorded targets are
     /// stored as-is (not followed / not canonicalized); ≥1 Symlink ⇒ listing
     /// `format_version=2`. Fifos, sockets, and device nodes are always skipped
-    /// with a stderr warning. Empty directories are omitted (extract can recreate
-    /// parents from file paths). Optional repeatable `--path` / `--path-from` /
-    /// `--exclude` / `--exclude-from` restrict which candidates are chunked /
-    /// listed (default: full tree ≡ 1.9.0). Default **`--format text`** (≡ 1.2.0):
+    /// with a stderr warning. Empty directories are **omitted by default** (≡
+    /// **1.14.0**; extract can recreate parents from file paths). Opt-in
+    /// **`--empty-dirs`**: record truly empty leaf directories as
+    /// [`DirEntryKind::Dir`] (mode from metadata; relative path; same PathFilter
+    /// as files — an empty dir is a candidate when the flag is set). Ancestor
+    /// dirs of files remain implied by file paths; empty-dirs means dirs that
+    /// would otherwise be dropped. **≠** prune **≠** write mount. Omit flag ≡
+    /// 1.14. Optional repeatable `--path` / `--path-from` / `--exclude` /
+    /// `--exclude-from` restrict which candidates are chunked / listed
+    /// (default: full tree ≡ 1.9.0). Default **`--format text`** (≡ 1.2.0):
     /// summary on stderr. **`--format json`**: one JSON object on stdout; no
     /// duplicate text summary; exit codes are format-independent. `make`
     /// single-file semantics are unchanged.
@@ -227,6 +233,14 @@ enum Commands {
         /// Special files still skip+warn.
         #[arg(long = "symlinks", value_enum, default_value_t = SymlinkPolicy::Skip)]
         symlinks: SymlinkPolicy,
+        /// Record truly empty leaf directories as `DirEntryKind::Dir` (mode from
+        /// metadata; relative path). Default **off** ≡ **1.14.0** omit empty
+        /// dirs (parents of files remain implied by file paths). Empty-dir
+        /// paths are PathFilter candidates like files (include then exclude).
+        /// **≠** prune **≠** write mount. Orthogonal to `--symlinks` / seed /
+        /// compression / progress / jobs / `--format`.
+        #[arg(long = "empty-dirs")]
+        empty_dirs: bool,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -534,6 +548,11 @@ enum Commands {
         index: PathBuf,
     },
     /// Debug: chunk + hash only; print offset/len/id (no store write)
+    ///
+    /// Default **`--format text`**: one `offset\tlength\tid` line per chunk on
+    /// stdout. **`--format json`**: one JSON object on stdout
+    /// (`ok` / `chunks`[{`offset`,`length`,`id`}]); no text dual-write. Exit
+    /// codes are format-independent. No store write.
     #[command(name = "chunk-id")]
     ChunkId {
         /// Input file
@@ -541,6 +560,9 @@ enum Commands {
         /// Override FastCDC sizes as min:avg:max (bytes; all even, min≤avg≤max)
         #[arg(long = "chunk-size", value_name = "MIN:AVG:MAX")]
         chunk_size: Option<String>,
+        /// Output format (default text; json = one object on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
     /// Mount a `.cfidx` (single file) or `.cfdir` (directory tree) read-only (Linux + fuse3)
     ///
@@ -1259,12 +1281,20 @@ enum StoreCommands {
         format: CliFormat,
     },
     /// Check whether a chunk id exists in the store
+    ///
+    /// Default **`--format text`**: `present\t<id>` on stdout (exit 0) or
+    /// non-zero with `missing\t<id>`. **`--format json`**: one JSON object on
+    /// stdout (`ok` / `present` / `id`); missing → `ok=false`, `present=false`,
+    /// exit non-zero. Exit codes are format-independent.
     Has {
         /// Local CAS store directory
         #[arg(long)]
         store: PathBuf,
         /// Chunk id as 64 lowercase hex characters
         hex_id: String,
+        /// Output format (default text; json = one object on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
     },
     /// Rehash every loose chunk in a local store (bitrot / integrity scrub)
     ///
@@ -1487,6 +1517,7 @@ fn run() -> Result<()> {
             compression,
             progress,
             symlinks,
+            empty_dirs,
         } => {
             let jobs = parse_jobs(jobs)?;
             let paths = merged_paths(&paths, &path_from)?;
@@ -1505,6 +1536,7 @@ fn run() -> Result<()> {
                 compression,
                 progress,
                 symlinks,
+                empty_dirs,
             )
         }
         Commands::Extract {
@@ -1661,7 +1693,11 @@ fn run() -> Result<()> {
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
-        Commands::ChunkId { input, chunk_size } => cmd_chunk_id(&input, chunk_size.as_deref()),
+        Commands::ChunkId {
+            input,
+            chunk_size,
+            format,
+        } => cmd_chunk_id(&input, chunk_size.as_deref(), format),
         Commands::Mount {
             store,
             source,
@@ -1923,8 +1959,13 @@ fn run() -> Result<()> {
                 },
         } => cmd_store_create(&store, compression, format),
         Commands::Store {
-            command: StoreCommands::Has { store, hex_id },
-        } => cmd_store_has(&store, &hex_id),
+            command:
+                StoreCommands::Has {
+                    store,
+                    hex_id,
+                    format,
+                },
+        } => cmd_store_has(&store, &hex_id, format),
         Commands::Store {
             command:
                 StoreCommands::Scrub {
@@ -2723,6 +2764,7 @@ fn cmd_archive(
     compression: Option<Compression>,
     progress: bool,
     symlinks: SymlinkPolicy,
+    empty_dirs: bool,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -2770,10 +2812,12 @@ fn cmd_archive(
     }
 
     // Collect candidates (sorted) so .cfdir output is deterministic.
-    // Order: discover (type skip for special; symlink skip-or-record per policy),
-    // then PathFilter. Symlink-to-dir is never followed.
+    // Order: discover (type skip for special; symlink skip-or-record per policy;
+    // optional empty leaf dirs when `--empty-dirs`), then PathFilter.
+    // Symlink-to-dir is never followed.
     let mut file_paths: Vec<PathBuf> = Vec::new();
     let mut symlink_candidates: Vec<ArchiveSymlinkCandidate> = Vec::new();
+    let mut empty_dir_candidates: Vec<ArchiveEmptyDirCandidate> = Vec::new();
     let mut skipped_symlinks = 0usize;
     let mut skipped_special = 0usize;
     collect_archive_files(
@@ -2781,12 +2825,15 @@ fn cmd_archive(
         src_dir,
         &mut file_paths,
         &mut symlink_candidates,
+        &mut empty_dir_candidates,
         &mut skipped_symlinks,
         &mut skipped_special,
         symlinks,
+        empty_dirs,
     )?;
     file_paths.sort();
     symlink_candidates.sort_by(|a, b| a.full.cmp(&b.full));
+    empty_dir_candidates.sort_by(|a, b| a.full.cmp(&b.full));
 
     let mut excluded = 0usize;
     let mut kept: Vec<PathBuf> = Vec::with_capacity(file_paths.len());
@@ -2810,6 +2857,20 @@ fn cmd_archive(
             .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
         if path_filter.allows(&rel) {
             kept_symlinks.push(cand);
+        } else {
+            excluded += 1;
+        }
+    }
+
+    // Empty leaf dirs: same PathFilter as files (candidate only when --empty-dirs).
+    let mut kept_empty_dirs: Vec<ArchiveEmptyDirCandidate> =
+        Vec::with_capacity(empty_dir_candidates.len());
+    for cand in empty_dir_candidates {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+        if path_filter.allows(&rel) {
+            kept_empty_dirs.push(cand);
         } else {
             excluded += 1;
         }
@@ -2912,7 +2973,15 @@ fn cmd_archive(
             },
         });
     }
-    // Deterministic listing order: all paths sorted (File and Symlink interleaved).
+    // Append empty leaf Dir entries when `--empty-dirs` (0 chunks; omit ≡ 1.14).
+    for cand in &kept_empty_dirs {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        entries.push(DirEntry {
+            path: rel,
+            kind: DirEntryKind::Dir { mode: cand.mode },
+        });
+    }
+    // Deterministic listing order: File / Dir / Symlink interleaved by path.
     entries.sort_by(|a, b| a.path.cmp(&b.path));
 
     let recorded_symlinks = kept_symlinks.len();
@@ -2920,7 +2989,7 @@ fn cmd_archive(
         .iter()
         .filter(|e| matches!(e.kind, DirEntryKind::File { .. }))
         .count();
-    // Empty Dir entries are omitted (≡ 1.2.0); dirs counter stays 0 for File-only listings.
+    // Default omit empty dirs ⇒ dirs usually 0 (≡ 1.14); `--empty-dirs` can be >0.
     let dir_count = entries
         .iter()
         .filter(|e| matches!(e.kind, DirEntryKind::Dir { .. }))
@@ -3309,8 +3378,14 @@ struct ArchiveSymlinkCandidate {
     mode: u32,
 }
 
-/// Recursively collect regular-file paths (and optionally symlink candidates)
-/// under `dir` (relative walk from `root`).
+/// One truly empty leaf directory discovered during archive walk (`--empty-dirs`).
+struct ArchiveEmptyDirCandidate {
+    full: PathBuf,
+    mode: u32,
+}
+
+/// Recursively collect regular-file paths (and optionally symlink / empty-dir
+/// candidates) under `dir` (relative walk from `root`).
 ///
 /// Special files are always skipped with a per-path stderr warning.
 /// With [`SymlinkPolicy::Skip`] (default ≡ 1.11): symlinks are skipped with warn
@@ -3318,14 +3393,22 @@ struct ArchiveSymlinkCandidate {
 /// as candidates (target via `read_link` as-is; mode from `symlink_metadata`)
 /// and later pass through PathFilter — still **not** followed (symlink-to-dir
 /// is not recursed into).
+///
+/// With `empty_dirs` (opt-in `--empty-dirs`): a directory whose `read_dir` yields
+/// **zero** children is recorded as an empty-leaf candidate (mode from
+/// metadata). Non-empty dirs are recursed; ancestor dirs of files are **not**
+/// emitted (implied by file paths). Omit `empty_dirs` ≡ 1.14 (no Dir rows).
+#[allow(clippy::too_many_arguments)] // walk collectors: root/dir + out vecs + counters + policy
 fn collect_archive_files(
     root: &Path,
     dir: &Path,
     out: &mut Vec<PathBuf>,
     symlink_out: &mut Vec<ArchiveSymlinkCandidate>,
+    empty_dir_out: &mut Vec<ArchiveEmptyDirCandidate>,
     skipped_symlinks: &mut usize,
     skipped_special: &mut usize,
     policy: SymlinkPolicy,
+    empty_dirs: bool,
 ) -> Result<()> {
     let entries = fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
     for entry in entries {
@@ -3363,14 +3446,35 @@ fn collect_archive_files(
             continue;
         }
         if ft.is_dir() {
+            // Truly empty leaf: no children at all. Opt-in `--empty-dirs` records
+            // it; otherwise omit (≡ 1.14). Non-empty → recurse (never emit Dir for
+            // ancestors of files — those paths are implied by File entries).
+            let is_empty = {
+                let mut rd =
+                    fs::read_dir(&path).with_context(|| format!("read_dir {}", path.display()))?;
+                rd.next().is_none()
+            };
+            if is_empty {
+                if empty_dirs {
+                    let meta = fs::metadata(&path)
+                        .with_context(|| format!("metadata {}", path.display()))?;
+                    empty_dir_out.push(ArchiveEmptyDirCandidate {
+                        full: path,
+                        mode: file_mode_u32(&meta),
+                    });
+                }
+                continue;
+            }
             collect_archive_files(
                 root,
                 &path,
                 out,
                 symlink_out,
+                empty_dir_out,
                 skipped_symlinks,
                 skipped_special,
                 policy,
+                empty_dirs,
             )?;
             continue;
         }
@@ -6369,12 +6473,33 @@ fn probe_http_base(base: &str) -> Result<()> {
     }
 }
 
-fn cmd_chunk_id(input: &Path, chunk_size: Option<&str>) -> Result<()> {
+fn cmd_chunk_id(input: &Path, chunk_size: Option<&str>, format: CliFormat) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
     let chunks: Vec<ChunkInfo> = chunk_bytes(&data, &params);
-    for c in &chunks {
-        println!("{}\t{}\t{}", c.offset, c.length, c.id);
+    match format {
+        CliFormat::Text => {
+            for c in &chunks {
+                println!("{}\t{}\t{}", c.offset, c.length, c.id);
+            }
+        }
+        CliFormat::Json => {
+            let arr: Vec<serde_json::Value> = chunks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "offset": c.offset,
+                        "length": c.length,
+                        "id": c.id.to_string(),
+                    })
+                })
+                .collect();
+            let obj = serde_json::json!({
+                "ok": true,
+                "chunks": arr,
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }
@@ -6407,15 +6532,33 @@ fn cmd_store_create(
     Ok(())
 }
 
-fn cmd_store_has(store_path: &Path, hex_id: &str) -> Result<()> {
+fn cmd_store_has(store_path: &Path, hex_id: &str, format: CliFormat) -> Result<()> {
     let id = ChunkId::from_hex(hex_id).map_err(|e| anyhow::anyhow!("{e}"))?;
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
-    if store.has(&id) {
-        println!("present\t{id}");
-        Ok(())
-    } else {
-        bail!("missing\t{id}");
+    let present = store.has(&id);
+    match format {
+        CliFormat::Text => {
+            if present {
+                println!("present\t{id}");
+                Ok(())
+            } else {
+                bail!("missing\t{id}");
+            }
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": present,
+                "present": present,
+                "id": id.to_string(),
+            });
+            println!("{obj}");
+            if present {
+                Ok(())
+            } else {
+                bail!("store has: missing {id}");
+            }
+        }
     }
 }
 

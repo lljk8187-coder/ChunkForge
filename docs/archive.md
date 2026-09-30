@@ -227,7 +227,7 @@ Exit codes are format-independent.
 |---|---|
 | `ok` | `true` on success |
 | `dry_run` | whether `--dry-run` was set |
-| `files` / `dirs` / `chunks` | listing file count, Dir entries (usually 0 — empty dirs omitted), total chunk refs |
+| `files` / `dirs` / `chunks` | listing file count, Dir entries (usually 0 — empty dirs omitted ≡ 1.14; **`--empty-dirs`** can be >0), total chunk refs |
 | `written` / `reused` | chunk put outcomes (**normal write only**) |
 | `would_write` / `would_reuse` | same accounting under **`--dry-run` only** (not both with written/reused) |
 | `seed_reused_files` / `rechunked_files` | seed file-level counters (0 when no `--seed`) |
@@ -243,7 +243,11 @@ chunkforge archive --store ./store -o app.cfdir \
 
 ## Archive policy (P0 + Phase22 symlink)
 
-- **Regular files** are always candidates (optional empty `Dir` entries omitted).
+- **Regular files** are always candidates. Empty leaf directories are **omitted by
+  default** (≡ 1.14). Opt-in **`--empty-dirs`**: record truly empty leaf dirs as
+  `DirEntryKind::Dir` (mode from metadata; relative path; same PathFilter as
+  files). Ancestor dirs of files remain implied by file paths. **≠** prune **≠**
+  write mount.
 - **Default `--symlinks skip`** (≡ **1.11.0**): skipped with a stderr warning
   (not followed, not recorded) **before** `--path`/`--exclude`; listing
   `format_version=1`.
