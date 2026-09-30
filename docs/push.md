@@ -1,10 +1,13 @@
 # `chunkforge push`
 
-Phase 4 write path (Phase 5 extended): upload **plaintext chunks** referenced
-by one or more `.cfidx` **or** `.cfdir` listings from a local CAS `--store` to
-an HTTP(S) destination whose URL layout matches the Phase 3 read path. After a
-successful push, the same base URL works with existing `verify` / `cat` /
-`doctor` / `mount --source`.
+Phase 4 write path (Phase 5 extended; Phase 20 M6 local dest): upload
+**plaintext chunks** referenced by one or more `.cfidx` **or** `.cfdir`
+listings from a local CAS `--store` to **`--dest`**: `http(s)://` (URL layout
+matches the Phase 3 read path), a **local store path**, or **`file://`**.
+Still **one** dest (**≠** `--fallback` / multi-dest). After a successful HTTP
+push, the same base URL works with existing `verify` / `cat` / `doctor` /
+`mount --source`; a local/`file://` dest is the same Store layout and works
+with `verify --store` / `open_primary_source` for `--verify`.
 
 ## Usage
 
@@ -12,6 +15,7 @@ successful push, the same base URL works with existing `verify` / `cat` /
 chunkforge push \
   --store <local-cas> \
   --dest 'https://example/mybucket' \
+  # or: --dest /var/cas/mirror   or: --dest 'file:///var/cas/mirror'
   [--url-template '{base}/{path}'] \
   [--prefix 'data/'] \
   [--header 'Authorization: Bearer {env:TOKEN}'] \
@@ -28,7 +32,7 @@ chunkforge push \
 | Flag | Meaning |
 |---|---|
 | `--store` | Local CAS providing plaintext chunk bytes (`Store::get`) |
-| `--dest` | HTTP(S) base URL (required shape for the remote write face) |
+| `--dest` | **Single** destination: `http(s)://` base URL, local CAS path, or `file://`. Local/`file://` → `Store` as `ChunkSink` (open existing, or create with compression **none**). **≠** `--fallback` / multi-dest. HTTP template / SigV4 / `--http-retries` with a local dest → clear non-zero |
 | `--url-template` / `--prefix` / `--header` | Same closed placeholders as read-side `HttpChunkSource` (see [remote-layout.md](remote-layout.md)) |
 | `--jobs N` | Bounded concurrency for has/PUT (default **1** = serial; suggested ≤16); also used for post-push `--verify` fetches |
 | `--http-retries N` | Extra attempts after the first try for transient HTTP failures (default **0** ≡ 0.7.0). Wired into `RetryPolicy` on the HTTP sink/source. |
@@ -47,15 +51,17 @@ identical to Phase 2/3 GET layout.
 ### What push does
 
 1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s. With `--path`/`--exclude`/`--exclude-from`, only matching `.cfdir` **File** entries contribute (Dir entries never do); empty flags ≡ full set (≡ 1.3.0). Listing files themselves are **not** uploaded. `.cfidx` + any path/exclude flag → clear non-zero error.
-2. For each id (sorted): read plaintext from the local store; remote `has`
-   (HEAD, GET fallback) → skip; otherwise `PUT` the body.
+2. For each id (sorted): read plaintext from the local store; dest `has`
+   (HTTP HEAD/GET, or local Store) → skip; otherwise `put` (HTTP PUT or
+   Store put).
 3. Emit a summary (`--format text`, default ≡ **1.0.0**): stderr line
    `push: skipped=… uploaded=… failed=… failed_transient=… failed_permanent=… retries=… (N unique chunk ids, M listings, dry_run=…)`. Missing/Corrupt roll into `failed_permanent`; see [http-retry.md](http-retry.md). With **`--format json`**: one JSON object on **stdout** (no duplicate stderr summary; per-id `push: fail` lines omitted — counts are in the object).
 4. Exit **non-zero** if `failed > 0` (independent of `--format`).
-5. If `--verify` and push succeeded and not `--dry-run`: build `HttpChunkSource` from
-   `--dest` (same templates) and run the same verify path as `verify --source` for
+5. If `--verify` and push succeeded and not `--dry-run`: open `--dest` as a
+   `ChunkSource` (HTTP templates when `http(s)://`; local/`file://` via
+   `open_primary_source`) and run the same verify path as `verify --source` for
    each listing arg. Verify failure → non-zero (useful error includes listing path /
-   chunk id). On success the user need not run a separate `verify --source`.
+   chunk id). On success the user need not run a separate verify.
 
 ### `--format json` (stdout; Phase 11 M3)
 
@@ -124,6 +130,7 @@ FUSE `mount` is unchanged (no per-read thread storm).
 | ❌ `gc --path` / prune / pack | Path filter is **not** GC scope, prune, or pack |
 | ❌ Remote GC / delete | Extra remote objects are left alone |
 | ❌ Bidirectional sync | Explicit one-way publish only |
+| ❌ `--fallback` / multi-dest | Write side stays **single** `--dest` (local dest included) |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |
 | ❌ `aws-sdk-*` / in-process SigV4 | ureq + template headers / external presign only |
 
@@ -163,7 +170,8 @@ chunkforge push \
 | PUT 2xx | **uploaded** (`Written`) |
 | PUT 409 Conflict (default) | Treated as success / **skipped** (`SkippedExists`) |
 | PUT other 4xx / 5xx / network error | **failed**; continue; exit non-zero |
-| Non-`http(s)://` `--dest` | Immediate readable error (templates rejected too) |
+| Local/`file://` `--dest` + HTTP template / SigV4 / `--http-retries` | Immediate readable non-zero error |
+| Local/`file://` `--dest` (no HTTP knobs) | Open/create Store as `ChunkSink` (create compression **none**); single dest only |
 | `--dry-run` | Counts would-be uploads in `uploaded=`; **zero** PUT requests |
 | `--verify` + `--dry-run` | Verify is **skipped** (stderr note); dry-run never pretends the remote is verified |
 | `--verify` after push failures | Skipped; push already exits non-zero |

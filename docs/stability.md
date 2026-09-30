@@ -80,6 +80,8 @@ pull / diff / doctor / verify**, and full path quartet on **`doctor` /
 non-zero; JSON field names unchanged, counts may shrink). **Hard ban:**
 **`gc --path`** (shrinking the keep-set would mis-delete). Defaults stay ≡
 **1.9.0**. Responsibility: **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
+**`push` local/`file://` dest ≠ `--fallback` / multi-dest** (still single dest;
+create compression **none**).
 Gate **`check_compat_1_9.sh`** is **in-tree** (Phase20-M5; calls 1_8).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
@@ -184,6 +186,7 @@ At 1.0, ChunkForge promises:
 | `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU) |
 | `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 | `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
+| `push` local / `file://` `--dest` | Single Store as `ChunkSink` (open or create **none**); **≠** `--fallback` / multi-dest; HTTP knobs with local dest → non-zero |
 | `store stats` `bytes_plaintext` / `--decode` | Observation: none ⇒ plaintext ≡ on_disk; zstd needs `--decode`; **≠ trim ≠ LRU** |
 | `make` / `archive --compression` | Create-time store meta only (`none`\|`zstd`; omit ≡ **none** ≡ 1.6); existing store opens by meta; **≠ wire compression ≠ pack ≠ LRU** |
 | `archive` / `extract` / `make --progress` | Opt-in stderr `progress: op=…`; default **off** ≡ 1.6; **orthogonal** to `--format json` |

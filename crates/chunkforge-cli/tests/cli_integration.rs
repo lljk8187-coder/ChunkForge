@@ -2025,12 +2025,19 @@ fn push_help_lists_store_dest_dry_run_templates() {
         s.to_ascii_lowercase().contains("cfdir"),
         "help should mention .cfdir:\n{s}"
     );
+    let lower = s.to_ascii_lowercase();
+    // Phase20-M6: --dest may be http(s) / local path / file:// (not HTTP-only).
+    assert!(
+        lower.contains("file://") && lower.contains("local"),
+        "push --help should mention local and file:// dest:\n{s}"
+    );
 }
 
 #[test]
-fn push_rejects_non_http_dest_and_template_flags() {
+fn push_local_dest_rejects_http_template_flags() {
     let dir = tempdir().unwrap();
     let store = dir.path().join("store");
+    let dest = dir.path().join("dest-store");
     let idx = dir.path().join("out.cfidx");
     let input = fixtures_dir().join("hello.txt");
 
@@ -2048,21 +2055,7 @@ fn push_rejects_non_http_dest_and_template_flags() {
         "--store",
         store.to_str().unwrap(),
         "--dest",
-        store.to_str().unwrap(),
-        idx.to_str().unwrap(),
-    ]);
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    assert!(
-        err.contains("http") && (err.contains("dest") || err.contains("--dest")),
-        "stderr={err}"
-    );
-
-    let out = run_fail(&[
-        "push",
-        "--store",
-        store.to_str().unwrap(),
-        "--dest",
-        store.to_str().unwrap(),
+        dest.to_str().unwrap(),
         "--url-template",
         "{base}/{path}",
         idx.to_str().unwrap(),
@@ -2073,8 +2066,97 @@ fn push_rejects_non_http_dest_and_template_flags() {
             || err.contains("prefix")
             || err.contains("header")
             || err.contains("http"),
-        "stderr={err}"
+        "local dest + --url-template must fail clearly; stderr={err}"
     );
+    assert!(
+        err.contains("dest") || err.contains("local") || err.contains("file"),
+        "error should name dest/local; stderr={err}"
+    );
+}
+
+#[test]
+fn push_local_dest_store_smoke_with_verify() {
+    let dir = tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    fs::create_dir_all(&tree).unwrap();
+    fs::write(tree.join("a.txt"), b"phase20-m6-local-dest-smoke").unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-store");
+    let listing = dir.path().join("out.cfdir");
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        tree.to_str().unwrap(),
+    ]);
+    assert!(count_cnk(&store) >= 1, "source store should have chunks");
+
+    let out = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        dest.to_str().unwrap(),
+        "--verify",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("uploaded=") || err.contains("skipped="),
+        "push summary missing; stderr={err}"
+    );
+    assert!(
+        dest.join("meta.toml").is_file(),
+        "dest store meta.toml missing at {}",
+        dest.display()
+    );
+    assert!(
+        count_cnk(&dest) >= 1,
+        "dest store should contain pushed .cnk files"
+    );
+    assert!(
+        err.to_ascii_lowercase().contains("verify ok")
+            || err.to_ascii_lowercase().contains("verify"),
+        "push --verify should report verify; stderr={err}"
+    );
+}
+
+#[test]
+fn push_file_url_dest_smoke() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let dest = dir.path().join("dest-file-url");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let dest_url = format!("file://{}", dest.display());
+    let out = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &dest_url,
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("uploaded=") || err.contains("skipped="),
+        "push file:// summary missing; stderr={err}"
+    );
+    assert!(dest.join("meta.toml").is_file(), "file:// dest store missing");
+    assert!(count_cnk(&dest) >= 1, "file:// dest should have .cnk files");
 }
 
 #[test]

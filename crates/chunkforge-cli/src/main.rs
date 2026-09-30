@@ -15,7 +15,7 @@ use chunkforge_index::{
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
-    SummaryFailureBucket, classify_sink_error, classify_source_error,
+    SummaryFailureBucket, classify_sink_error, classify_source_error, parse_store_location,
 };
 use chunkforge_store::{
     CacheSource, ChunkSink, ChunkSource, Compression, Error as StoreError, FallbackSource,
@@ -667,15 +667,22 @@ enum Commands {
         #[arg(required = true, num_args = 1..)]
         indexes: Vec<PathBuf>,
     },
-    /// Upload missing chunks referenced by `.cfidx` / `.cfdir` listings to an HTTP(S) destination
+    /// Upload missing chunks referenced by `.cfidx` / `.cfdir` listings to `--dest`
     ///
-    /// Reads plaintext chunks from the local `--store`, probes the remote with
-    /// `has`, and PUTs only missing ids. Does **not** upload `.cfidx` / `.cfdir`
-    /// listing files themselves (chunks only).
-    /// Template flags (`--url-template` / `--prefix` / `--header`) match read-side
-    /// layout so a successful push is readable with `verify --source`.
-    /// `--http-retries N` (default 0 ≡ 0.7.0) retries transient HTTP failures
-    /// (extra attempts after the first try); see also `--http-retry-backoff-ms`.
+    /// Reads plaintext chunks from the local `--store`, probes the destination
+    /// with `has`, and puts only missing ids. Does **not** upload `.cfidx` /
+    /// `.cfdir` listing files themselves (chunks only). **`--dest`** may be
+    /// `http(s)://`, a **local store path**, or **`file://`** (single dest;
+    /// **≠** read-side fallback / multi-dest). Local/`file://` opens an existing
+    /// Store or creates one with compression **none** (≡ 1.9 create default)
+    /// via `Store` as `ChunkSink`. HTTP template flags
+    /// (`--url-template` / `--prefix` / `--header` / `--aws-sigv4` /
+    /// `--http-retries`) apply only to `http(s)://` dest — with a local dest
+    /// they are a clear non-zero error. For HTTP dest, templates match
+    /// read-side layout so a successful push is readable with
+    /// `verify --source`. `--http-retries N` (default 0 ≡ 0.7.0) retries
+    /// transient HTTP failures (extra attempts after the first try); see also
+    /// `--http-retry-backoff-ms`.
     /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from` restrict which
     /// **File** entries in a `.cfdir` contribute chunk ids (Dir entries never
     /// contribute; listing itself is **not** uploaded). Omit all path/exclude
@@ -695,8 +702,9 @@ enum Commands {
         /// Local CAS store providing plaintext chunks
         #[arg(long)]
         store: PathBuf,
-        /// HTTP(S) destination base URL (same layout as `--source` for verify/cat)
-        #[arg(long, value_name = "URL")]
+        /// Destination: `http(s)://` base URL, local CAS path, or `file://`
+        /// (single dest; local/`file://` ⇒ Store as ChunkSink, create none)
+        #[arg(long, value_name = "URL|PATH")]
         dest: String,
         #[command(flatten)]
         http_tmpl: HttpTemplateArgs,
@@ -1052,10 +1060,12 @@ enum CliFormat {
 ///
 /// Template flags (`--url-template` / `--prefix` / `--header`) and `--aws-sigv4`
 /// apply isomorphically to every `http(s)://` origin in a read chain (primary
-/// and each HTTP `--fallback`) and to `push --dest`. They are no-ops for
-/// non-HTTP origins; an error is raised only when those flags are set and the
-/// chain has no `http(s)://` source at all. Omitting them preserves the Phase 2
-/// default layout (`{base}/chunks/<2hex>/<62hex>.cnk`).
+/// and each HTTP `--fallback`) and to an `http(s)://` `push --dest`. On read
+/// chains they are no-ops for non-HTTP origins (error only when those flags are
+/// set and the chain has no `http(s)://` source at all). On `push`, the same
+/// flags (plus non-zero `--http-retries`) with a local/`file://` `--dest` are a
+/// clear non-zero error. Omitting them preserves the Phase 2 default layout
+/// (`{base}/chunks/<2hex>/<62hex>.cnk`).
 ///
 /// `--http-retries` / `--http-retry-backoff-ms` apply only to HTTP(S) origins;
 /// local `--store` / `file://` paths ignore them (no-op).
@@ -4302,40 +4312,45 @@ fn cmd_gc(
     Ok(())
 }
 
-fn open_http_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<HttpChunkSink> {
+fn open_chunk_sink(dest: &str, http_tmpl: &HttpTemplateArgs) -> Result<Box<dyn ChunkSink>> {
     let trimmed = dest.trim();
-    let is_http = trimmed.starts_with("http://") || trimmed.starts_with("https://");
 
-    if !is_http {
-        if http_template_flags_set(http_tmpl) {
-            bail!(
-                "--url-template / --prefix / --header apply only to http(s):// destinations; \
-                 got non-HTTP --dest {trimmed:?}"
-            );
+    if is_http_spec(trimmed) {
+        let mut builder = HttpChunkSink::builder(trimmed)
+            .timeout(Some(Duration::from_secs(30)))
+            .retry_policy(retry_policy_from_http_args(http_tmpl));
+        if let Some(ref tmpl) = http_tmpl.url_template {
+            builder = builder.url_template(tmpl.clone());
         }
+        if let Some(ref prefix) = http_tmpl.prefix {
+            builder = builder.prefix(prefix.clone());
+        }
+        for raw in &http_tmpl.headers {
+            let (name, value_tmpl) = parse_header_flag(raw)?;
+            builder = builder.header(name, value_tmpl);
+        }
+        if let Some(signer) = sigv4_signer_from_http_args(http_tmpl)? {
+            builder = builder.aws_sigv4(signer);
+        }
+        let sink = builder.build().context("build HTTP chunk sink")?;
+        return Ok(Box::new(sink));
+    }
+
+    // Local path or file:// → Store as ChunkSink (single dest; ≠ fallback chain).
+    // HTTP-only knobs must not silently no-op on a local dest.
+    if http_template_flags_set(http_tmpl) || http_tmpl.http_retries != 0 {
         bail!(
-            "push --dest must be an http(s):// URL (got {trimmed:?}); \
-             local/file destinations are not supported"
+            "--url-template / --prefix / --header / --aws-sigv4 / --http-retries apply only to              http(s):// destinations; got local/file --dest {trimmed:?}              (push local dest is a single Store ChunkSink — not a fallback chain / multi-dest)"
         );
     }
 
-    let mut builder = HttpChunkSink::builder(trimmed)
-        .timeout(Some(Duration::from_secs(30)))
-        .retry_policy(retry_policy_from_http_args(http_tmpl));
-    if let Some(ref tmpl) = http_tmpl.url_template {
-        builder = builder.url_template(tmpl.clone());
-    }
-    if let Some(ref prefix) = http_tmpl.prefix {
-        builder = builder.prefix(prefix.clone());
-    }
-    for raw in &http_tmpl.headers {
-        let (name, value_tmpl) = parse_header_flag(raw)?;
-        builder = builder.header(name, value_tmpl);
-    }
-    if let Some(signer) = sigv4_signer_from_http_args(http_tmpl)? {
-        builder = builder.aws_sigv4(signer);
-    }
-    builder.build().context("build HTTP chunk sink")
+    let path = parse_store_location(trimmed).with_context(|| {
+        format!("parse push --dest {trimmed:?} (local path or file:// URL)")
+    })?;
+    // Existing store: open as recorded. Missing: create with compression none
+    // (≡ 1.9 create default). Same open_or_create_store helper as pull/make.
+    let store = open_or_create_store(&path, None)?;
+    Ok(Box::new(store))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4353,7 +4368,7 @@ fn cmd_push(
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("open store at {}", store_path.display()))?;
-    let sink = open_http_chunk_sink(dest, http_tmpl)?;
+    let sink = open_chunk_sink(dest, http_tmpl)?;
 
     let (referenced, listings_ok) = union_listing_chunk_ids_filtered(index_paths, path_filter)?;
 
@@ -4493,7 +4508,7 @@ fn cmd_push(
             if listings_ok == 1 { "" } else { "s" },
         );
         let source = open_primary_source(dest, http_tmpl)
-            .context("build HTTP chunk source from --dest for push --verify")?;
+            .context("build chunk source from --dest for push --verify")?;
         // Post-push verify stays full-listing (path filter only shrunk the upload
         // set). Empty PathFilter ≡ 1.9.0 verify behaviour.
         let full =

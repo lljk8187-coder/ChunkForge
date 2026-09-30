@@ -27,12 +27,17 @@ opt-in only; defaults ≡ **1.9.0**.
   README Phase 20 narrative; local smoke for path-from archive, doctor/verify
   subset, quiet full default, exclude-from+path-from, missing file non-zero,
   `.cfidx`+path non-zero, `gc` has no `--path`.
+- **`check_compat_1_9.sh`** (Phase 20 M5): calls `check_compat_1_8` + asserts
+  1.10 `--path-from` / doctor·verify `--path` help; no gc `--path`.
+- **`push` local / `file://` `--dest`** (Phase 20 M6 path A): single dest via
+  `Store` as `ChunkSink` (`open` if exists, else create with compression
+  **none** ≡ 1.9 create default). HTTP template / SigV4 / `--http-retries` with
+  a local dest → clear non-zero. **≠** `--fallback` / multi-dest. Help + thin
+  docs (`path-from` ≠ gc-path; push local ≠ fallback).
 
 ### Pending (later Phase 20 milestones)
 
-- **`check_compat_1_9.sh`** (M5) — not in tree yet at M4.
 - Version bump **1.10.0** (M7).
-- P1: `push` local/`file://` dest / docs brush (M6; optional).
 
 ### Not delivered / deferred (Phase 20)
 
@@ -55,6 +60,7 @@ opt-in only; defaults ≡ **1.9.0**.
 - Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
 - Additive opt-in only; JSON field names unchanged
 - **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**
+- **`push` local/`file://` dest ≠ `--fallback` / multi-dest** (single dest)
 
 ## [1.9.0] — 2026-09-30
 
