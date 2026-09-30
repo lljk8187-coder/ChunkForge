@@ -12775,3 +12775,213 @@ fn store_create_none_zstd_and_reject_duplicate() {
         "json store path; v={v}"
     );
 }
+
+
+// --- Phase 19 M2: pull --compression ---
+
+#[test]
+fn pull_help_lists_compression() {
+    let help = run_ok(&["pull", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--compression"),
+        "pull --help must list --compression:\n{s}"
+    );
+    let lower = s.to_ascii_lowercase();
+    assert!(
+        lower.contains("none") && lower.contains("zstd"),
+        "pull --help should mention none|zstd:\n{s}"
+    );
+    assert!(
+        lower.contains("new") || lower.contains("creat"),
+        "pull --help should say flag affects new stores:\n{s}"
+    );
+}
+
+#[test]
+fn pull_omit_compression_creates_none_store() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let meta = fs::read_to_string(newstore.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"none\""),
+        "omit pull create must be none; meta={meta}"
+    );
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_compression_zstd_creates_zstd_store() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore-z");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+
+    let meta = fs::read_to_string(newstore.join("meta.toml")).expect("meta.toml");
+    assert!(
+        meta.contains("compression = \"zstd\""),
+        "pull --compression zstd must write zstd; meta={meta}"
+    );
+    let stats = run_ok(&[
+        "store",
+        "stats",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
+    assert_eq!(v["compression"].as_str(), Some("zstd"), "{v}");
+
+    run_ok(&[
+        "verify",
+        "--store",
+        newstore.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+}
+
+#[test]
+fn pull_existing_none_store_explicit_zstd_mismatch() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // First pull creates none store (omit).
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("compression mismatch")
+            || err.to_ascii_lowercase().contains("mismatch"),
+        "expected mismatch error, got:\n{err}"
+    );
+}
+
+#[test]
+fn pull_dry_run_with_compression_does_not_create_store() {
+    let dir = tempdir().unwrap();
+    let local = dir.path().join("local");
+    let newstore = dir.path().join("newstore-dry");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        local.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    // dry-run + compression must not create meta even when store path absent.
+    run_ok(&[
+        "pull",
+        "--store",
+        newstore.to_str().unwrap(),
+        "--source",
+        local.to_str().unwrap(),
+        "--compression",
+        "zstd",
+        "--dry-run",
+        idx.to_str().unwrap(),
+    ]);
+    assert!(
+        !newstore.join("meta.toml").is_file(),
+        "dry-run must not create store meta.toml"
+    );
+    assert!(
+        !newstore.exists() || !newstore.join("chunks").is_dir(),
+        "dry-run must not create store layout"
+    );
+}

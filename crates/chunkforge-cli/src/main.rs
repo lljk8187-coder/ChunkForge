@@ -718,6 +718,19 @@ enum Commands {
         /// (one object on stdout; no duplicate stderr summary)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
+        /// On-disk chunk compression for a **new** local `--store` only (`none`|`zstd`;
+        /// case-insensitive). Same semantics as `make`/`archive`/`store create`:
+        /// omit ≡ create with `none` (≡ 1.8); existing stores open by `meta.toml`
+        /// (omit → no mismatch check; explicit value that differs from meta → clear
+        /// non-zero error). **Dry-run never creates.** Disk zstd is **not** HTTP wire
+        /// compression. Orthogonal to `--verify` / `--fallback` / `--cache*` / `--jobs`
+        /// / `--progress` / path scope.
+        #[arg(
+            long = "compression",
+            value_name = "none|zstd",
+            value_parser = parse_cli_compression
+        )]
+        compression: Option<Compression>,
         /// Emit `progress: op=pull done=N/TOTAL` on stderr per chunk
         /// (default off ≡ 1.1.0). Orthogonal to `--format json`.
         #[arg(long = "progress")]
@@ -1304,6 +1317,7 @@ fn run() -> Result<()> {
             dry_run,
             verify,
             format,
+            compression,
             progress,
             paths,
             excludes,
@@ -1330,6 +1344,7 @@ fn run() -> Result<()> {
                 format,
                 progress,
                 &path_filter,
+                compression,
             )
         }
         Commands::Diff {
@@ -4265,6 +4280,7 @@ fn cmd_pull(
     format: CliFormat,
     progress: bool,
     path_filter: &PathFilter,
+    compression: Option<Compression>,
 ) -> Result<()> {
     let (source, stats) = open_chunk_source(
         None,
@@ -4297,7 +4313,7 @@ fn cmd_pull(
             None
         }
     } else {
-        Some(open_or_create_store(store_path, None)?)
+        Some(open_or_create_store(store_path, compression)?)
     };
 
     #[derive(Clone, Copy)]
