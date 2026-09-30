@@ -12,12 +12,11 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P23_DEMO_DIR (default /tmp/cf-p23-diff-tree-symlink-demo)
 #
-# Version gate expects chunkforge 1.12.0 (Phase23-M4; bump is M7).
+# Version gate expects chunkforge 1.12.0 (Phase23-M5; bump is M7).
 #
-# Gate (Phase22-M5 lesson): compat_1_12 is note-only here — "will be
-# introduced in M5". Do NOT assert that check_compat_1_12.sh must exist,
-# and never assert that it must not exist. Existing compat_1_11 must stay
-# present + executable (same pattern as demo_symlink ↔ compat_1_11).
+# Gate (Phase23-M5): require check_compat_1_12.sh present + executable
+# (same pattern as demo_symlink ↔ compat_1_11). Existing compat_1_11 must
+# stay present + executable. Do not force-run the long compat gate here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -229,15 +228,15 @@ echo "mount has no --progress: OK"
 echo "F: help / ≠ prune / ≠ gc-path / ≠ write mount: OK"
 
 echo
-echo "==> G. version still 1.12.0 + Cargo 1.12.0 + compat note (Phase23-M4)"
+echo "==> G. version still 1.12.0 + Cargo 1.12.0 + compat_1_12 (Phase23-M5)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
 if ! grep -F '1.12.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.12.0 (M4; bump is M7); got $VER" >&2
+  echo "error: expected chunkforge 1.12.0 (M5; bump is M7); got $VER" >&2
   exit 1
 fi
 if ! grep -E '^version = "1\.12\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must still be 1.12.0 (Phase23-M4)" >&2
+  echo "error: workspace Cargo.toml version must still be 1.12.0 (Phase23-M5)" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -251,11 +250,18 @@ if [[ ! -x "$COMPAT111" ]]; then
   echo "error: check_compat_1_11.sh must be executable" >&2
   exit 1
 fi
-# compat_1_12: note-only — will be introduced in M5.
-# Phase22-M5 lesson: NEVER assert that check_compat_1_12.sh must not exist
-# (and do not require it yet).
-echo "note: check_compat_1_12.sh will be introduced in M5 (note-only; no must-exist / must-not-exist assert)"
-echo "G: version 1.12.0 / Cargo 1.12.0 / compat_1_11 present; compat_1_12 note-only: OK"
+# Phase23-M5: compat_1_12 must exist + executable (same pattern as
+# demo_symlink ↔ compat_1_11). Do not force-run the long gate here.
+COMPAT112="$ROOT/scripts/check_compat_1_12.sh"
+if [[ ! -f "$COMPAT112" ]]; then
+  echo "error: check_compat_1_12.sh must exist" >&2
+  exit 1
+fi
+if [[ ! -x "$COMPAT112" ]]; then
+  echo "error: check_compat_1_12.sh must be executable" >&2
+  exit 1
+fi
+echo "G: version 1.12.0 / Cargo 1.12.0 / compat_1_11 + compat_1_12 present+executable: OK"
 
 echo
 echo "demo_diff_tree_symlink: ALL OK"

@@ -118,9 +118,9 @@ skip|record`** (default **`skip`** ≡ **1.12.0** tree skip+warn; **`record`**
 non-zero; **not** followed; clap **`requires = "tree"`**). Defaults stay ≡
 **1.12.0** until the 1.13.0 closeout. Responsibility nail: **`diff --tree
 --symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path`
-≠ default record**. Gate **`check_compat_1_12.sh`** is **planned for M5**
-(note-only here — this milestone does not assert that file must or must not
-exist). See [diff.md](diff.md) and
+≠ default record**. Gate **`check_compat_1_12.sh`** (Phase23-M5; calls 1_11;
+asserts `diff --symlinks` default skip ≡ 1.12 + thin archive→diff record
+identical; no absolute perf SLA) is present. See [diff.md](diff.md) and
 [`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
@@ -283,6 +283,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.11 mount path quartet; no gc `--path`; no mount `--progress`; calls 1_9).
 [`scripts/check_compat_1_11.sh`](../scripts/check_compat_1_11.sh)
 (1.12 archive `--symlinks` / demo_symlink; calls 1_10).
-**`check_compat_1_12.sh`** is **planned for M5** (Phase23; note-only — do not
-assert that file must or must not exist at this milestone).
+[`scripts/check_compat_1_12.sh`](../scripts/check_compat_1_12.sh)
+(1.13 `diff --symlinks` / demo_diff_tree_symlink; calls 1_11).
 No absolute perf SLA.
