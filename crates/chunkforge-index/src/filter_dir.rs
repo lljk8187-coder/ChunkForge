@@ -10,23 +10,28 @@
 //! - **File** and **Symlink** entries are kept iff [`PathFilter::allows`] is true
 //!   for their path (same include-then-exclude rules as `archive` / `extract` /
 //!   `push` / `pull`). Symlink paths are treated like File paths for filtering.
-//! - **Dir entries** are kept only when they are **ancestors** of at least one
-//!   kept File or Symlink (`dir` is a proper `/`-separated prefix of the leaf path). This
-//!   preserves explicit directory modes for traversable parents while dropping
-//!   unrelated empty dirs — matching extract/path “only reach included files”
-//!   mental model. Parent dirs missing as explicit entries are still synthesized
-//!   by DirFs from file path prefixes.
+//! - **Dir entries** are kept when they are **ancestors** of at least one
+//!   kept File or Symlink (`dir` is a proper `/`-separated prefix of the leaf
+//!   path), **or** (when the filter is non-empty) when [`PathFilter::allows`]
+//!   is true for the Dir path itself — so path-matched leaf/empty Dirs from
+//!   `archive --empty-dirs` survive the same way extract uses `allows` on Dir
+//!   entries. Unrelated empty dirs that fail `allows` are still dropped. Do
+//!   **not** synthesize ghost Dirs: only entries already present in the input
+//!   archive may be kept. Parent dirs missing as explicit entries are still
+//!   synthesized by DirFs from path prefixes.
 //! - Empty filter (`PathFilter::new([], [])`) ⇒ **identity** (clone of input) ≡
 //!   1.10.0 full tree. No re-encode; listing bytes of the original archive are
 //!   untouched.
-//! - Non-matching Files (and non-ancestor Dirs) are omitted from the returned
+//! - Non-matching Files/Symlinks and Dir entries that are neither ancestors of
+//!   kept leaves nor path-matched via `allows` are omitted from the returned
 //!   listing; the on-disk `.cfdir` is never rewritten by this helper.
 
 use crate::{DirArchive, DirEntryKind, PathFilter};
 use std::collections::HashSet;
 
 /// Return a [`DirArchive`] containing only Files/Symlinks that pass `filter`,
-/// plus Dir entries that are ancestors of those leaves.
+/// plus Dir entries that are ancestors of those leaves **or** (non-empty
+/// filter) path-matched leaf/empty Dirs that pass [`PathFilter::allows`].
 ///
 /// See module docs for the ancestor / empty-filter policy. Does not mutate
 /// `archive`; does not encode or decode `.cfdir` bytes.
@@ -37,7 +42,8 @@ pub fn filter_dir_archive(archive: &DirArchive, filter: &PathFilter) -> DirArchi
     }
 
     // Keep Files and Symlinks that pass PathFilter (Symlink path treated like File).
-    // Ancestor Dirs of any kept leaf are retained.
+    // Dir kept if ancestor of a kept File/Symlink leaf, OR PathFilter::allows
+    // (path-matched leaf/empty Dir; filter is known non-empty here).
     let kept_leaf_paths: HashSet<&str> = archive
         .entries
         .iter()
@@ -57,7 +63,9 @@ pub fn filter_dir_archive(archive: &DirArchive, filter: &PathFilter) -> DirArchi
             DirEntryKind::File { .. } | DirEntryKind::Symlink { .. } => {
                 kept_leaf_paths.contains(e.path.as_str())
             }
-            DirEntryKind::Dir { .. } => is_ancestor_of_any(&e.path, &kept_leaf_paths),
+            DirEntryKind::Dir { .. } => {
+                is_ancestor_of_any(&e.path, &kept_leaf_paths) || filter.allows(&e.path)
+            }
         })
         .cloned()
         .collect();
@@ -171,8 +179,8 @@ mod tests {
         assert!(paths.contains(&"pkgs"));
         assert!(paths.contains(&"pkgs/foo"));
         assert!(!paths.iter().any(|p| p.starts_with("pkgs/bar")));
-        // empty dir under pkgs is not an ancestor of any kept file → dropped.
-        assert!(!paths.contains(&"pkgs/empty"));
+        // empty dir under pkgs passes PathFilter::allows → kept as leaf Dir (Phase26).
+        assert!(paths.contains(&"pkgs/empty"));
         assert!(!paths.contains(&"readme.txt"));
         assert!(!paths.contains(&"other/x.txt"));
     }
@@ -182,8 +190,18 @@ mod tests {
         let arch = sample_tree();
         let filter = PathFilter::new(Vec::<String>::new(), ["*.txt"]).unwrap();
         let filtered = filter_dir_archive(&arch, &filter);
-        // All sample files end in .txt → none kept; dirs without kept files gone.
-        assert!(filtered.entries.is_empty());
+        // All sample files end in .txt → none kept as leaves.
+        // Explicit Dir entries still pass allows (*.txt does not match them) → kept.
+        assert_eq!(
+            paths_of(&filtered),
+            vec!["pkgs", "pkgs/foo", "pkgs/bar", "pkgs/empty"]
+        );
+        assert!(
+            filtered
+                .entries
+                .iter()
+                .all(|e| matches!(e.kind, DirEntryKind::Dir { .. }))
+        );
     }
 
     #[test]
@@ -304,5 +322,131 @@ mod tests {
         assert!(paths.contains(&"pkgs/bar/slink"));
         assert!(!paths.contains(&"pkgs/foo/a.txt"));
         assert!(!paths.contains(&"pkgs/foo/link"));
+    }
+
+    #[test]
+    fn path_matched_empty_leaf_dir_is_kept() {
+        let arch = sample_tree();
+        // Exact path hit on an empty leaf Dir (no File/Symlink under it).
+        let filter = PathFilter::new(["pkgs/empty"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let paths = paths_of(&filtered);
+        assert!(paths.contains(&"pkgs/empty"));
+        let leaf = filtered
+            .entries
+            .iter()
+            .find(|e| e.path == "pkgs/empty")
+            .unwrap();
+        assert!(matches!(leaf.kind, DirEntryKind::Dir { mode: 0o755 }));
+        // No File/Symlink kept; ancestor pkgs does not allow under exact pkgs/empty.
+        assert!(!paths.contains(&"pkgs"));
+        assert!(!paths.contains(&"pkgs/foo"));
+        assert!(!paths.contains(&"pkgs/foo/a.txt"));
+        assert!(!paths.contains(&"readme.txt"));
+        // Dedup: one Dir entry only.
+        assert_eq!(paths.iter().filter(|p| **p == "pkgs/empty").count(), 1);
+        assert_eq!(filtered.entries.len(), 1);
+    }
+
+    #[test]
+    fn path_prefix_keeps_empty_leaf_dir_under_include() {
+        let arch = sample_tree();
+        // --path pkgs ⇒ pkgs/empty allows → kept alongside File leaves + ancestors.
+        let filter = PathFilter::new(["pkgs"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let paths = paths_of(&filtered);
+        assert!(paths.contains(&"pkgs/empty"));
+        assert!(paths.contains(&"pkgs/foo/a.txt"));
+        assert!(paths.contains(&"pkgs/bar/c.txt"));
+        assert!(!paths.contains(&"readme.txt"));
+        assert!(!paths.contains(&"other/x.txt"));
+    }
+
+    #[test]
+    fn unrelated_empty_dir_still_dropped() {
+        let arch = sample_tree();
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        // pkgs/empty does not allow under pkgs/foo → still dropped (unchanged).
+        assert!(!paths_of(&filtered).contains(&"pkgs/empty"));
+        assert_eq!(
+            paths_of(&filtered),
+            vec!["pkgs", "pkgs/foo", "pkgs/foo/a.txt", "pkgs/foo/b.txt"]
+        );
+    }
+
+    #[test]
+    fn archive_without_explicit_dir_entries_unchanged() {
+        // No Dir entries at all → filtering cannot invent ghost Dirs (≡ 1.15).
+        let arch = DirArchive::new(
+            0,
+            vec![
+                file_entry("readme.txt"),
+                file_entry("pkgs/foo/a.txt"),
+                file_entry("other/x.txt"),
+            ],
+        )
+        .unwrap();
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        assert_eq!(paths_of(&filtered), vec!["pkgs/foo/a.txt"]);
+        assert!(
+            filtered
+                .entries
+                .iter()
+                .all(|e| matches!(e.kind, DirEntryKind::File { .. }))
+        );
+    }
+
+    #[test]
+    fn sample_only_ancestor_dirs_equiv_old_file_symlink_behavior() {
+        // Listing has ancestor Dirs but no empty leaf Dir → ≡ pre-Phase26 result
+        // for a file-scoped path filter.
+        let arch = DirArchive::new(
+            0,
+            vec![
+                dir_entry("pkgs", 0o755),
+                dir_entry("pkgs/foo", 0o755),
+                file_entry("pkgs/foo/a.txt"),
+                file_entry("other/x.txt"),
+            ],
+        )
+        .unwrap();
+        let filter = PathFilter::new(["pkgs/foo"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        assert_eq!(
+            paths_of(&filtered),
+            vec!["pkgs", "pkgs/foo", "pkgs/foo/a.txt"]
+        );
+    }
+
+    #[test]
+    fn empty_leaf_dir_kept_once_when_also_ancestor() {
+        // Dir that both allows and is ancestor of a kept File is kept once.
+        let arch = DirArchive::new(
+            0,
+            vec![
+                dir_entry("pkgs", 0o755),
+                dir_entry("pkgs/foo", 0o755),
+                file_entry("pkgs/foo/a.txt"),
+            ],
+        )
+        .unwrap();
+        let filter = PathFilter::new(["pkgs"], Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        let paths = paths_of(&filtered);
+        assert_eq!(paths, vec!["pkgs", "pkgs/foo", "pkgs/foo/a.txt"]);
+        assert_eq!(paths.iter().filter(|p| **p == "pkgs").count(), 1);
+        assert_eq!(paths.iter().filter(|p| **p == "pkgs/foo").count(), 1);
+    }
+
+    #[test]
+    fn identity_keeps_all_dirs_including_empty_leaf() {
+        let arch = sample_tree();
+        assert!(paths_of(&arch).contains(&"pkgs/empty"));
+        let filter = PathFilter::new(Vec::<String>::new(), Vec::<String>::new()).unwrap();
+        let filtered = filter_dir_archive(&arch, &filter);
+        assert_eq!(filtered, arch);
+        assert!(paths_of(&filtered).contains(&"pkgs/empty"));
     }
 }
