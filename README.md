@@ -620,8 +620,13 @@ full reference set; jobs=1, retries=0, text, progress off).
   (full-tree archive → store stats json → push `--path` PUT count < full →
   `--exclude-from`; local `put_stub` only).
 
-**Still pending before 1.4.0 tag:** `check_compat_1_3.sh` (M6), version bump
-to **1.4.0** (M7).
+- **Compat gate**: [`scripts/check_compat_1_3.sh`](scripts/check_compat_1_3.sh)
+  — runs `check_compat_1_2.sh`, then asserts 1.4 help flags (`push --path`/
+  `--exclude`, `store stats`/`du --format`, archive/extract/pull/push
+  `--exclude-from`); thin no-pack / no-`--delete`; asserts
+  `demo_push_path_store_stats.sh` present. No absolute perf SLA.
+
+**Still pending before 1.4.0 tag:** version bump to **1.4.0** (M7).
 
 **`path` ≠ listing upload ≠ sync / prune:**
 
@@ -646,6 +651,7 @@ bash scripts/demo_push_path_store_stats.sh
 # B: push full vs push --path packages/foo (PUT count < full; no listing upload)
 # C: push --exclude-from (subset)
 
+bash scripts/check_compat_1_3.sh   # includes 1_2 → 1_1 → 1_0 + 1.4 flags
 ./target/debug/chunkforge --version   # still chunkforge 1.3.0 until M7
 ```
 
