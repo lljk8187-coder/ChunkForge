@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-promises. README: Phase 10 status row, **Non-goals (Phase 10 / 1.0)**,
   Phase 10 / 1.0.0 section (formal **1.0.0** bump deferred to closeout;
   workspace remains 0.9.0).
+- **Phase 10 M4**: `scripts/check_compat_1_0.sh` (1.0 compat gate: key CLI flags,
+  no `aws-sdk`, fuse prefetch lib tests, demo subset) and
+  `scripts/demo_mount_prefetch.sh` (get-count unit tests; optional real mount).
+  README Phase 10 section links both scripts plus `docs/stability.md` /
+  `docs/mount.md`.
 
 ## [0.9.0] — 2026-09-29
 

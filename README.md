@@ -389,10 +389,18 @@ analysis — see **Non-goals (Phase 10 / 1.0)** above and `docs/stability.md`.
 # Prefetch on (default) vs off (≡ 0.9.0 on-demand get)
 # chunkforge mount --store ./store release.cfdir ./mnt
 # chunkforge mount --store ./store --no-prefetch release.cfdir ./mnt
-# See docs/mount.md / docs/stability.md
+
+# Prefetch get-count demo (unit tests; optional real mount if fuse available)
+bash scripts/demo_mount_prefetch.sh
+
+# 1.0 compat gate (no aws-sdk, key flags, demo subset; ~10–15 min; no perf SLA)
+bash scripts/check_compat_1_0.sh
+
 ./target/debug/chunkforge --version   # still → chunkforge 0.9.0 until 1.0 closeout
 ```
 
+Scripts: [`scripts/check_compat_1_0.sh`](scripts/check_compat_1_0.sh),
+[`scripts/demo_mount_prefetch.sh`](scripts/demo_mount_prefetch.sh).
 Details: [docs/stability.md](docs/stability.md), [docs/mount.md](docs/mount.md).
 
 ## Incremental dedup demo
