@@ -156,6 +156,10 @@ enum Commands {
             value_parser = parse_cli_compression
         )]
         compression: Option<Compression>,
+        /// Emit `progress: op=archive done=N/TOTAL` on stderr per filtered file
+        /// (default off ≡ 1.6.0). Orthogonal to `--format json` and `--jobs`.
+        #[arg(long = "progress")]
+        progress: bool,
     },
     /// Materialize a directory tree from a `.cfdir` + chunk source
     ///
@@ -879,6 +883,7 @@ fn run() -> Result<()> {
             exclude_from,
             format,
             compression,
+            progress,
         } => {
             let jobs = parse_jobs(jobs)?;
             let excludes = merged_excludes(&excludes, &exclude_from)?;
@@ -894,6 +899,7 @@ fn run() -> Result<()> {
                 &excludes,
                 format,
                 compression,
+                progress,
             )
         }
         Commands::Extract {
@@ -1558,6 +1564,7 @@ fn cmd_archive(
     excludes: &[String],
     format: CliFormat,
     compression: Option<Compression>,
+    progress: bool,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
 
@@ -1644,8 +1651,10 @@ fn cmd_archive(
     let dry_seen: Mutex<HashSet<ChunkId>> = Mutex::new(HashSet::new());
 
     let seed_ctx = seed_map.as_ref().map(|m| (m, seed_trust_mtime));
+    // Progress is per filtered File (PathFilter after type-skip); TOTAL known.
+    let prog = ProgressReporter::new(progress, "archive", Some(file_paths.len()));
     let outcomes = parallel::map_indexed(&file_paths, jobs, |_idx, full| {
-        archive_one_file(
+        let outcome = archive_one_file(
             src_dir,
             full,
             &params,
@@ -1653,7 +1662,9 @@ fn cmd_archive(
             seed_ctx,
             dry_run,
             &dry_seen,
-        )
+        );
+        prog.tick();
+        outcome
     });
 
     let mut entries: Vec<DirEntry> = Vec::with_capacity(file_paths.len());

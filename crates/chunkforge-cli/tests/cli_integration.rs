@@ -11252,3 +11252,144 @@ fn archive_omitted_compression_is_none() {
         serde_json::from_str(String::from_utf8_lossy(&stats.stdout).trim()).expect("stats json");
     assert_eq!(v["compression"].as_str(), Some("none"), "{v}");
 }
+
+// --- Phase 17 M3: archive --progress ---
+
+#[test]
+fn archive_help_lists_progress() {
+    let help = run_ok(&["archive", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--progress"),
+        "archive --help must list --progress:\n{s}"
+    );
+}
+
+#[test]
+fn archive_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"progress file a").unwrap();
+    fs::write(src.join("sub/b.txt"), b"progress file b").unwrap();
+    fs::write(src.join("c.txt"), b"progress file c").unwrap();
+
+    let with = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        "--progress",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=archive done=")),
+        "archive --progress stderr must contain progress: op=archive; stderr={err}"
+    );
+    assert!(
+        err.contains("done=3/3") || err.lines().any(|l| l.contains("done=") && l.contains("/3")),
+        "archive progress TOTAL should be filtered file count (3); stderr={err}"
+    );
+    assert!(
+        err.contains("archive: wrote"),
+        "text summary still on stderr; stderr={err}"
+    );
+
+    let store2 = dir.path().join("store2");
+    let cfdir2 = dir.path().join("tree2.cfdir");
+    let without = run_ok(&[
+        "archive",
+        "--store",
+        store2.to_str().unwrap(),
+        "-o",
+        cfdir2.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "archive without --progress must not emit progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn archive_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"json progress a").unwrap();
+    fs::write(src.join("b.txt"), b"json progress b").unwrap();
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        "--progress",
+        "--format",
+        "json",
+        src.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("archive json");
+    assert_eq!(v["ok"].as_bool(), Some(true), "{v}");
+    assert!(
+        !stdout.contains("progress:"),
+        "progress must not land on stdout with --format json; stdout={stdout}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("progress: op=archive done=")),
+        "progress on stderr with json; stderr={stderr}"
+    );
+}
+
+#[test]
+fn archive_progress_counts_filtered_files_only() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let cfdir = dir.path().join("tree.cfdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("skip")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"keep a").unwrap();
+    fs::write(src.join("keep/b.txt"), b"keep b").unwrap();
+    fs::write(src.join("skip/c.txt"), b"skip c").unwrap();
+
+    let out = run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        "--progress",
+        "--path",
+        "keep",
+        "--dry-run",
+        src.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("progress: op=archive done=")),
+        "dry-run --progress should still tick; stderr={err}"
+    );
+    assert!(
+        err.contains("/2"),
+        "TOTAL should be PathFilter-kept files (2), not 3; stderr={err}"
+    );
+    assert!(
+        !err.contains("/3"),
+        "excluded file must not inflate TOTAL; stderr={err}"
+    );
+}
