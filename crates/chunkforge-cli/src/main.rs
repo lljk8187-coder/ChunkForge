@@ -957,9 +957,18 @@ enum Commands {
     /// Compare `.cfdir` listings, or a source tree against a listing (`--tree`)
     ///
     /// **Listing↔listing:** two `.cfdir` args (`.cfidx` / bad magic → error).
+    /// Symlink target/mode are already compared by the library; `--symlinks`
+    /// **requires** `--tree` (clap error without it) and does not change
+    /// listing↔listing behaviour.
     /// **Tree↔listing:** `--tree <src-dir> <listing.cfdir>` — builds an ephemeral
-    /// in-memory `DirArchive` from regular files in `src-dir` (left) and compares
-    /// it to the listing (right). Read-only: does **not** write store or `.cfdir`.
+    /// in-memory `DirArchive` from `src-dir` (left) and compares it to the
+    /// listing (right). Read-only: does **not** write store or `.cfdir`.
+    /// Default **`--symlinks skip`** (≡ 1.12.0): live symlinks are skip+warn and
+    /// not followed / not recorded. **`--symlinks record`**: push
+    /// [`DirEntryKind::Symlink`] into the ephemeral tree (target as-is, mode from
+    /// `symlink_metadata`; **not** followed; absolute or empty target → clear
+    /// non-zero). Special files still skip+warn. PathFilter applies after the
+    /// ephemeral build (symlink paths participate when allowed).
     ///
     /// Reports path-level **added** / **removed** / **changed** (content) /
     /// **meta_changed** (same blake3, mode/mtime differ). Default **`--format
@@ -969,7 +978,7 @@ enum Commands {
     /// **`--format json`**: one JSON object with the same path arrays and chunk
     /// stats fields (full arrays; `--max-paths` applies to text listings only).
     /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from` narrow both
-    /// sides' File/Dir entry sets via [`PathFilter`] **before** compare (default
+    /// sides' File/Dir/Symlink entry sets via [`PathFilter`] **before** compare (default
     /// no flags ≡ 1.9 full-listing diff). JSON field names unchanged (arrays may
     /// be shorter). **Not** sync / prune. Exit codes are format-independent:
     /// **0** when identical, **1** when any path or chunk-set difference; usage /
@@ -1015,6 +1024,19 @@ enum Commands {
         /// `--format json` (progress→stderr, JSON→stdout) and path filters.
         #[arg(long = "progress")]
         progress: bool,
+        /// Symlink handling for `--tree` only: `skip` (default ≡ 1.12 tree
+        /// skip+warn; not recorded / not followed) or `record` (ephemeral
+        /// Symlink entries; not followed; absolute or empty target → clear
+        /// non-zero). Requires `--tree` (listing↔listing already compares
+        /// Symlink in-lib; flag rejected without `--tree`). Special files
+        /// still skip+warn. **Not** sync / follow / write-mount.
+        #[arg(
+            long = "symlinks",
+            value_enum,
+            default_value_t = SymlinkPolicy::Skip,
+            requires = "tree"
+        )]
+        symlinks: SymlinkPolicy,
         /// Left `.cfdir` (listing↔listing), or the listing `.cfdir` when `--tree` is set
         left: PathBuf,
         /// Right `.cfdir` (listing↔listing only). Must be omitted with `--tree`.
@@ -1141,17 +1163,18 @@ enum StoreCommands {
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
 /// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent;
 /// `store list` ≡ sorted hex ids one-per-line).
-/// How `archive` treats symbolic links (Phase22-M2).
+/// How `archive` / `diff --tree` treat symbolic links (Phase22-M2 / Phase23-M1).
 ///
-/// Default [`Skip`] ≡ 1.11.0 skip+warn (not recorded / not followed).
+/// Default [`Skip`] ≡ 1.11/1.12 skip+warn (not recorded / not followed).
 /// [`Record`] writes [`DirEntryKind::Symlink`] entries (targets as-is; not
-/// followed); absolute or empty targets are rejected.
+/// followed); absolute or empty targets are rejected. Shared by archive and
+/// `diff --tree` (listing↔listing needs no flag — library already compares).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum SymlinkPolicy {
-    /// Skip + warn (≡ 1.11.0); do not record / do not follow
+    /// Skip + warn (≡ 1.11/1.12); do not record / do not follow
     #[default]
     Skip,
-    /// Record Symlink into listing (not followed; absolute target → error)
+    /// Record Symlink into listing / ephemeral tree (not followed; absolute target → error)
     Record,
 }
 
@@ -1653,6 +1676,7 @@ fn run() -> Result<()> {
             exclude_from,
             path_from,
             progress,
+            symlinks,
             left,
             right,
         } => {
@@ -1668,6 +1692,7 @@ fn run() -> Result<()> {
                 format,
                 &path_filter,
                 progress,
+                symlinks,
             )
         }
         Commands::Store {
@@ -3129,6 +3154,7 @@ fn emit_diff_report(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_diff_dispatch(
     tree: Option<&Path>,
     left: &Path,
@@ -3137,6 +3163,7 @@ fn cmd_diff_dispatch(
     format: CliFormat,
     path_filter: &PathFilter,
     progress: bool,
+    symlinks: SymlinkPolicy,
 ) -> Result<()> {
     match tree {
         Some(src_dir) => {
@@ -3146,7 +3173,15 @@ fn cmd_diff_dispatch(
                     extra.display()
                 );
             }
-            cmd_diff_tree(src_dir, left, max_paths, format, path_filter, progress)
+            cmd_diff_tree(
+                src_dir,
+                left,
+                max_paths,
+                format,
+                path_filter,
+                progress,
+                symlinks,
+            )
         }
         None => {
             let Some(right) = right else {
@@ -3160,6 +3195,9 @@ fn cmd_diff_dispatch(
                     "diff without --tree expects two `.cfdir` files; got a directory.                      Use: chunkforge diff --tree <src-dir> <listing.cfdir>"
                 );
             }
+            // Listing↔listing: Symlink already compared in-lib; `--symlinks`
+            // requires `--tree` (clap), so this path never sees an explicit flag.
+            let _ = symlinks;
             cmd_diff_listings(left, right, max_paths, format, path_filter, progress)
         }
     }
@@ -3231,6 +3269,7 @@ fn cmd_diff_tree(
     format: CliFormat,
     path_filter: &PathFilter,
     progress: bool,
+    symlinks: SymlinkPolicy,
 ) -> Result<()> {
     if !src_dir.is_dir() {
         bail!(
@@ -3240,14 +3279,14 @@ fn cmd_diff_tree(
     }
     if listing.is_dir() {
         bail!(
-            "diff --tree expects one listing `.cfdir` (got directory {});              two trees are not supported",
+            "diff --tree expects one listing `.cfdir` (got directory {}); two trees are not supported",
             listing.display()
         );
     }
     // Build ephemeral tree against the full listing (so in-scope matching paths
     // still copy chunk tables), then narrow both sides with PathFilter.
     let listing_full = load_cfdir_for_diff(listing)?;
-    let tree_full = build_ephemeral_tree_archive(src_dir, &listing_full)?;
+    let tree_full = build_ephemeral_tree_archive(src_dir, &listing_full, symlinks)?;
     let listing_arch = filter_dir_archive_entries(&listing_full, path_filter);
     let tree_arch = filter_dir_archive_entries(&tree_full, path_filter);
     // Documented orientation: left=tree, right=listing.
@@ -3259,40 +3298,89 @@ fn cmd_diff_tree(
 
 /// Build an in-memory `DirArchive` from a source tree for `diff --tree`.
 ///
-/// Regular files only (symlink/special skipped + warn). Phase22-M3: listing↔listing
-/// diff includes Symlink paths; tree↔listing still skips live symlinks with warn
-/// (File-only walk) so existing File tree-diff tests stay stable. Symlink-aware
-/// tree candidates are deferred (easy follow-up; not required for M3).
-/// Does **not** write store or `.cfdir`. For each file: size, mode, mtime_secs,
-/// stream BLAKE3 → `blob_blake3`. When the path exists in `listing` **and**
-/// `blob_blake3` matches, copy the listing's File entry (chunk table + meta) so
-/// identical tree↔listing yields `chunks_shared`≈full and `chunks_only_*=0`.
-/// Otherwise use an empty chunk list (path-level diff still works). Empty
-/// non-zero-size chunk tables are **not** structurally valid for encode, so this
-/// archive is ephemeral and never written.
-fn build_ephemeral_tree_archive(src_dir: &Path, listing: &DirArchive) -> Result<DirArchive> {
+/// Does **not** write store or `.cfdir`. For each regular file: size, mode,
+/// mtime_secs, stream BLAKE3 → `blob_blake3`. When the path exists in `listing`
+/// **and** `blob_blake3` matches, copy the listing's File entry (chunk table +
+/// meta) so identical tree↔listing yields `chunks_shared`≈full and
+/// `chunks_only_*=0`. Otherwise use an empty chunk list (path-level diff still
+/// works). Empty non-zero-size chunk tables are **not** structurally valid for
+/// encode, so this archive is ephemeral and never written.
+///
+/// Symlink policy (Phase23-M1, mirrors archive):
+/// - [`SymlinkPolicy::Skip`] (default ≡ 1.12): skip+warn; not in entries.
+/// - [`SymlinkPolicy::Record`]: `read_link` target as-is + `symlink_metadata`
+///   mode → [`DirEntryKind::Symlink`] (0 chunks; **not** followed); absolute or
+///   empty target → clear non-zero. Special files always skip+warn.
+///
+/// PathFilter is applied by the caller **after** this build.
+fn build_ephemeral_tree_archive(
+    src_dir: &Path,
+    listing: &DirArchive,
+    policy: SymlinkPolicy,
+) -> Result<DirArchive> {
     let listing_files = seed_file_map(listing);
 
     let mut file_paths: Vec<PathBuf> = Vec::new();
+    let mut symlink_candidates: Vec<ArchiveSymlinkCandidate> = Vec::new();
     let mut skipped_symlinks = 0usize;
     let mut skipped_special = 0usize;
     collect_diff_tree_files(
         src_dir,
         src_dir,
         &mut file_paths,
+        &mut symlink_candidates,
         &mut skipped_symlinks,
         &mut skipped_special,
+        policy,
     )?;
     file_paths.sort();
 
-    if skipped_symlinks > 0 || skipped_special > 0 {
-        eprintln!(
-            "diff: symlink policy = skip+warn (not recorded / not followed);              skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
-            if skipped_symlinks == 1 { "" } else { "s" },
-        );
+    // Absolute / empty targets: reject under Record before any summary
+    // (same spirit as archive; PathFilter still applied by caller afterward).
+    for cand in &symlink_candidates {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        validate_archive_path(&rel)
+            .map_err(|e| anyhow::anyhow!("invalid archive path {rel:?}: {e}"))?;
+        if cand.target.is_empty() {
+            bail!("diff: symlink {rel} has empty target (refusing to record)");
+        }
+        if Path::new(&cand.target).is_absolute() {
+            bail!(
+                "diff: symlink {rel} has absolute target {:?} (refusing; use a relative target)",
+                cand.target
+            );
+        }
     }
 
-    let mut entries: Vec<DirEntry> = Vec::with_capacity(file_paths.len());
+    match policy {
+        SymlinkPolicy::Skip if skipped_symlinks > 0 || skipped_special > 0 => {
+            eprintln!(
+                "diff: symlink policy = skip+warn (not recorded / not followed); \
+                 skipped {skipped_symlinks} symlink{}, {skipped_special} special (fifo/socket/device)",
+                if skipped_symlinks == 1 { "" } else { "s" },
+            );
+        }
+        SymlinkPolicy::Record => {
+            if !symlink_candidates.is_empty() {
+                eprintln!(
+                    "diff: symlink policy = record (not followed); recorded {} symlink{}",
+                    symlink_candidates.len(),
+                    if symlink_candidates.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                );
+            }
+            if skipped_special > 0 {
+                eprintln!("diff: skipped {skipped_special} special (fifo/socket/device)");
+            }
+        }
+        SymlinkPolicy::Skip => {}
+    }
+
+    let mut entries: Vec<DirEntry> =
+        Vec::with_capacity(file_paths.len() + symlink_candidates.len());
     for full in &file_paths {
         let rel = relative_archive_path(src_dir, full)?;
         validate_archive_path(&rel)
@@ -3301,9 +3389,9 @@ fn build_ephemeral_tree_archive(src_dir: &Path, listing: &DirArchive) -> Result<
         let meta =
             fs::symlink_metadata(full).with_context(|| format!("stat {}", full.display()))?;
         if meta.file_type().is_symlink() {
-            // collect should have skipped; belt-and-suspenders.
+            // collect should have skipped or recorded; belt-and-suspenders.
             eprintln!(
-                "diff: skip symlink {} (policy: skip+warn; not recorded)",
+                "diff: skip symlink {} (unexpected after walk; not recorded)",
                 full.display()
             );
             continue;
@@ -3354,8 +3442,21 @@ fn build_ephemeral_tree_archive(src_dir: &Path, listing: &DirArchive) -> Result<
         entries.push(DirEntry { path: rel, kind });
     }
 
+    for cand in &symlink_candidates {
+        let rel = relative_archive_path(src_dir, &cand.full)?;
+        entries.push(DirEntry {
+            path: rel,
+            kind: DirEntryKind::Symlink {
+                mode: cand.mode,
+                target: cand.target.clone(),
+            },
+        });
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
     // Ephemeral only — may contain empty chunk tables on non-zero size (not
-    // encode-valid). Do not call DirArchive::new / encode / write.
+    // encode-valid) and Symlink under Record. Do not call DirArchive::new /
+    // encode / write / validate.
     Ok(DirArchive {
         format_version: DIR_FORMAT_VERSION_V1,
         flags: 0,
@@ -3364,12 +3465,19 @@ fn build_ephemeral_tree_archive(src_dir: &Path, listing: &DirArchive) -> Result<
 }
 
 /// Walk like [`collect_archive_files`], but warn with a `diff:` prefix.
+///
+/// With [`SymlinkPolicy::Skip`] (default ≡ 1.12): symlinks are skipped with warn
+/// and not followed. With [`SymlinkPolicy::Record`]: collect candidates via
+/// `read_link` / `symlink_metadata` — still **not** followed (symlink-to-dir is
+/// not recursed into). Special files always skip+warn.
 fn collect_diff_tree_files(
     root: &Path,
     dir: &Path,
     out: &mut Vec<PathBuf>,
+    symlink_out: &mut Vec<ArchiveSymlinkCandidate>,
     skipped_symlinks: &mut usize,
     skipped_special: &mut usize,
+    policy: SymlinkPolicy,
 ) -> Result<()> {
     let entries = fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
     for entry in entries {
@@ -3380,15 +3488,41 @@ fn collect_diff_tree_files(
             .with_context(|| format!("file_type {}", path.display()))?;
 
         if ft.is_symlink() {
-            *skipped_symlinks += 1;
-            eprintln!(
-                "diff: skip symlink {} (policy: skip+warn; not recorded / not followed)",
-                display_under_root(root, &path)
-            );
+            match policy {
+                SymlinkPolicy::Skip => {
+                    *skipped_symlinks += 1;
+                    eprintln!(
+                        "diff: skip symlink {} (policy: skip+warn; not recorded / not followed)",
+                        display_under_root(root, &path)
+                    );
+                }
+                SymlinkPolicy::Record => {
+                    let target_path = fs::read_link(&path)
+                        .with_context(|| format!("read_link {}", path.display()))?;
+                    let target = target_path.to_string_lossy().into_owned();
+                    let meta = fs::symlink_metadata(&path)
+                        .with_context(|| format!("symlink_metadata {}", path.display()))?;
+                    let mode = file_mode_u32(&meta);
+                    symlink_out.push(ArchiveSymlinkCandidate {
+                        full: path,
+                        target,
+                        mode,
+                    });
+                    // Do not recurse into symlink-to-dir.
+                }
+            }
             continue;
         }
         if ft.is_dir() {
-            collect_diff_tree_files(root, &path, out, skipped_symlinks, skipped_special)?;
+            collect_diff_tree_files(
+                root,
+                &path,
+                out,
+                symlink_out,
+                skipped_symlinks,
+                skipped_special,
+                policy,
+            )?;
             continue;
         }
         if ft.is_file() {

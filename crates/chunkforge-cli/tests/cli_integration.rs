@@ -5288,6 +5288,14 @@ fn diff_help_lists_max_paths_and_stdout_summary() {
     );
     assert!(s.contains("--tree"), "diff --help should list --tree:\n{s}");
     assert!(
+        s.contains("--symlinks"),
+        "diff --help should list --symlinks:\n{s}"
+    );
+    assert!(
+        s.contains("skip") && s.contains("record"),
+        "diff --help should mention skip|record:\n{s}"
+    );
+    assert!(
         s.contains("--format"),
         "diff --help should list --format:\n{s}"
     );
@@ -15163,5 +15171,245 @@ fn doctor_symlink_listing_ignores_symlink_chunks() {
         let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
         assert_eq!(v["ok"], true, "json={stdout}");
         assert_eq!(v["missing"].as_u64().unwrap_or(999), 0);
+    }
+}
+
+// --- Phase23-M1: diff --tree --symlinks skip|record ---
+
+#[test]
+fn diff_help_lists_symlinks() {
+    let out = run_ok(&["diff", "--help"]);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("--symlinks"),
+        "diff --help must list --symlinks:\n{s}"
+    );
+    assert!(
+        s.contains("skip") && s.contains("record"),
+        "diff --help must mention skip|record:\n{s}"
+    );
+    // Listing↔listing strategy: --symlinks requires --tree.
+    assert!(
+        s.contains("--tree")
+            && (s.contains("Requires") || s.contains("requires") || s.contains("tree")),
+        "diff --help should tie --symlinks to --tree:\n{s}"
+    );
+}
+
+#[test]
+fn diff_symlinks_without_tree_is_clap_error() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let left = dir.path().join("left.cfdir");
+    let right = dir.path().join("right.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        left.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    fs::copy(&left, &right).unwrap();
+
+    let result = run_fail(&[
+        "diff",
+        "--symlinks",
+        "record",
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        err.contains("--tree") || err.contains("tree") || err.contains("requires"),
+        "--symlinks without --tree must be a clap error; stderr={err}"
+    );
+}
+
+#[test]
+fn diff_tree_symlinks_record_identical_exit_zero() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let pkgs = src.join("pkgs").join("foo");
+        fs::create_dir_all(&pkgs).unwrap();
+        fs::write(pkgs.join("a.txt"), b"hello-foo\n").unwrap();
+        symlink("a.txt", pkgs.join("link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // Core correctness: record + identical tree → exit 0, no false added.
+        let result = run_ok(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert!(
+            v["added"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+            "record identical must have empty added; json={stdout}"
+        );
+        assert!(
+            v["removed"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+            "record identical must have empty removed; json={stdout}"
+        );
+        assert!(
+            v["changed"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+            "record identical must have empty changed; json={stdout}"
+        );
+        assert!(
+            v["meta_changed"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false),
+            "record identical must have empty meta_changed; json={stdout}"
+        );
+    }
+}
+
+#[test]
+fn diff_tree_default_skip_against_record_listing_may_show_added() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello\n").unwrap();
+        symlink("a.txt", src.join("link.txt")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // Default skip ≡ 1.12: tree skips link → may report added for the listing Symlink.
+        let result = run_fail(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            listing.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("skip") || err.contains("symlink"),
+            "default skip should warn; stderr={err}"
+        );
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let added = v["added"].as_array().cloned().unwrap_or_default();
+        assert!(
+            added.iter().any(|p| p.as_str() == Some("link.txt")),
+            "default skip vs record listing may show added link.txt; json={stdout}"
+        );
+    }
+}
+
+#[test]
+fn diff_tree_symlinks_record_absolute_target_nonzero() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"x\n").unwrap();
+        symlink("/etc/passwd", src.join("bad")).unwrap();
+
+        let store = dir.path().join("store");
+        // Listing without the absolute link (archive would also refuse).
+        let clean = dir.path().join("clean");
+        fs::create_dir_all(&clean).unwrap();
+        fs::write(clean.join("a.txt"), b"x\n").unwrap();
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            clean.to_str().unwrap(),
+        ]);
+
+        let result = run_fail(&[
+            "diff",
+            "--tree",
+            src.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            listing.to_str().unwrap(),
+        ]);
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("absolute") || err.contains("bad"),
+            "absolute target must clear-error; stderr={err}"
+        );
+    }
+}
+
+#[test]
+fn diff_listing_listing_unchanged_without_symlinks_flag() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello\n").unwrap();
+        symlink("a.txt", src.join("link")).unwrap();
+
+        let store = dir.path().join("store");
+        let listing = dir.path().join("tree.cfdir");
+        run_ok(&[
+            "archive",
+            "--store",
+            store.to_str().unwrap(),
+            "-o",
+            listing.to_str().unwrap(),
+            "--symlinks",
+            "record",
+            src.to_str().unwrap(),
+        ]);
+
+        // listing↔listing self-compare still exit 0 (Symlink-aware in lib).
+        run_ok(&["diff", listing.to_str().unwrap(), listing.to_str().unwrap()]);
     }
 }
