@@ -16,7 +16,7 @@
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
-| **Phase 11** | *(in progress → **1.1.0**)* | `extract --skip-trust-mtime` + ops JSON; P1 `mount --prefetch-chunks N` |
+| **Phase 11** | **1.1.0** | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`; P1 `mount --prefetch-chunks N` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -40,7 +40,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), and **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9). **Phase 10 is closed at 1.0.0**: FUSE sequential prefetch + 1.0 stability freeze — see [docs/stability.md](docs/stability.md).
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), and FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**). **Phase 11 is closed at 1.1.0**: `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` — see [docs/stability.md](docs/stability.md).
 
 ## Quick start (local CAS)
 
@@ -412,16 +412,16 @@ Scripts: [`scripts/check_compat_1_0.sh`](scripts/check_compat_1_0.sh),
 Details: [docs/stability.md](docs/stability.md), [docs/mount.md](docs/mount.md).
 
 
-## Phase 11 / 1.1.0: skip-trust-mtime + ops JSON *(in progress)*
+## Phase 11 / 1.1.0: skip-trust-mtime + ops JSON
 
 Phase 11 closes the remaining 1.0 experience debt: **`extract --skip-trust-mtime`**
 (symmetric to `archive --seed-trust-mtime`) and expands ops **`--format json`**
-from verify/doctor to **`extract` / `push` / `pull`**. All opt-in; **defaults ≡
-1.0.0** (text summaries, content-path skip, no silent mtime trust). Formal
-**1.1.0** version bump is reserved for Phase 11 closeout (M7) — workspace stays
-**1.0.0** until then.
+from verify/doctor to **`extract` / `push` / `pull`**, plus P1
+**`mount --prefetch-chunks N`**. All opt-in; **defaults ≡ 1.0.0** (text
+summaries, content-path skip, no silent mtime trust, prefetch depth 1).
+Workspace / CLI version is **1.1.0**.
 
-**Delivered (M1–M4 + M6 P1 O1):**
+**Delivered:**
 
 - **`extract --skip-trust-mtime`**: requires `--skip-unchanged`; size +
   `mtime_secs` hit skips content BLAKE3 (default **off** ≡ 1.0.0). Docs warn
@@ -441,10 +441,11 @@ from verify/doctor to **`extract` / `push` / `pull`**. All opt-in; **defaults �
 - **`mount --prefetch-chunks N`** (P1 O1): default **1** ≡ 1.0.0; hard cap
   **≤2**; `--no-prefetch` still wins. See [docs/mount.md](docs/mount.md).
 
-**Still not this Phase / non-goals (carry forward):** full AWS SDK / multipart /
-packfile / write mount / bidirectional sync / extract prune / remote scrub /
-byte-range resume / push listing upload / changing default jobs·retries /
-video analysis. Pack stays measured-only in [docs/perf.md](docs/perf.md).
+**Not delivered / non-goals (carry forward):** `gc --jobs`; full AWS SDK /
+multipart / packfile / write mount / bidirectional sync / extract prune /
+remote scrub / byte-range resume / push listing upload / changing default
+jobs·retries / video analysis. Pack stays measured-only in
+[docs/perf.md](docs/perf.md).
 
 ```bash
 # Phase 11 ops smoke (~minutes; local put_stub only)
@@ -453,7 +454,7 @@ bash scripts/demo_ops_json.sh
 # A: archive → extract → --skip-unchanged --skip-trust-mtime --force (skipped=all)
 # B: extract/push/pull --format json → python3 json.load
 
-./target/debug/chunkforge --version   # still → chunkforge 1.0.0 until M7 bump
+./target/debug/chunkforge --version   # → chunkforge 1.1.0
 ```
 
 Details: [docs/extract.md](docs/extract.md), [docs/push.md](docs/push.md),

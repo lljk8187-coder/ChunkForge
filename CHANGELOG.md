@@ -7,36 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-29
+
+Phase 11 closeout — `extract --skip-trust-mtime`; `extract`/`push`/`pull
+--format json`; P1 `mount --prefetch-chunks N`; defaults remain ≡ **1.0.0**.
+No pack / write mount / aws-sdk / remote scrub / extract prune.
+
 ### Added
 
-- **Phase11-M1:** `extract --skip-trust-mtime` (requires `--skip-unchanged`;
-  opt-in; default off ≡ 1.0.0 content path). Library
-  `judge_extract_unchanged_opts` — size+mtime hit skips content BLAKE3
-  (symmetric to `archive --seed-trust-mtime`); docs warn about forged /
-  clock-drift / `cp -p` mtimes.
-- **Phase11-M2:** `extract --format text|json` (default **text** ≡ 1.0.0
-  stderr summary). JSON: one object on stdout
-  (`ok`/`skipped`/`wrote`/`dirs`, or dry-run `would_*` + `dry_run`); no
-  duplicate stderr summary; exit codes format-independent. Shared
-  `CliFormat`. See `docs/extract.md`.
-- **Phase11-M3:** `push` / `pull --format text|json` (default **text** ≡
-  1.0.0 stderr summary). JSON: one object on stdout with failure-class
-  fields (`ok`/`skipped`/`uploaded|fetched`/`failed`/
-  `failed_transient`/`failed_permanent`/`retries`/`unique_chunks`/
-  `listings`/`dry_run`); no duplicate stderr summary; exit codes
-  format-independent. Field rename is breaking. See `docs/push.md` /
-  `docs/pull.md`.
-- **Phase11-M4:** `scripts/demo_ops_json.sh` — local smoke for
-  `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`
-  (put_stub; no internet). README: Phase 11 status row + **Phase 11 / 1.1.0**
-  section (field pointers to `docs/extract.md` / `docs/push.md` /
-  `docs/pull.md`; formal 1.1.0 bump reserved for closeout). Defaults remain
-  ≡ 1.0.0.
-- **Phase11-M6 P1 O1:** `mount --prefetch-chunks N` — prefetch depth
-  (default **1** ≡ 1.0.0; hard cap **≤2**; clap `1..=2`; library clamp).
-  `--no-prefetch` still wins. `BlobFs`/`DirFs::with_prefetch_chunks`,
-  `PrefetchCache::enabled_with_max_chunks`. Docs: `docs/mount.md`. **Not**
-  delivered this milestone: O2 `gc --jobs`, version **1.1.0** bump (M7).
+- **`extract --skip-trust-mtime`** (Phase 11 M1 / Phase 10 P1 O2 make-up):
+  requires `--skip-unchanged`; opt-in; default **off** ≡ 1.0.0 content path.
+  Library `judge_extract_unchanged_opts` — size+mtime hit skips content
+  BLAKE3 (symmetric to `archive --seed-trust-mtime`); docs warn about
+  forged / clock-drift / `cp -p` mtimes. See `docs/extract.md`.
+- **`extract --format text|json`** (Phase 11 M2): default **text** ≡ 1.0.0
+  stderr summary. JSON: one object on stdout (`ok`/`skipped`/`wrote`/`dirs`,
+  or dry-run `would_*` + `dry_run`); no duplicate stderr summary; exit codes
+  format-independent. Shared `CliFormat`. See `docs/extract.md`.
+- **`push` / `pull --format text|json`** (Phase 11 M3): default **text** ≡
+  1.0.0 stderr summary. JSON: one object on stdout with failure-class fields
+  (`ok`/`skipped`/`uploaded|fetched`/`failed`/`failed_transient`/
+  `failed_permanent`/`retries`/`unique_chunks`/`listings`/`dry_run`); no
+  duplicate stderr summary; exit codes format-independent. Field rename is
+  breaking. See `docs/push.md` / `docs/pull.md`.
+- **Ops JSON demo + README Phase 11** (Phase 11 M4): `scripts/demo_ops_json.sh`
+  — local smoke for `extract --skip-trust-mtime` + `extract`/`push`/`pull
+  --format json` (put_stub; no internet). README Phase 11 / **1.1.0** section.
+- **`mount --prefetch-chunks N`** (Phase 11 M6 / P1 **O1** / Phase 10 O3
+  make-up): prefetch depth (default **1** ≡ 1.0.0; hard cap **≤2**; clap
+  `1..=2`; library clamp). `--no-prefetch` still wins.
+  `BlobFs`/`DirFs::with_prefetch_chunks`,
+  `PrefetchCache::enabled_with_max_chunks`. Docs: `docs/mount.md`.
+- Workspace version **1.1.0** (Phase 11 M7 closeout).
+
+### Not delivered / deferred (Phase 11)
+
+- **P1 O2** `gc --jobs` — not delivered
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.0.0**: `jobs=1`, `http-retries=0`, SigV4 **off**,
+  `diff`/`verify`/`doctor`/`extract`/`push`/`pull` default **text**,
+  `extract` without `--skip-unchanged` / `--skip-trust-mtime` / `--dry-run`
+  ≡ full / conflict / content-path semantics of 1.0.0; mount prefetch default
+  depth **1** ≡ 1.0.0
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- `--no-prefetch` restores 0.9.0 on-demand mount get behaviour
 
 ## [1.0.0] — 2026-09-29
 
@@ -513,6 +537,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.1.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.1.0
 [1.0.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.0.0
 [0.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.9.0
 [0.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v0.8.0

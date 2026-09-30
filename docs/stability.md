@@ -3,7 +3,9 @@
 Phase 10 freezes the **1.0 commitments** below: what callers and scripts may
 rely on across minor releases, what counts as a breaking change, and what this
 project does **not** promise. **ChunkForge 1.0.0** is released (annotated tag
-`v1.0.0`); the workspace reports **1.0.0**.
+`v1.0.0`). **1.1.0** adds opt-in flags only (`extract --skip-trust-mtime`,
+`extract`/`push`/`pull --format json`, `mount --prefetch-chunks N`); defaults
+and the frozen surface stay ≡ **1.0.0**. The workspace reports **1.1.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -22,7 +24,9 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 | **Mount prefetch** | Default **prefetch on** (conservative). `--no-prefetch` ≡ 0.9.0 on-demand `get` (RO-compatible; result bytes unchanged). See [mount.md](mount.md). |
 
 Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
-`--no-prefetch`) may ship in **minor** releases when defaults stay compatible.
+`--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`) may ship in
+**minor** releases when defaults stay compatible. **1.1.0** is such a minor:
+all new flags default off / text / depth 1 ≡ 1.0.0.
 
 ## Breaking-change policy
 
@@ -78,7 +82,8 @@ At 1.0, ChunkForge promises:
 | `gc` | Local unreferenced loose chunks (dry-run / `--apply`) |
 | `store scrub` | Local loose-chunk full BLAKE3 rehash |
 | `diff` | Listing↔listing (+ `--tree`); not sync |
-| `extract --skip-unchanged` / `--dry-run` | Incremental / plan-only materialize; **no** prune |
-| `mount` (+ prefetch / `--no-prefetch`) | Read-only FUSE; sequential prefetch is RO UX only |
+| `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
+| `extract` / `push` / `pull --format json` | Ops JSON (default **text** ≡ 1.0.0); field rename is breaking |
+| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0) |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
