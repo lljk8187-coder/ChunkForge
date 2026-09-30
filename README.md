@@ -569,21 +569,22 @@ Workspace / CLI version is **1.3.0**.
 | `archive --path` / `--exclude` | Write a **smaller** `.cfdir` listing (subset of tree) |
 | `extract --path` / `--exclude` | Materialize **fewer** dest paths; **never** deletes extras |
 | `pull --path` / `--exclude` | Fetch a **subset** of referenced chunk ids into local CAS |
+| `push --path` / `--exclude` | Upload a **subset** of referenced chunk ids; **not** listing upload |
 | `diff` | Listing↔listing; **not** sync |
 | `gc` / `store scrub` | Local CAS only; **not** remote scrub |
 
 **Phase 14 (Unreleased, pre-1.4.0):** `store stats` / alias `du` +
 `--format text|json` (local chunk count + on-disk bytes; see
-[docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md)).
-Still pending: `push --path`/`--exclude`, `--exclude-from`,
+[docs/ops-json.md](docs/ops-json.md) / [docs/doctor-gc.md](docs/doctor-gc.md));
+**`push --path` / `--exclude`** (subset upload; `.cfidx`+path → clear error;
+see [docs/push.md](docs/push.md)). Still pending: `--exclude-from`,
 `check_compat_1_3`, 1.4.0 bump.
 
-**Not delivered / non-goals (carry forward):** `push --path`;
-`--exclude-from`; packfile; write mount / COW; bidirectional sync; extract
-prune / `--delete`; remote scrub; aws-sdk; byte-range resume; push listing
-upload; changing default jobs·retries; video analysis. Pack remains
-measured-only in [docs/perf.md](docs/perf.md) — **1.3.0 still does not
-implement pack**.
+**Not delivered / non-goals (carry forward):** `--exclude-from`; packfile;
+write mount / COW; bidirectional sync; extract prune / `--delete`; remote
+scrub; aws-sdk; byte-range resume; push listing upload; changing default
+jobs·retries; video analysis. Pack remains measured-only in
+[docs/perf.md](docs/perf.md) — **1.3.0 still does not implement pack**.
 
 ```bash
 # Phase 13 path-filter smoke + compat gate (~minutes; local put_stub only)

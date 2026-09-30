@@ -9266,3 +9266,382 @@ fn pull_illegal_exclude_errors_clearly() {
         "stderr={err}"
     );
 }
+
+#[test]
+fn push_help_lists_path_exclude() {
+    let p = run_ok(&["push", "--help"]);
+    let s = String::from_utf8_lossy(&p.stdout);
+    assert!(s.contains("--path"), "push --help should list --path:\n{s}");
+    assert!(
+        s.contains("--exclude"),
+        "push --help should list --exclude:\n{s}"
+    );
+}
+
+#[test]
+fn push_path_subset_puts_only_filtered_chunks() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("packages").join("foo")).unwrap();
+    fs::create_dir_all(src.join("packages").join("bar")).unwrap();
+    fs::create_dir_all(src.join("other")).unwrap();
+    fs::write(
+        src.join("packages").join("foo").join("a.txt"),
+        b"foo-a-unique-push\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("packages").join("bar").join("b.txt"),
+        b"bar-b-unique-push\n",
+    )
+    .unwrap();
+    fs::write(src.join("other").join("c.txt"), b"other-c-unique-push\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Full push — baseline PUT count.
+    let mirror_full = dir.path().join("mirror_full");
+    fs::create_dir_all(&mirror_full).unwrap();
+    let put_full = Arc::new(AtomicUsize::new(0));
+    let (base_full, _h1) =
+        spawn_put_get_store_server(mirror_full.clone(), Arc::clone(&put_full));
+    let full_json = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base_full,
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full_json.stdout).trim())
+            .expect("full push json");
+    let full_unique = full_v["unique_chunks"].as_u64().unwrap();
+    let full_puts = put_full.load(Ordering::SeqCst);
+    assert!(
+        full_unique >= 3,
+        "full push unique_chunks should cover 3 files; v={full_v}"
+    );
+    assert_eq!(
+        full_puts as u64, full_unique,
+        "empty dest full push: PUT count should equal unique_chunks; puts={full_puts} v={full_v}"
+    );
+
+    // Subset push --path packages/foo — fewer PUTs / unique_chunks.
+    let mirror_sub = dir.path().join("mirror_sub");
+    fs::create_dir_all(&mirror_sub).unwrap();
+    let put_sub = Arc::new(AtomicUsize::new(0));
+    let (base_sub, _h2) = spawn_put_get_store_server(mirror_sub.clone(), Arc::clone(&put_sub));
+    let sub_json = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base_sub,
+        "--path",
+        "packages/foo",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&sub_json.stdout).trim())
+            .expect("subset push json");
+    let sub_unique = sub_v["unique_chunks"].as_u64().unwrap();
+    let sub_puts = put_sub.load(Ordering::SeqCst);
+    assert!(
+        sub_unique < full_unique,
+        "subset unique_chunks must be < full; sub={sub_unique} full={full_unique} sub_v={sub_v}"
+    );
+    assert!(
+        sub_unique >= 1,
+        "subset should still upload foo chunks; sub_v={sub_v}"
+    );
+    assert_eq!(
+        sub_puts as u64, sub_unique,
+        "empty dest subset push: PUT count should equal filtered unique_chunks; puts={sub_puts} v={sub_v}"
+    );
+    assert!(
+        sub_puts < full_puts,
+        "subset PUT count must be < full; sub={sub_puts} full={full_puts}"
+    );
+}
+
+#[test]
+fn push_cfidx_with_path_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--path",
+        "anything",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path/--exclude")
+            || err.contains("looks like a `.cfidx`")
+            || err.contains("looks like a .cfidx")
+            || err.contains("cfidx"),
+        "stderr should explain cfidx+path is invalid; stderr={err}"
+    );
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        0,
+        "must not silently upload on cfidx+path"
+    );
+}
+
+#[test]
+fn push_cfidx_with_exclude_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        "http://127.0.0.1:9",
+        "--exclude",
+        "*.o",
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path/--exclude")
+            || err.contains("looks like a `.cfidx`")
+            || err.contains("cfidx"),
+        "stderr should explain cfidx+exclude is invalid; stderr={err}"
+    );
+}
+
+#[test]
+fn push_no_filter_flags_full_set_regression() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"aa-push\n").unwrap();
+    fs::write(src.join("sub").join("b.txt"), b"bb-push\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+    let out = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(
+        v["unique_chunks"].as_u64().unwrap() >= 2,
+        "no filter ⇒ full set; v={v}"
+    );
+    assert!(
+        put_count.load(Ordering::SeqCst) as u64 >= 2,
+        "should upload all; puts={} v={v}",
+        put_count.load(Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn push_path_dry_run_json_unique_chunks_filtered() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("packages").join("foo")).unwrap();
+    fs::create_dir_all(src.join("packages").join("bar")).unwrap();
+    fs::write(src.join("packages").join("foo").join("a.txt"), b"foo-dry-p\n").unwrap();
+    fs::write(src.join("packages").join("bar").join("b.txt"), b"bar-dry-p\n").unwrap();
+
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+
+    let full = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let full_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&full.stdout).trim()).expect("full dry json");
+    assert_eq!(full_v["dry_run"], true);
+    let full_uc = full_v["unique_chunks"].as_u64().unwrap();
+    assert!(full_uc >= 2, "full dry-run unique_chunks; v={full_v}");
+
+    let sub = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--path",
+        "packages/foo",
+        "--dry-run",
+        "--format",
+        "json",
+        listing.to_str().unwrap(),
+    ]);
+    let sub_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&sub.stdout).trim()).expect("sub dry json");
+    assert_eq!(sub_v["dry_run"], true);
+    let sub_uc = sub_v["unique_chunks"].as_u64().unwrap();
+    assert!(
+        sub_uc < full_uc && sub_uc >= 1,
+        "filtered unique_chunks; full={full_uc} sub={sub_uc} sub_v={sub_v}"
+    );
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        0,
+        "dry-run must issue no PUT"
+    );
+}
+
+#[test]
+fn push_illegal_exclude_errors_clearly() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let store = dir.path().join("store");
+    let listing = dir.path().join("app.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let fail = run_fail(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        "http://127.0.0.1:9",
+        "--exclude",
+        "a*b",
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("invalid exclude pattern") || err.contains("exclude pattern"),
+        "stderr={err}"
+    );
+}
+
+#[test]
+fn push_cfidx_without_path_flags_unchanged() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let mirror = dir.path().join("mirror");
+    fs::create_dir_all(&mirror).unwrap();
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let (base, _handle) = spawn_put_get_store_server(mirror, Arc::clone(&put_count));
+    let out = run_ok(&[
+        "push",
+        "--store",
+        store.to_str().unwrap(),
+        "--dest",
+        &base,
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(
+        v["unique_chunks"].as_u64().unwrap() >= 1,
+        "cfidx without path flags ⇒ full blob set; v={v}"
+    );
+    assert!(put_count.load(Ordering::SeqCst) >= 1);
+}

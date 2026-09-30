@@ -21,6 +21,7 @@ chunkforge push \
   [--dry-run] \
   [--verify] \
   [--format text|json] \
+  [--path P]... [--exclude PAT]... \
   listing1.cfidx|.cfdir [listing2 ...]
 ```
 
@@ -35,14 +36,16 @@ chunkforge push \
 | `--dry-run` | Probe + count only; **no** PUT |
 | `--verify` | After a successful push (`failed=0`), treat `--dest` (+ same templates) as a `ChunkSource` and run verify for **each** listing (`.cfidx` / `.cfdir`). Any verify failure → overall non-zero. Skipped on `--dry-run` (nothing uploaded) and when push already failed. |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary / per-id fail lines). Exit codes are format-independent |
-| listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (`DirArchive::all_chunk_ids` for `.cfdir`) |
+| `--path P` | Include only `.cfdir` **File** paths under prefix `P` (repeatable; OR). With any `--path`, a candidate must match at least one before excludes. Omit all ⇒ include-all (≡ **1.3.0** full reference set). Does **not** upload the listing. With `.cfidx` → clear non-zero error. |
+| `--exclude PAT` | Exclude matching File paths (repeatable): exact, trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`). Illegal middle `*` / `**` → clear error. Applied after `--path`. With `.cfidx` → clear non-zero error. |
+| listings | One or more `.cfidx` / `.cfdir` files; chunk id set is the **union** (after path filter for `.cfdir` Files; Dir entries never contribute) |
 
 Default URL template is `{base}/{path}` ≡ `{base}/chunks/<2hex>/<62hex>.cnk`,
 identical to Phase 2/3 GET layout.
 
 ### What push does
 
-1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s.
+1. Load and validate every listing (`.cfidx` or `.cfdir`); merge referenced `ChunkId`s. With `--path`/`--exclude`, only matching `.cfdir` **File** entries contribute (Dir entries never do); empty flags ≡ full set (≡ 1.3.0). Listing files themselves are **not** uploaded. `.cfidx` + any path/exclude flag → clear non-zero error.
 2. For each id (sorted): read plaintext from the local store; remote `has`
    (HEAD, GET fallback) → skip; otherwise `PUT` the body.
 3. Emit a summary (`--format text`, default ≡ **1.0.0**): stderr line
@@ -66,12 +69,35 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 | `failed_transient` | number | Transient HTTP class |
 | `failed_permanent` | number | Permanent / missing / corrupt |
 | `retries` | number | `--http-retries` value (configured max extra attempts) |
-| `unique_chunks` | number | Union of listing chunk ids |
+| `unique_chunks` | number | Union of listing chunk ids **after** `--path`/`--exclude` (filtered set; field name unchanged) |
 | `listings` | number | Listings successfully loaded |
 | `dry_run` | bool | `--dry-run` was set |
 
 ```json
 {"ok":true,"skipped":0,"uploaded":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
+```
+
+### `--path` / `--exclude` (Phase 14 M3)
+
+**`path` ≠ listing upload ≠ sync:** push path/exclude only **shrinks the upload set**. It does not upload or rewrite the listing, and does not delete remote extras. Symmetric to [pull.md](pull.md) path filtering.
+
+Optional, repeatable, **opt-in**. Default (no flags) ≡ **1.3.0** full reference set.
+
+| Rule | Detail |
+|---|---|
+| `--path P` | Hit iff `path == P` or `path` starts with `P/` (subtree) |
+| `--exclude` | Exact; trailing `/` directory prefix; single edge `*` only (`*.o`, `temp*`) — **no** `**` / middle `*` |
+| Combine | If any `--path` is given: must hit include first, then excludes reject |
+| Scope | Only `.cfdir` **File** entries contribute chunk ids; **Dir** entries never do |
+| `.cfidx` | Any `--path` / `--exclude` → **non-zero clear error** (no File paths; no silent full upload) |
+| Listing | Full listing is read locally; push still does **not** upload the listing |
+| Orthogonal | `--dry-run` / `--format` / `--jobs` / `--progress` / retries / SigV4 / `--verify` do **not** change match rules |
+| JSON | Field names unchanged; `unique_chunks` = filtered unique id count |
+
+```bash
+# Only push chunks for packages/foo (subset of a full .cfdir)
+chunkforge push --store ./store --dest http://127.0.0.1:8765 \
+  --path packages/foo --format json ./app.cfdir
 ```
 
 ### Concurrency (`--jobs`)
@@ -87,6 +113,8 @@ FUSE `mount` is unchanged (no per-read thread storm).
 | Non-goal | Detail |
 |---|---|
 | ❌ Upload `.cfidx` / `.cfdir` | Listings stay local / are published by the user separately |
+| ❌ Silent full upload on `.cfidx` + `--path` | Clear non-zero error instead |
+| ❌ `--exclude-from` | Phase 14 M4 — not this milestone |
 | ❌ Remote GC / delete | Extra remote objects are left alone |
 | ❌ Bidirectional sync | Explicit one-way publish only |
 | ❌ S3 multipart API | Chunks are ≤256KiB; single-object PUT is enough |
