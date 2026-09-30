@@ -43,7 +43,7 @@ now.
 > Local stub evidence (near-zero RTT) remains insufficient to promote pack;
 > promotion checklist condition 1 stays unmet.
 >
-> **Phase18 / 1.8.0 still does not implement pack.** `pull --verify`,
+> **1.8.0 / Phase 18 still does not implement pack.** `pull --verify`,
 > `--cache-stats` / ops-json `cache_*`, and `cat`/`verify --progress` are
 > additive opt-in only; they keep the loose `.cnk` layout and do not change
 > product defaults (`jobs=1`, `retries=0`, create compression **none**,

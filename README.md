@@ -23,7 +23,7 @@
 | **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
 | **Phase 16** | **1.6.0** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
 | **Phase 17** | **1.7.0** | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress` + **`check_compat_1_6`** (+ P1 CacheSource hit/refuse counters); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
-| **Phase 18** | **1.8.0** (narrative; workspace still **1.7.0** until M7) | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats` + **`check_compat_1_7`** (+ P1 **`doctor --progress`**); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
+| **Phase 18** | **1.8.0** | **`pull --verify`** (symmetric to push; default off) + **`--cache-stats`** / ops-json additive **`cache_*`** (≠ LRU) + **`cat`/`verify --progress`** (default off) + docs + `demo_pull_verify_cache_stats` + **`check_compat_1_7`** (+ P1 **`doctor --progress`**); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -48,7 +48,7 @@
 | ❌ Not a restic/rustic-style **backup product** | No snapshot policy, encrypted-repo lifecycle, or prune |
 | ❌ macOS / Windows as acceptance platforms | Linux + fuse3 is first-class; other OS are experimental / unsupported |
 
-Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 closed at 1.6.0**: `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + `check_compat_1_5` (+ P1 `diff --path`/`--exclude`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub. **Phase 17 closed at 1.7.0**: create-time `--compression none|zstd` + `archive`/`extract`/`make --progress` + `demo_zstd_progress` + `check_compat_1_6` (+ P1 CacheSource hit/refuse counters) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression. **Phase 18** targets **1.8.0** narrative (`pull --verify` + Cache observation CLI/JSON + `cat`/`verify --progress` + docs/demo; workspace still **1.7.0** until M7) — see Phase 18 section below; defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd.
+Earlier phases delivered local CAS (Phase 1), remote read + RO single-blob mount (Phase 2), templates / doctor / gc (Phase 3), per-chunk PUT / `push` / `--jobs` (Phase 4), multi-file `.cfdir` + DirFs (Phase 5), incremental `archive --seed` + `pull` (Phase 6), listing **`diff`** / **`store scrub`** (Phase 7), HTTP **`--http-retries`** / **`diff --format json`** / minimal **`--aws-sigv4`** (Phase 8), **`extract --skip-unchanged`** / **`--dry-run`** + loose perf baseline + SigV4 shared-creds (Phase 9), FUSE sequential prefetch + 1.0 stability freeze (Phase 10 / **1.0.0**), and `extract --skip-trust-mtime` + ops JSON + `--prefetch-chunks` (Phase 11 / **1.1.0**). **Phase 12 closed at 1.2.0** (`gc --jobs` + gc/scrub JSON + ops-json matrix + `check_compat_1_1` + opt-in `--progress`). **Phase 13 closed at 1.3.0** (`PathFilter` + path scope + `check_compat_1_2`). **Phase 14 is closed at 1.4.0**: `store stats`/`du` + `push --path`/`--exclude` + `--exclude-from` + `check_compat_1_3` — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 15 closed at 1.5.0**: `--cache-max-bytes` (refuse-fill) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md). **Phase 16 closed at 1.6.0**: `--fallback` + cache-max suffixes + `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + `check_compat_1_5` (+ P1 `diff --path`/`--exclude`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub. **Phase 17 closed at 1.7.0**: create-time `--compression none|zstd` + `archive`/`extract`/`make --progress` + `demo_zstd_progress` + `check_compat_1_6` (+ P1 CacheSource hit/refuse counters) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md); defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression. **Phase 18 closed at 1.8.0**: `pull --verify` + Cache observation CLI/JSON + `cat`/`verify --progress` + `demo_pull_verify_cache_stats` + `check_compat_1_7` (+ P1 `doctor --progress`) — see [docs/stability.md](docs/stability.md) / [docs/ops-json.md](docs/ops-json.md) / [docs/pull.md](docs/pull.md); defaults ≡ 1.7; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression / remote scrub.
 
 ## Quick start (local CAS)
 
@@ -894,18 +894,16 @@ Gate: [`scripts/check_compat_1_6.sh`](scripts/check_compat_1_6.sh)
 ## Phase 18 / 1.8.0: `pull --verify` + Cache observation + cat/verify `--progress`
 
 Phase 18 closes **push/pull post-verify symmetry**, **CacheSource observation
-productization**, and **read-side reassemble progress** at **1.8.0**
-narrative: opt-in **`pull --verify`** (verify local `--store` after a
-successful pull; dry-run / failed pull skip; default **off** ≡ 1.7),
-**`--cache-stats`** stderr + ops-json additive **`cache_hits` /
-`cache_miss_fills` / `cache_miss_refused`** when `--cache` (observation only;
-**≠** LRU / trim), **`cat` / `verify --progress`** (default **off** ≡ 1.7;
-reuse `ProgressReporter`; per listing chunk), and **`check_compat_1_7`**
-(+ P1 **`doctor --progress`**). All additive; **defaults ≡ 1.7.0**.
-**Workspace / `Cargo.toml` still report `1.7.0` until M7** (version bump +
-annotated tag land later).
+productization**, and **read-side reassemble progress** at **1.8.0**: opt-in
+**`pull --verify`** (verify local `--store` after a successful pull; dry-run /
+failed pull skip; default **off** ≡ 1.7), **`--cache-stats`** stderr +
+ops-json additive **`cache_hits` / `cache_miss_fills` / `cache_miss_refused`**
+when `--cache` (observation only; **≠** LRU / trim), **`cat` / `verify
+--progress`** (default **off** ≡ 1.7; reuse `ProgressReporter`; per listing
+chunk), and **`check_compat_1_7`** (+ P1 **`doctor --progress`**). All
+additive; **defaults ≡ 1.7.0**. Workspace / CLI version is **1.8.0**.
 
-**Delivered (through M6):**
+**Delivered:**
 
 - **`pull --verify`**: after successful fetch, treat `--store` as
   `ChunkSource` and verify each listing (symmetric to `push --verify` on
@@ -924,16 +922,14 @@ annotated tag land later).
 - Docs: [docs/ops-json.md](docs/ops-json.md) (progress orthogonal; `cache_*`;
   pull `--verify` does not reshape JSON); [docs/stability.md](docs/stability.md)
   1.8 opt-in; [docs/pull.md](docs/pull.md) `--verify` semantics;
-  [docs/perf.md](docs/perf.md) «Phase18 / 1.8.0 still does not implement pack»;
+  [docs/perf.md](docs/perf.md) «1.8.0 still does not implement pack»;
   [docs/remote-layout.md](docs/remote-layout.md) cache-stats ≠ LRU ≠ sync ≠
   fallback.
 - Smoke: [`scripts/demo_pull_verify_cache_stats.sh`](scripts/demo_pull_verify_cache_stats.sh).
 - Gate: [`scripts/check_compat_1_7.sh`](scripts/check_compat_1_7.sh) (calls
   [`check_compat_1_6.sh`](scripts/check_compat_1_6.sh)).
 
-**Not yet (M7):** workspace version bump / annotated tag **1.8.0**.
-
-**Deferred / Unreleased P1:** `make --jobs` (FastCDC streaming chunking is
+**Not delivered / deferred:** P1 `make --jobs` (FastCDC streaming chunking is
 inherently serial per file; not forced as fake jobs).
 
 **Not delivered / non-goals:** packfile; write mount / COW; bidirectional
@@ -942,8 +938,8 @@ IMDS / SSO / ListObjects; byte-range resume; push listing upload; **cache
 LRU** / auto trim; **default** store zstd; HTTP Content-Encoding / wire
 compression; `store recompress`; changing default jobs·retries·SigV4·progress;
 absolute perf SLA in CI; video analysis; offline bundle; `.cfdir` v2 symlink.
-Pack stance: [docs/perf.md](docs/perf.md) — **Phase18 / 1.8.0 still does not
-implement pack**.
+Pack stance: [docs/perf.md](docs/perf.md) — **1.8.0 still does not implement
+pack**.
 
 ```bash
 # Phase 18 pull --verify + cache-stats + cat/verify --progress smoke (~minutes; local only)
@@ -956,7 +952,7 @@ bash scripts/demo_pull_verify_cache_stats.sh
 
 bash scripts/check_compat_1_7.sh
 bash scripts/check_compat_1_6.sh
-./target/debug/chunkforge --version   # → chunkforge 1.7.0 (until M7)
+./target/debug/chunkforge --version   # → chunkforge 1.8.0
 ./target/debug/chunkforge doctor --help | grep -F -- --progress
 ./target/debug/chunkforge make --help | grep -F -- --jobs || true  # still absent
 ```

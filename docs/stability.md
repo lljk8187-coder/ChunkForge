@@ -44,16 +44,16 @@ and is **not** pack / wire Content-Encoding / LRU. Defaults stay ≡ **1.6.0**
 retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single
 origin). The workspace reports **1.7.0**.
 
-**1.8.0** (Phase18 narrative; workspace / `Cargo.toml` still **1.7.0** until
-M7) adds further **opt-in** only: **`pull --verify`** (post-success verify
-against local `--store`; dry-run / failed pull skip; default **off** ≡ 1.7),
-**`--cache-stats`** stderr observation + ops-json additive **`cache_*`**
-fields when `--cache` (≠ LRU / trim), and **`cat` / `verify --progress`**
-(default **off** ≡ 1.7; reuse `ProgressReporter`; per listing chunk). Defaults
-stay ≡ **1.7.0** (no `--verify` on pull ⇒ quiet; no `--cache-stats` ⇒ no
-cache noise; no cat/verify `--progress` ⇒ quiet; create compression **none**;
-jobs=1, retries=0, SigV4 off, text, mount prefetch depth 1, no `--fallback`
-⇒ single origin).
+**1.8.0** adds further **opt-in** only: **`pull --verify`** (post-success
+verify against local `--store`; dry-run / failed pull skip; default **off** ≡
+1.7), **`--cache-stats`** stderr observation + ops-json additive **`cache_*`**
+fields when `--cache` (≠ LRU / trim), **`cat` / `verify --progress`**
+(default **off** ≡ 1.7; reuse `ProgressReporter`; per listing chunk), and
+P1 **`doctor --progress`**. Defaults stay ≡ **1.7.0** (no `--verify` on pull
+⇒ quiet; no `--cache-stats` ⇒ no cache noise; no cat/verify/doctor
+`--progress` ⇒ quiet; create compression **none**; jobs=1, retries=0, SigV4
+off, text, mount prefetch depth 1, no `--fallback` ⇒ single origin). The
+workspace reports **1.8.0**.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -127,7 +127,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0** / **1.6.0** / **1.7.0** / **1.8.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -182,5 +182,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.6 `--fallback` / suffixes / `bytes_plaintext`/`--decode`; calls 1_4),
 [`scripts/check_compat_1_6.sh`](../scripts/check_compat_1_6.sh)
 (1.7 `--compression` / archive·extract·make `--progress`; calls 1_5).
-Phase18 **`check_compat_1_7.sh`** (pull `--verify` / `--cache-stats` /
-cat·verify `--progress`) lands in M6. No absolute perf SLA.
+[`scripts/check_compat_1_7.sh`](../scripts/check_compat_1_7.sh)
+(1.8 `pull --verify` / `--cache-stats` / cat·verify `--progress`; calls 1_6).
+No absolute perf SLA.

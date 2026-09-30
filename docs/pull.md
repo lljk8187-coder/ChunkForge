@@ -76,7 +76,7 @@ One JSON **object** on stdout (emitted even when `failed > 0`, then non-zero exi
 {"ok":true,"skipped":0,"fetched":3,"failed":0,"failed_transient":0,"failed_permanent":0,"retries":0,"unique_chunks":3,"listings":1,"dry_run":false}
 ```
 
-### `--verify` (Phase18 / 1.8 opt-in)
+### `--verify` (Phase 18 / 1.8.0)
 
 Symmetric to [`push --verify`](push.md): after a **successful** fetch into
 local `--store`, re-open that store as a `ChunkSource` and verify each listing

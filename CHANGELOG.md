@@ -7,28 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 18 M6 (pre-1.8.0; workspace still 1.7.0)
+Nothing yet.
 
-- **`scripts/check_compat_1_7.sh`** (G6 / M6): calls `check_compat_1_6.sh`, then
-  asserts `pull --help` contains `--verify`, at least one of `cat`/`verify`
-  advertises `--cache-stats`, and both `cat`/`verify --help` contain
-  `--progress`; thin non-goals (no extract `--delete`/prune, no pack, no
-  `--cache-lru` / store trim, no `aws-sdk` in `Cargo.lock`, create compression
-  still opt-in / no default zstd); asserts
-  `demo_pull_verify_cache_stats.sh` present + executable (does not force-run).
-  No absolute perf SLA. Keeps `check_compat_1_0`…`1_6` independently runnable.
-- **P1 `doctor --progress`** (O1): opt-in; default **off** ≡ 1.7.0; stderr
-  `progress: op=doctor done=N/TOTAL` per checked chunk; orthogonal to
+## [1.8.0] — 2026-09-30
+
+Phase 18 closeout — `pull --verify` (symmetric to push; default off);
+`--cache-stats` + ops-json additive `cache_*` (≠ LRU); `cat`/`verify
+--progress` (default off); docs + `demo_pull_verify_cache_stats.sh`;
+`check_compat_1_7.sh`; P1 `doctor --progress`. Defaults remain ≡ **1.7.0**.
+No pack / write mount / aws-sdk / remote scrub / extract prune /
+bidirectional sync / push listing / LRU / store trim / **default** zstd /
+HTTP wire compression. P1 `make --jobs` not delivered.
+
+### Added
+
+- **`pull --verify`** (Phase 18 M1): after a successful pull, treat local
+  `--store` as `ChunkSource` and verify each listing (symmetric to
+  `push --verify` on dest). Dry-run / failed pull skip verify. Default
+  **off** ≡ 1.7. Does **not** reshape pull ops-json fields (stderr only).
+  See `docs/pull.md`.
+- **`--cache-stats` stderr** (Phase 18 M2): on cached read commands
+  (`cat` / `verify` / `extract` / `mount` / `pull` / `doctor`); requires
+  `--cache`; emits `cache: hits=H miss_fills=F miss_refused=R`. Observation
+  only — **≠** LRU / trim / eviction / sync / fallback. Default quiet ≡ 1.7.
+- **Ops-json additive `cache_*`** (Phase 18 M3): when `--cache` +
+  `--format json`, add `cache_hits` / `cache_miss_fills` /
+  `cache_miss_refused` from the same `CacheStatsRef` as `--cache-stats`.
+  Without `--cache`, **omit** the three keys (no `null`). Old field names
+  frozen. Orthogonal to `--cache-stats` / `--progress`.
+- **`cat --progress`** (Phase 18 M4): reuse `ProgressReporter`; stderr
+  `progress: op=cat done=N/TOTAL` per listing chunk; orthogonal to
   `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats`.
-- **Docs brush** (O2): `docs/remote-layout.md` Phase 18 table —
-  `--cache-stats` ≠ LRU ≠ sync ≠ fallback; README Phase 18 M6 gate + doctor
-  progress narrative.
+  Default **off** ≡ 1.7.
+- **`verify --progress` + docs + `demo_pull_verify_cache_stats.sh`**
+  (Phase 18 M5): `progress: op=verify done=N/TOTAL`; ops-json / stability /
+  pull / perf / remote-layout narrative; smoke for `pull --verify`,
+  `--cache`+`--cache-stats`, `cat`/`verify --progress`, and default-quiet
+  path.
+- **`check_compat_1_7.sh` + 1.7 regression gate** (Phase 18 M6 / G6): runs
+  `check_compat_1_6.sh` (keeps 1_0…1_6 independently runnable), then asserts
+  `pull --help` contains `--verify`, at least one of `cat`/`verify`
+  advertises `--cache-stats`, and both `cat`/`verify --help` contain
+  `--progress`; thin non-goals: no `--delete`/prune, no pack, no
+  `--cache-lru` / `store trim`, no `aws-sdk` in `Cargo.lock`, create
+  compression still opt-in / no default zstd. Asserts
+  `demo_pull_verify_cache_stats.sh` present + executable (does not
+  force-run). No absolute perf SLA.
+- **P1 `doctor --progress`** (Phase 18 M6 / O1): opt-in; default **off** ≡
+  1.7; stderr `progress: op=doctor done=N/TOTAL` per checked chunk;
+  orthogonal to `--format json` / `--jobs` / `--cache` / `--fallback` /
+  `--cache-stats`.
+- **P1 docs brush** (Phase 18 M6 / O2): `docs/remote-layout.md` Phase 18
+  table — `--cache-stats` ≠ LRU ≠ sync ≠ fallback; README / stability /
+  ops-json Phase 18 closeout narrative.
+- Workspace version **1.8.0** (Phase 18 M7 closeout).
 
-### Deferred / still Unreleased
+### Not delivered / deferred (Phase 18)
 
-- **`make --jobs`** (O4) — not delivered: FastCDC streaming chunking is
-  inherently serial per file; not forced as fake jobs.
-- Workspace version bump / annotated tag **1.8.0** — M7.
+- **`make --jobs`** — P1 O4 **not** delivered (FastCDC streaming chunking is
+  inherently serial per file; not forced as fake jobs)
+- **packfile** / multi-chunk objects — deferred (see `docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+
+### Compatibility
+
+- CLI defaults match **1.7.0**: no `--verify` on pull ⇒ quiet; no
+  `--cache-stats` ⇒ no cache noise; no cat/verify/doctor `--progress` ⇒
+  quiet; create compression **none**; no `--fallback` ⇒ single origin; no
+  `--cache-max-bytes` ⇒ unbounded cache fill; plain integer cache-max still
+  accepted; no `--decode` ⇒ zstd stats stay cheap; no diff path flags ⇒ full
+  listing; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  mount prefetch depth **1** ≡ 1.7.0 / 1.6.0 / …
+- `.cfidx` v1 / `.cfdir` v1 on-wire bytes unchanged
+- Loose `chunks/<2hex>/<62hex>.cnk` layout unchanged
+- Additive opt-in only; JSON field names unchanged (only additive `cache_*`
+  when `--cache`); disk zstd orthogonal to HTTP plaintext body; no silent
+  break of 1.7.0 behaviour
 
 ## [1.7.0] — 2026-09-30
 
@@ -973,6 +1036,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.8.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.8.0
 [1.7.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.7.0
 [1.6.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.6.0
 [1.5.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.5.0

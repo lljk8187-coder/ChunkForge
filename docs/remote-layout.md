@@ -286,7 +286,7 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
-## Cache observation vs failover vs sync (Phase 18 / 1.8 narrative)
+## Cache observation vs failover vs sync (Phase 18 / 1.8.0)
 
 | Flag / layer | Role | Not |
 |---|---|---|
@@ -308,7 +308,7 @@ Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 
 `--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 
-## Explicit non-goals (this layout / Phase 3–18 / through 1.7.0 freeze + 1.8 additive)
+## Explicit non-goals (this layout / Phase 3–18 / through 1.8.0)
 
 | Non-goal | Status |
 |---|---|

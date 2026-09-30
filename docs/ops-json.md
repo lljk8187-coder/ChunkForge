@@ -117,11 +117,11 @@ Phase 17 / **1.7.0** adds create-time `--compression` and
 sections below). Gated by **`check_compat_1_6.sh`** (calls 1_5; no absolute
 perf SLA). Workspace reports **1.7.0**. Smoke:
 [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
-Phase18 / **1.8.0** narrative (workspace still **1.7.0** until M7):
-`pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify
---progress` (all opt-in; defaults ≡ 1.7). Smoke:
+Phase 18 / **1.8.0** adds `pull --verify`, `--cache-stats` / ops-json
+`cache_*`, and `cat`/`verify --progress` (all opt-in; defaults ≡ 1.7; see
+sections below). Gated by **`check_compat_1_7.sh`** (calls 1_6; no absolute
+perf SLA). Workspace reports **1.8.0**. Smoke:
 [`scripts/demo_pull_verify_cache_stats.sh`](../scripts/demo_pull_verify_cache_stats.sh).
-Gate **`check_compat_1_7.sh`** lands in M6.
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)

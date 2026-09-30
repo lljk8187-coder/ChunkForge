@@ -1135,14 +1135,7 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_verify(
-                src.as_ref(),
-                &index,
-                jobs,
-                format,
-                progress,
-                stats.as_ref(),
-            );
+            let result = cmd_verify(src.as_ref(), &index, jobs, format, progress, stats.as_ref());
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
