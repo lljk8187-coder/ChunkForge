@@ -111,16 +111,20 @@ dir symlink ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default
 record**. Defaults stay ≡ **1.11.0**. The workspace reports **1.12.0**. Gate
 **`check_compat_1_11.sh`** gates 1.12 flags (calls 1_10).
 
-**Phase23 / toward 1.13.0** (in progress; workspace still **1.12.0** until
-M7 bump) adds further **opt-in** only: **`diff --tree --symlinks
-skip|record`** (default **`skip`** ≡ **1.12.0** tree skip+warn; **`record`**
-→ ephemeral `DirEntryKind::Symlink` on the tree side; absolute/empty target →
-non-zero; **not** followed; clap **`requires = "tree"`**). Defaults stay ≡
-**1.12.0** until the 1.13.0 closeout. Responsibility nail: **`diff --tree
---symlinks record` ≠ write mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path`
-≠ default record**. Gate **`check_compat_1_12.sh`** (Phase23-M5; calls 1_11;
-asserts `diff --symlinks` default skip ≡ 1.12 + thin archive→diff record
-identical; no absolute perf SLA) is present. See [diff.md](diff.md) and
+**1.13.0** (Phase23 closeout) adds further **opt-in** only: **`diff --tree
+--symlinks skip|record`** (default **`skip`** ≡ **1.12.0** tree skip+warn;
+**`record`** → ephemeral `DirEntryKind::Symlink` on the tree side;
+absolute/empty target → non-zero; **not** followed; clap **`requires =
+"tree"`**). P1: extract dry-run additive **`would_symlinks`** (`would_write`
+still includes symlink ≡ 1.12; **≠** prune / sync / pack / write mount).
+**Hard ban unchanged** plus: **no default record**, no follow-walk, no
+fifo/xattr, no offline bundle, no pack, no write mount, no prune, no
+`gc --path`. Responsibility nail: **`diff --tree --symlinks record` ≠ write
+mount ≠ follow ≠ pack ≠ sync ≠ prune ≠ `gc --path` ≠ default record**.
+Defaults stay ≡ **1.12.0**. The workspace reports **1.13.0**. Gate
+**`check_compat_1_12.sh`** gates 1.13 flags (calls 1_11; asserts `diff
+--symlinks` default skip ≡ 1.12 + thin archive→diff record identical; no
+absolute perf SLA). See [diff.md](diff.md) and
 [`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
@@ -151,8 +155,9 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `archive --symlinks record`, `diff --tree --symlinks record`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21), and
-**1.12.0** (Phase22 symlink opt-in) are such
+**1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21),
+**1.12.0** (Phase22 symlink opt-in), and **1.13.0** (Phase23
+`diff --tree --symlinks` + P1 `would_symlinks`) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
@@ -160,7 +165,8 @@ no `--fallback` / create compression **none** / progress **off** / no pull
 omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release /
 `make --jobs` default **1** / no `--path-from` / no doctor·verify path flags ≡
 1.9 full set / no mount path flags ≡ 1.10 full tree / **`--symlinks skip`** ≡
-1.11 skip+warn + default write v1. Soft budget is **refuse-fill only** (≠ LRU ≠
+1.11 skip+warn + default write v1 / **`diff --tree --symlinks skip`** ≡
+1.12 tree skip+warn (no silent default record). Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 **`store create` ≠ recompress ≠ default zstd ≠ pack**.
 **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
@@ -212,7 +218,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.12.0** and Phase23 / toward **1.13.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.13.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |

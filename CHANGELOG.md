@@ -9,6 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [1.13.0] — 2026-09-30
+
+Phase 23 closeout — **`diff --tree --symlinks skip|record`** (default
+**skip** ≡ **1.12.0** tree skip+warn; **`--symlinks record`** → ephemeral
+`DirEntryKind::Symlink` on the tree side; absolute/empty target → clear
+non-zero; **not** followed; clap **`requires = "tree"`**) +
+`check_compat_1_12.sh` + docs/diff + `demo_diff_tree_symlink.sh`; P1
+extract dry-run additive **`would_symlinks`** (`would_write` still includes
+symlink would-writes ≡ **1.12.0**). Defaults remain ≡ **1.12.0**. No pack /
+write mount / aws-sdk / remote scrub / extract prune / bidirectional sync /
+push listing / LRU / store trim / **default** zstd / HTTP wire compression /
+`store recompress` / `push --fallback` / multi dest / **`gc --path`** / mount
+`--progress` / **default record symlink** / follow dir symlink / fifo·xattr /
+offline bundle.
+
+### Added
+
+- **`diff --tree --symlinks skip|record`** (Phase 23 M1–M3): opt-in tree↔listing
+  Symlink symmetry with archive / listing↔listing. Default **`skip`** (or omit)
+  ≡ **1.12.0** tree skip+warn (false `added` for recorded links remains the
+  1.12 baseline). **`record`** builds ephemeral `DirEntryKind::Symlink`
+  (target as-is; mode from `symlink_metadata`; **0 chunks**; **not** followed;
+  absolute/empty → non-zero). Path quartet orthogonal; progress honesty for
+  Symlink ticks. Identical archive-record tree + `--symlinks record` → exit 0.
+  See `docs/diff.md` / `docs/stability.md`.
+- **Docs + `demo_diff_tree_symlink.sh`** (Phase 23 M4): diff / stability /
+  perf / README Phase 23 narrative; local smoke for default skip false-added,
+  record → identical exit 0, absolute non-zero, thin `--path` on symlink path.
+- **`check_compat_1_12.sh`** (Phase 23 M5): calls `check_compat_1_11` + asserts
+  `diff --symlinks` help / default skip ≡ 1.12; thin archive→diff record
+  identical; no default record / no gc `--path` / no write mount / no mount
+  `--progress`; requires `demo_diff_tree_symlink.sh` present + executable.
+- **Extract dry-run `would_symlinks`** (Phase 23 M6 / P1): additive ops-json /
+  text counter (always present, incl. **0**); `would_write` still includes
+  symlink would-writes ≡ **1.12.0**. **≠** prune / **≠** sync / **≠** pack /
+  **≠** write mount. Thin `docs/ops-json.md` / `docs/extract.md`.
+- Workspace version **1.13.0** (Phase 23 M7 closeout).
+
+### Not delivered / deferred (Phase 23)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
+- **`mount --progress`** — non-goal (session-typed; no natural done/TOTAL)
+- **Default record symlink** / follow directory symlink / fifo·socket·device /
+  xattr / ACL — non-goal (opt-in record only; tree default stays skip)
+- Offline bundle — deferred (not pack; not this release)
+
+### Compatibility
+
+- CLI defaults match **1.12.0**: `diff --tree` without `--symlinks` (or
+  `--symlinks skip`) ≡ 1.12 tree skip+warn; no silent default **record**;
+  archive `--symlinks skip` ≡ 1.11/1.12; create compression **none**;
+  `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**, progress
+  **off**, mount prefetch depth **1**; no mount path flags ⇒ full tree; omit
+  make `--dry-run` ≡ real write; no `--path-from` / no doctor·verify path
+  flags ⇒ full set; no `diff --progress` ⇒ quiet; `make --jobs` default
+  **1**; no `--verify` on pull ⇒ quiet; no `--cache-stats` ⇒ no cache noise;
+  no `--fallback` ⇒ single origin; no `--cache-max-bytes` ⇒ unbounded cache
+  fill; omit push `--compression` ≡ create none; extract dry-run
+  `would_write` still includes symlink (additive `would_symlinks` only)
+- `.cfidx` v1 on-wire bytes unchanged; `.cfdir` default write (no Symlink)
+  stays v1; opt-in v2 unchanged from 1.12; Source/Sink signatures unchanged;
+  FUSE stays **RO**
+
 ## [1.12.0] — 2026-09-30
 
 Phase 22 closeout — **`.cfdir` Symlink opt-in** (`archive --symlinks
@@ -1314,6 +1389,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.13.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.13.0
 [1.12.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.12.0
 [1.11.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.11.0
 [1.10.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.10.0

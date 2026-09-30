@@ -153,10 +153,12 @@ Phase 22 / **1.12.0** adds additive archive `recorded_symlinks`, extract
 Default skip path field names unchanged. Gated by **`check_compat_1_11.sh`**
 (calls 1_10; no absolute perf SLA). Workspace reports **1.12.0**. Smoke:
 [`scripts/demo_symlink.sh`](../scripts/demo_symlink.sh).
-Phase23-M6 (P1; workspace still **1.12.0** until M7) adds extract dry-run
-**`would_symlinks`** (always emitted, incl. 0). `would_write` semantics
-unchanged (still includes symlink would-writes). **`would_symlinks` ≠ prune ≠
-sync ≠ pack ≠ write mount**.
+Phase 23 / **1.13.0** adds extract dry-run **`would_symlinks`** (always
+emitted, incl. 0; P1 / M6). `would_write` semantics unchanged (still includes
+symlink would-writes ≡ 1.12). Gated by **`check_compat_1_12.sh`** (calls
+1_11; no absolute perf SLA). Workspace reports **1.13.0**. Smoke:
+[`scripts/demo_diff_tree_symlink.sh`](../scripts/demo_diff_tree_symlink.sh).
+**`would_symlinks` ≠ prune ≠ sync ≠ pack ≠ write mount**.
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)
