@@ -1296,6 +1296,36 @@ enum StoreCommands {
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
     },
+    /// Fetch one chunk's plaintext bytes from a local store (`Store::get` /
+    /// `get_verify`)
+    ///
+    /// Writes plaintext to **`-o`** (required). Default path uses
+    /// `Store::get_verify(id, false)` — decode on-disk encoding, **no** BLAKE3
+    /// re-hash (trust disk). Optional **`--verify`** → `get_verify(id, true)`
+    /// (re-hash). Default **`--format text`**: one stderr summary
+    /// `store get: ok id=<hex> bytes=N`. **`--format json`**: one JSON object
+    /// on stdout with field names **`ok` / `id` / `bytes`** (ops-json full doc
+    /// may land in a later milestone; pin these names). Missing chunk / bad hex
+    /// id → clear non-zero. **Not** `store scrub` / **not** `cat` / **not**
+    /// extract / **not** recompress / **not** remove / **not** trim / **not**
+    /// multi-id batch / **not** HTTP source.
+    Get {
+        /// Local CAS store directory
+        #[arg(long)]
+        store: PathBuf,
+        /// Chunk id as 64 lowercase hex characters (same as `store has`)
+        hex_id: String,
+        /// Output file for plaintext bytes (required)
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: PathBuf,
+        /// Re-hash plaintext against the chunk id (`get_verify(..., true)`).
+        /// Default off ≡ trust on-disk encoding (`get_verify(..., false)`).
+        #[arg(long = "verify")]
+        verify: bool,
+        /// Output format (default text; json = `{ok,id,bytes}` on stdout)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
+    },
     /// Rehash every loose chunk in a local store (bitrot / integrity scrub)
     ///
     /// Default (no `--listing`) ≡ 1.4.0 full-store traversal. With
@@ -1366,12 +1396,12 @@ enum StoreCommands {
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
 /// `push` / `pull` / `gc` / `store scrub` / `store stats` / `store create` /
-/// `store list` / `archive` / `make` / `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 +
-/// Phase 15 M3/M4 + Phase 19 M1 + Phase 21 M6).
+/// `store list` / `store get` / `archive` / `make` / `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 +
+/// Phase 15 M3/M4 + Phase 19 M1 + Phase 21 M6 + Phase26-M2).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
 /// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent;
-/// `store list` ≡ sorted hex ids one-per-line).
+/// `store list` ≡ sorted hex ids one-per-line; `store get` ≡ stderr summary + `-o` bytes).
 /// How `archive` / `diff --tree` treat symbolic links (Phase22-M2 / Phase23-M1).
 ///
 /// Default [`Skip`] ≡ 1.11/1.12 skip+warn (not recorded / not followed).
@@ -1966,6 +1996,16 @@ fn run() -> Result<()> {
                     format,
                 },
         } => cmd_store_has(&store, &hex_id, format),
+        Commands::Store {
+            command:
+                StoreCommands::Get {
+                    store,
+                    hex_id,
+                    output,
+                    verify,
+                    format,
+                },
+        } => cmd_store_get(&store, &hex_id, &output, verify, format),
         Commands::Store {
             command:
                 StoreCommands::Scrub {
@@ -6560,6 +6600,58 @@ fn cmd_store_has(store_path: &Path, hex_id: &str, format: CliFormat) -> Result<(
             }
         }
     }
+}
+
+/// Fetch one chunk's plaintext to `-o` via `Store::get_verify`.
+///
+/// Default (`verify=false`): `get_verify(id, false)` — decode on-disk encoding,
+/// skip BLAKE3 re-hash (trust disk; lighter than library `Store::get`, which
+/// always verifies). With `--verify`: `get_verify(id, true)` re-hashes.
+///
+/// JSON field names pinned for ops-json: **`ok`**, **`id`**, **`bytes`**.
+/// **Not** scrub / cat / extract / recompress / remove / trim / multi-id.
+fn cmd_store_get(
+    store_path: &Path,
+    hex_id: &str,
+    output: &Path,
+    verify: bool,
+    format: CliFormat,
+) -> Result<()> {
+    let id =
+        ChunkId::from_hex(hex_id).map_err(|e| anyhow::anyhow!("store get: bad chunk id: {e}"))?;
+    let store = Store::open(store_path)
+        .with_context(|| format!("open store at {}", store_path.display()))?;
+    // Phase26 §3.2: default trust on-disk (no re-hash); `--verify` → re-hash.
+    // Library `Store::get` always verifies, so CLI uses `get_verify` for both.
+    let plain = store.get_verify(&id, verify).map_err(|e| match e {
+        StoreError::NotFound(missing) => anyhow::anyhow!("store get: missing {missing}"),
+        StoreError::Corrupt(bad) => anyhow::anyhow!("store get: corrupt {bad}"),
+        other => anyhow::anyhow!("store get: {other}"),
+    })?;
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    fs::write(output, &plain).with_context(|| format!("write output {}", output.display()))?;
+    let bytes = plain.len() as u64;
+    match format {
+        CliFormat::Text => {
+            eprintln!("store get: ok id={id} bytes={bytes}");
+        }
+        CliFormat::Json => {
+            // ops-json field names for `store get` (pinned; full docs may wait):
+            // ok / id / bytes
+            let obj = serde_json::json!({
+                "ok": true,
+                "id": id.to_string(),
+                "bytes": bytes,
+            });
+            println!("{obj}");
+        }
+    }
+    Ok(())
 }
 
 /// Read-only CAS integrity scrub: list loose chunks and `get_verify` each id.

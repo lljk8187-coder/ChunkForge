@@ -3487,6 +3487,141 @@ fn archive_empty_dirs_respects_path_filter() {
     );
 }
 
+// --- Phase26-M2: empty-dirs path CLI smoke (G1 via ls/filter; no flag redesign) ---
+
+#[test]
+fn phase26_empty_dirs_ls_path_shows_leaf_dir() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"hello-p26-m2\n").unwrap();
+
+    let store = dir.path().join("store");
+    let out = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    // Full ls still shows the Dir (Phase25).
+    let ls_full = run_ok(&["ls", out.to_str().unwrap()]);
+    let full_s = String::from_utf8_lossy(&ls_full.stdout);
+    assert!(
+        full_s.lines().any(|l| l == "dir\tempty_leaf"),
+        "full ls must show dir\\tempty_leaf; stdout={full_s}"
+    );
+
+    // G2: ls --path empty_leaf non-empty with dir kind (M1 leaf-Dir + CLI).
+    let ls_path = run_ok(&["ls", "--path", "empty_leaf", out.to_str().unwrap()]);
+    let path_s = String::from_utf8_lossy(&ls_path.stdout);
+    assert!(
+        !path_s.trim().is_empty(),
+        "ls --path empty_leaf must be non-empty; stdout={path_s:?}"
+    );
+    assert!(
+        path_s.lines().any(|l| l == "dir\tempty_leaf"),
+        "ls --path empty_leaf must show dir\\tempty_leaf; stdout={path_s}"
+    );
+
+    let ls_json = run_ok(&[
+        "ls",
+        "--path",
+        "empty_leaf",
+        "--format",
+        "json",
+        out.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&ls_json.stdout).expect("ls json");
+    assert_eq!(v["ok"], true);
+    let entries = v["entries"].as_array().expect("entries");
+    assert!(
+        !entries.is_empty(),
+        "ls --path json entries must be non-empty; json={v}"
+    );
+    assert!(
+        entries.iter().any(|e| {
+            e["kind"].as_str() == Some("dir") && e["path"].as_str() == Some("empty_leaf")
+        }),
+        "json must include kind=dir path=empty_leaf; json={v}"
+    );
+
+    // Optional: extract --path empty_leaf still creates the dir (align with ls).
+    let dest = dir.path().join("extracted");
+    let ext = run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "empty_leaf",
+        "-o",
+        dest.to_str().unwrap(),
+        "--format",
+        "json",
+        out.to_str().unwrap(),
+    ]);
+    let ev: serde_json::Value = serde_json::from_slice(&ext.stdout).expect("extract json");
+    assert!(
+        ev["dirs"].as_u64().unwrap_or(0) >= 1,
+        "extract --path empty_leaf should materialize dirs>=1; json={ev}"
+    );
+    assert!(
+        dest.join("empty_leaf").is_dir(),
+        "extract --path empty_leaf must create empty_leaf dir"
+    );
+}
+
+#[test]
+fn phase26_empty_dirs_filter_path_keeps_leaf_dir() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("keep")).unwrap();
+    fs::create_dir_all(src.join("empty_leaf")).unwrap();
+    fs::write(src.join("keep/a.txt"), b"filter-p26\n").unwrap();
+
+    let store = dir.path().join("store");
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--empty-dirs",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let filtered = dir.path().join("empty_only.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "empty_leaf",
+        "-o",
+        filtered.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let ls = run_ok(&["ls", filtered.to_str().unwrap()]);
+    let ls_s = String::from_utf8_lossy(&ls.stdout);
+    assert!(
+        !ls_s.trim().is_empty(),
+        "filter --path empty_leaf output listing must be non-empty; stdout={ls_s:?}"
+    );
+    assert!(
+        ls_s.lines().any(|l| l == "dir\tempty_leaf"),
+        "filtered ls must show dir\\tempty_leaf; stdout={ls_s}"
+    );
+    assert!(
+        !ls_s.contains("keep/a.txt"),
+        "filtered listing must drop keep/a.txt; stdout={ls_s}"
+    );
+}
+
 #[test]
 fn chunk_id_format_json() {
     let input = fixtures_dir().join("hello.txt");
@@ -15273,6 +15408,160 @@ fn store_list_sorted_hex_and_json_fields() {
     assert_eq!(ids.len(), lines.len());
     let hexes: Vec<&str> = ids.iter().map(|x| x.as_str().unwrap()).collect();
     assert_eq!(hexes, lines, "json ids must match sorted text lines");
+}
+
+// --- Phase26-M2: store get ---
+
+#[test]
+fn store_get_help_nails_not_scrub_cat_extract() {
+    let s = run_ok(&["store", "--help"]);
+    let s_out = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        s_out.contains("get"),
+        "store --help should list get:\n{s_out}"
+    );
+
+    let help = run_ok(&["store", "get", "--help"]);
+    let h = String::from_utf8_lossy(&help.stdout);
+    assert!(h.contains("--store"), "{h}");
+    assert!(
+        h.contains("-o") || h.contains("--output"),
+        "store get --help must require -o / --output:\n{h}"
+    );
+    assert!(
+        h.contains("--verify"),
+        "store get --help must list --verify:\n{h}"
+    );
+    assert!(
+        h.contains("--format"),
+        "store get --help must list --format:\n{h}"
+    );
+    let lower = h.to_ascii_lowercase();
+    assert!(
+        lower.contains("not")
+            && (lower.contains("scrub")
+                || lower.contains("cat")
+                || lower.contains("extract")
+                || lower.contains("recompress")
+                || lower.contains("remove")),
+        "store get --help should nail ≠ scrub/cat/extract/recompress/remove:\n{h}"
+    );
+}
+
+#[test]
+fn store_get_writes_bytes_match_and_verify_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let store_h = chunkforge_store::Store::open(&store).unwrap();
+    let id = store_h.list_chunk_ids().unwrap()[0];
+    let expected = store_h.get_verify(&id, true).unwrap();
+
+    let out = dir.path().join("chunk.bin");
+    let got = run_ok(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        &id.to_string(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&got.stderr);
+    assert!(
+        err.contains("store get: ok") && err.contains(&id.to_string()),
+        "text summary on stderr; stderr={err}"
+    );
+    assert_eq!(
+        fs::read(&out).unwrap(),
+        expected,
+        "store get -o bytes must match Store::get_verify plaintext"
+    );
+
+    let out2 = dir.path().join("chunk-verify.bin");
+    run_ok(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        "--verify",
+        &id.to_string(),
+        "-o",
+        out2.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&out2).unwrap(), expected);
+
+    let out3 = dir.path().join("chunk-json.bin");
+    let json_out = run_ok(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        &id.to_string(),
+        "-o",
+        out3.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).expect("store get json");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["id"], id.to_string());
+    assert_eq!(v["bytes"].as_u64(), Some(expected.len() as u64));
+    assert_eq!(fs::read(&out3).unwrap(), expected);
+}
+
+#[test]
+fn store_get_missing_and_bad_hex_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    {
+        use chunkforge_store::{Compression, Store};
+        Store::create(&store, Compression::None).unwrap();
+    }
+    let out = dir.path().join("x.bin");
+    let missing_id = "0".repeat(64);
+    run_fail(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        &missing_id,
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(
+        !out.exists(),
+        "missing chunk must not create -o (or leave empty?); exists={}",
+        out.exists()
+    );
+
+    let bad = run_fail(&[
+        "store",
+        "get",
+        "--store",
+        store.to_str().unwrap(),
+        "not-a-hex-id",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        err.to_ascii_lowercase().contains("bad")
+            || err.to_ascii_lowercase().contains("hex")
+            || err.to_ascii_lowercase().contains("chunk id")
+            || err.to_ascii_lowercase().contains("invalid"),
+        "bad hex should be clear; stderr={err}"
+    );
 }
 
 #[test]
