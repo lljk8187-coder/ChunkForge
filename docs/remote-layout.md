@@ -31,8 +31,12 @@ chunks/<H[0..2]>/<H[2..]>.cnk
 ```
 
 Hash is always over **plaintext**. With `Compression::None`, the `.cnk` file bytes
-are the plaintext. (Compressed stores write encoded payloads; HTTP treats the
-response body as plaintext — serve uncompressed stores for demos.)
+are the plaintext. With create-time **`--compression zstd`** (Phase 17 / 1.7
+opt-in; default **none** ≡ 1.6), local `.cnk` files may hold zstd-encoded
+payloads, but **`Store::get` / `ChunkSource::get` still return plaintext**, and
+HTTP GET/PUT bodies remain **plaintext** (push decodes before PUT). Disk zstd
+≠ wire Content-Encoding ≠ packfile. Serve any store over HTTP via the same
+plaintext body contract.
 
 ## `--source` URL forms
 
@@ -282,7 +286,18 @@ retries / SigV4 apply isomorphically to each `http(s)://` origin in the chain.
 Zero fallbacks ≡ 1.5 single-origin read path. See [mount.md](mount.md) /
 [extract.md](extract.md) / [pull.md](pull.md).
 
-## Explicit non-goals (this layout / Phase 3–16 / through 1.6)
+## Disk zstd ≠ wire compression ≠ pack (Phase 17 / 1.7)
+
+| Layer | Contract |
+|---|---|
+| Local store create | Opt-in `--compression none\|zstd` on `make` / `archive` (omit ≡ **none** ≡ 1.6) |
+| On-disk `.cnk` | May be zstd-encoded when meta says `zstd` |
+| `get` / HTTP PUT·GET | Always **plaintext** body (BLAKE3 == id) |
+| Packfile | **Not** implemented — see [perf.md](perf.md) |
+
+`--progress` smoke (archive/extract/make): [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
+
+## Explicit non-goals (this layout / Phase 3–17 / through 1.7)
 
 | Non-goal | Status |
 |---|---|
@@ -325,7 +340,7 @@ let bytes = src.get(&chunk_id)?;
 
 ## Still out of scope
 
-- Mixed compression over HTTP; byte-range / partial-chunk retries (Phase 8 retries **whole chunks** only)
+- HTTP Content-Encoding / mixed compression over HTTP (disk zstd ≠ wire); byte-range / partial-chunk retries (Phase 8 retries **whole chunks** only); packfile
 - `aws-sdk-*` / full credential chain / S3 multipart / ListObjects / remote GC (see non-goals above)
 - Uploading `.cfidx` into the chunk object layout (indexes stay out-of-band)
 

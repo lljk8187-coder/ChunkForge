@@ -57,6 +57,7 @@ python3 scripts/put_stub.py --root /tmp/cf-arch/mirror --port 8766
 ./scripts/demo_archive.sh      # Phase 5 tree / push / mount smoke
 ./scripts/demo_seed.sh         # Phase 6 seed: change one file → reuse stats → verify / extract / optional pull
 ./scripts/demo_path_filter.sh  # Phase 13: exclude → archive json → extract --path → pull --path
+./scripts/demo_zstd_progress.sh  # Phase 17: --compression zstd + archive/extract/make --progress
 ```
 
 `demo_archive.sh` covers archive → verify → extract → diff, optional FUSE mount
@@ -240,6 +241,23 @@ With `--force`:
   `--force` does not `rm -rf` directories.
 - The `-o` output root itself, if it already exists as a **file**, is never
   overwritten (even with `--force`).
+
+
+
+## Disk zstd / `--progress` (Phase 17 / 1.7)
+
+Opt-in **`--compression none|zstd`** on `archive` (and `make`) applies only when
+**creating** a new `--store` (`meta.toml` absent). Omit ≡ **`none`** ≡ 1.6.
+Existing stores open by meta; explicit flag conflicting with meta → clear
+non-zero error. On-disk zstd encoding is **not** HTTP wire compression /
+Content-Encoding and **not** packfile — `ChunkSource::get` / `push` PUT bodies
+stay **plaintext** (see [remote-layout.md](remote-layout.md)).
+
+Opt-in **`--progress`** (default **off** ≡ 1.6) emits
+`progress: op=archive done=N/TOTAL` on **stderr** per filtered file. Orthogonal
+to `--format json` (JSON → stdout; progress → stderr) and to `--jobs`.
+
+Smoke: [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).
 
 ## Related
 

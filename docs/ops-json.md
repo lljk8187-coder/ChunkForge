@@ -111,3 +111,30 @@ Phase 16 / **1.6.0** adds `--fallback`, human byte suffixes on
 opt-in; defaults ≡ 1.5). Gated by **`check_compat_1_5.sh`** (calls 1_4; no
 absolute perf SLA). Workspace reports **1.6.0**. Smoke:
 [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh).
+
+## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7)
+
+Opt-in **`--progress`** (default **off** ≡ 1.6) on long ops emits
+`progress: op=… done=N/TOTAL` lines on **stderr** only. It does **not** add,
+rename, or remove any JSON field in this matrix. With **`--format json`**,
+the single JSON object still goes to **stdout**; progress noise stays on
+stderr. Exit codes remain format-independent.
+
+Coverage today: `push` / `pull` / `store scrub` / `gc --apply` (Phase 12+) plus
+**`archive` / `extract` / `make`** (Phase 17). Default off ≡ prior minor.
+
+## Store compression narrative (Phase 17 / 1.7)
+
+CLI **`--compression none|zstd`** (on **`make`** / **`archive`**) applies only
+when **creating** a new local store (`meta.toml` absent). Omit ≡ **`none`**
+(≡ 1.6). Existing stores open by `meta.toml`; an explicit flag that conflicts
+with meta → clear non-zero error.
+
+| Rule | Detail |
+|---|---|
+| Ops JSON shape | **`--compression` does not change** archive / make / extract / push / pull / … summary field **names or shapes** in this matrix |
+| `store stats` `compression` | Reflects store **meta** (`"none"` \| `"zstd"`); observation only |
+| `bytes_plaintext` | Unchanged contract: none ⇒ equals `bytes_on_disk`; zstd ⇒ `null` unless opt-in **`--decode`** |
+| Disk ≠ wire ≠ pack | On-disk zstd encoding is **not** HTTP Content-Encoding / wire compression and **not** packfile; `ChunkSource::get` / HTTP PUT body stay **plaintext** |
+
+Smoke: [`scripts/demo_zstd_progress.sh`](../scripts/demo_zstd_progress.sh).

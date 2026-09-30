@@ -36,6 +36,13 @@ now.
 > product defaults (`jobs=1`, `retries=0`). Promotion checklist condition 1
 > remains unmet; pack stays deferred.
 
+> **Phase17 / 1.7.0 still does not implement pack.** CLI create-time
+> `--compression none|zstd` (disk encoding only) and `archive`/`extract`/`make
+> --progress` keep the loose `.cnk` layout and do not change product defaults
+> (`jobs=1`, `retries=0`, create compression **none**, progress **off**).
+> Local stub evidence (near-zero RTT) remains insufficient to promote pack;
+> promotion checklist condition 1 stays unmet.
+
 ## What we measure
 
 | Metric | Meaning |

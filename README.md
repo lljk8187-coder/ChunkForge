@@ -22,6 +22,7 @@
 | **Phase 14** | **1.4.0** | Publish symmetry + local observability: `push --path`/`--exclude` + `store stats`/`du` + `--exclude-from` + ops-json expand + `demo_push_path_store_stats` + `check_compat_1_3`; defaults ≡ 1.3; **not** pack / write mount / aws-sdk |
 | **Phase 15** | **1.5.0** | Ops JSON closeout + cache soft budget: `--cache-max-bytes` (refuse-fill ≠ LRU) + `make`/`cat --format json` + ops-json finalize + `demo_cache_budget_ops_json` + `check_compat_1_4` (+ P1 `store scrub --listing`); defaults ≡ 1.4; **not** pack / write mount / aws-sdk / LRU |
 | **Phase 16** | **1.6.0** | Read-path Failover + ops sugar: `--fallback` (Missing-only; Cache wraps whole chain) + `--cache-max-bytes` human suffixes (`1M`…) + `store stats` `bytes_plaintext`/`--decode` + `demo_fallback_bytes_suffix` + **`check_compat_1_5`** (+ P1 `diff --path`/`--exclude`); defaults ≡ 1.5; **not** pack / write mount / aws-sdk / prune / LRU / remote scrub |
+| **Phase 17** | **1.7.0** (narrative; workspace still **1.6.0** until M7) | CLI create-time **`--compression none\|zstd`** (default **none** ≡ 1.6) + `archive`/`extract`/`make --progress` (default off) + docs matrix + `demo_zstd_progress`; defaults ≡ 1.6; **not** pack / write mount / aws-sdk / prune / LRU / default zstd / wire compression |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -824,6 +825,66 @@ Details: [docs/ops-json.md](docs/ops-json.md), [docs/mount.md](docs/mount.md),
 [docs/stability.md](docs/stability.md), [docs/perf.md](docs/perf.md).
 Gate: [`scripts/check_compat_1_5.sh`](scripts/check_compat_1_5.sh)
 (calls [`check_compat_1_4.sh`](scripts/check_compat_1_4.sh)).
+
+
+## Phase 17 / 1.7.0: create-time `--compression` + long-job `--progress`
+
+Phase 17 lands **CLI opt-in local store zstd** and **symmetric long-job
+progress** toward **1.7.0**: create-time **`--compression none|zstd`** on
+`make` / `archive` (omit ≡ **`none`** ≡ 1.6), and **`archive` / `extract` /
+`make --progress`** (default **off** ≡ 1.6; reuse `ProgressReporter`). All
+additive; **defaults ≡ 1.6.0** (create none; progress off; jobs=1, retries=0,
+SigV4 off, text, mount prefetch depth 1, no `--fallback` ⇒ single origin).
+Workspace / CLI version remains **1.6.0** until Phase 17 closeout (M7 version
+bump); this section is the product narrative for **1.7.0**.
+
+**Delivered (through M5):**
+
+- **`--compression none|zstd`** (create-time only): applied when `meta.toml` is
+  absent; existing stores open by meta (explicit conflict → clear non-zero).
+  `chunkforge-cli` enables the store `zstd` feature. Disk encoding is **not**
+  HTTP Content-Encoding / wire compression and **not** pack — `get` / HTTP PUT
+  bodies stay **plaintext**.
+- **`archive` / `extract` / `make --progress`**: stderr
+  `progress: op=archive|extract|make done=N/TOTAL`; orthogonal to
+  `--format json` (JSON → stdout). Default off ≡ 1.6.
+- Docs: [docs/ops-json.md](docs/ops-json.md) (`--progress` ↔ JSON orthogonal;
+  compression does not reshape ops JSON; `store stats` `compression` reflects
+  meta); [docs/stability.md](docs/stability.md) 1.7 opt-in;
+  [docs/perf.md](docs/perf.md) «Phase17 / 1.7.0 still does not implement pack»;
+  [docs/remote-layout.md](docs/remote-layout.md) / [docs/archive.md](docs/archive.md) /
+  [docs/extract.md](docs/extract.md) (disk zstd ≠ wire ≠ pack).
+- Smoke: [`scripts/demo_zstd_progress.sh`](scripts/demo_zstd_progress.sh).
+
+**Not yet (later milestones):** `check_compat_1_6` (M6); Cargo / workspace
+version bump + tag to **1.7.0** (M7). P1 Cache hit/refuse counters and
+`cat`/`verify --progress` remain optional.
+
+**Non-goals (carry forward):** packfile; write mount / COW; bidirectional sync;
+extract prune / `--delete`; remote scrub; full aws-sdk / multipart / IMDS /
+SSO / ListObjects; byte-range resume; push listing upload; **cache LRU** /
+auto trim; **default** store zstd; HTTP Content-Encoding / wire compression;
+`store recompress`; changing default jobs·retries·SigV4·progress; absolute
+perf SLA in CI; video analysis.
+Pack stance: [docs/perf.md](docs/perf.md) — **Phase17 / 1.7.0 still does not
+implement pack**.
+
+```bash
+# Phase 17 zstd + progress smoke (~minutes; local only)
+cargo build -p chunkforge-cli
+bash scripts/demo_zstd_progress.sh
+# A: make --compression zstd → store stats compression=zstd; --decode plaintext
+# B: default make → compression=none
+# C: archive/extract --progress → stderr progress: op=…
+# D: optional make --progress → progress: op=make
+
+bash scripts/check_compat_1_5.sh   # still green (compat_1_6 arrives in M6)
+./target/debug/chunkforge --version   # → chunkforge 1.6.0 until M7
+```
+
+Details: [docs/ops-json.md](docs/ops-json.md), [docs/stability.md](docs/stability.md),
+[docs/perf.md](docs/perf.md), [docs/remote-layout.md](docs/remote-layout.md),
+[docs/archive.md](docs/archive.md), [docs/extract.md](docs/extract.md).
 
 ## Incremental dedup demo
 

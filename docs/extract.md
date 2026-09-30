@@ -26,6 +26,7 @@ chunkforge extract \
   [--skip-trust-mtime] \
   [--dry-run] \
   [--format text|json] \
+  [--progress] \
   [--jobs N] \
   [--http-retries N] \
   [--cache <dir>] \
@@ -46,6 +47,7 @@ chunkforge extract \
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
 | `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Text: stderr `would_*` counters over the **filtered** set |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary). Exit codes are format-independent |
+| `--progress` | Opt-in stderr `progress: op=extract done=N/TOTAL` per filtered File (default **off** ≡ 1.6). Orthogonal to `--format json` / `--jobs`. **≠** tracing / otel |
 | `--jobs` / `--http-retries` / `--cache` / `--cache-max-bytes` / templates / SigV4 | Same as other read-side commands; `--cache-max-bytes` requires `--cache` (soft refuse-fill; accepts `1M`/`64Mi`/…; **≠ LRU ≠ trim ≠ GC ≠ sync**); skipped files issue **zero** chunk `get` |
 
 Matching is orthogonal to `--force` / `--skip-*` / `--dry-run` / `--format` /
@@ -154,12 +156,25 @@ chunkforge extract --store ./store -o /tmp/out \
 # → would_* counts exclude filtered paths; no writes; no deletes
 ```
 
+
+
+## `--progress` / disk zstd note (Phase 17 / 1.7)
+
+`extract --progress` (default **off** ≡ 1.6) writes
+`progress: op=extract …` to **stderr** only; JSON field shapes in
+[ops-json.md](ops-json.md) are unchanged. Extract does **not** take
+`--compression` (read path). Local stores created with
+`make`/`archive --compression zstd` still serve **plaintext** via `get`;
+HTTP bodies stay plaintext. Disk zstd ≠ wire compression ≠ pack — see
+[remote-layout.md](remote-layout.md) / [archive.md](archive.md).
+
 ## Demo
 
 ```bash
 bash scripts/demo_extract_skip.sh
 bash scripts/demo_path_filter.sh  # Phase 13 path/exclude + non-prune
 bash scripts/demo_fallback_bytes_suffix.sh  # Phase 16 fallback + suffix + bytes_plaintext
+bash scripts/demo_zstd_progress.sh  # Phase 17: zstd create + archive/extract/make --progress
 # first extract → --skip-unchanged (skipped=all, zero HTTP GET) →
 # change one file → skipped=N-1 wrote=1 → optional dry-run glance
 ```
