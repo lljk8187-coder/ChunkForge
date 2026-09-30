@@ -237,6 +237,12 @@ enum Commands {
         exclude_from: Vec<PathBuf>,
     },
     /// Reassemble a blob from a .cfidx + chunk source
+    ///
+    /// Always writes the reassembled payload to `-o` (product unchanged).
+    /// Default **`--format text`** (≡ 1.4.0): almost no stderr summary on
+    /// success. **`--format json`**: one JSON object on stdout (`ok`, `bytes`);
+    /// no text dual-write; exit codes are format-independent. Orthogonal to
+    /// `--cache` / `--cache-max-bytes` / `--jobs`.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Cat {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -258,6 +264,10 @@ enum Commands {
         /// Max concurrent chunk fetches (default 1 = serial / 0.3.0 behaviour)
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Output format: `text` (default ≡ 1.4.0; almost silent on success)
+        /// or `json` (one object on stdout; still writes `-o` payload)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
         /// Input .cfidx
         index: PathBuf,
         /// Output file path
@@ -637,11 +647,11 @@ enum StoreCommands {
 }
 
 /// Shared `--format text|json` for `diff` / `verify` / `doctor` / `extract` /
-/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive` / `make`
-/// (Phase 8–12 + Phase 13 M2 + Phase 14 M2 + Phase 15 M3).
+/// `push` / `pull` / `gc` / `store scrub` / `store stats` / `archive` / `make` /
+/// `cat` (Phase 8–12 + Phase 13 M2 + Phase 14 M2 + Phase 15 M3/M4).
 /// Default `text` preserves prior behaviour (`diff` ≡ 0.7.0; `verify`/`doctor` ≡ 0.9.0;
 /// `extract` / `push` / `pull` ≡ 1.0.0; `gc` / `store scrub` ≡ 1.1.0; `archive` ≡ 1.2.0;
-/// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary).
+/// `store stats` ≡ text summary; `make` ≡ 1.4.0 stderr summary; `cat` ≡ 1.4.0 almost silent).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     /// Human / prior-stable text (stderr or stdout summaries as documented per command)
@@ -824,6 +834,7 @@ fn run() -> Result<()> {
             cache_max_bytes,
             http_tmpl,
             jobs,
+            format,
             index,
             output,
         } => {
@@ -835,7 +846,7 @@ fn run() -> Result<()> {
                 cache_max_bytes,
                 &http_tmpl,
             )?;
-            cmd_cat(src.as_ref(), &index, &output, jobs)
+            cmd_cat(src.as_ref(), &index, &output, jobs, format)
         }
         Commands::Verify {
             store,
@@ -2380,7 +2391,13 @@ fn apply_file_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usize) -> Result<()> {
+fn cmd_cat(
+    source: &dyn ChunkSource,
+    index_path: &Path,
+    output: &Path,
+    jobs: usize,
+    format: CliFormat,
+) -> Result<()> {
     let index = load_index(index_path)?;
 
     if let Some(parent) = output.parent() {
@@ -2412,6 +2429,20 @@ fn cmd_cat(source: &dyn ChunkSource, index_path: &Path, output: &Path, jobs: usi
     // Empty file: still created above; total_size must be 0.
     if index.total_size == 0 && !index.entries.is_empty() {
         bail!("invalid index: total_size 0 with non-empty entries");
+    }
+
+    // `bytes` = written payload size ≡ index.total_size (entries already length-checked).
+    match format {
+        CliFormat::Text => {
+            // ≡ 1.4.0: almost no stderr summary on success.
+        }
+        CliFormat::Json => {
+            let obj = serde_json::json!({
+                "ok": true,
+                "bytes": index.total_size,
+            });
+            println!("{obj}");
+        }
     }
     Ok(())
 }

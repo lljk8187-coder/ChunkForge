@@ -30,7 +30,8 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`gc`** | `ok`, `dry_run`, `applied`, `listings`, `referenced`, `unreferenced`, `deleted` | Phase 12 §3.2. `unreferenced` = candidate count this run; `deleted` = actual deletes (**0** on dry-run). Both always present. No path listing on json. `--jobs` orthogonal. |
 | **`store scrub`** | `ok`, `checked`, `ok_count`, `corrupt`, `unreadable`, `corrupt_ids`, `unreadable_ids` | Phase 12 §3.2. `checked` = total scanned; `ok_count`/`corrupt`/`unreadable` partition; bad ids **only** in arrays. `ok` true iff corrupt+unreadable==0. `--jobs` orthogonal. |
 | **`store stats`** (alias **`du`**) | `ok`, `chunks`, `bytes_on_disk`; optional `compression` (`"none"` \| `"zstd"`) | Phase 14 M2. Read-only; `chunks` = `list_chunk_ids` count; `bytes_on_disk` = sum of `.cnk` `metadata().len()` (no plaintext decode). Default **text**: `store stats: chunks=N bytes_on_disk=M compression=…` on stdout. **json**: one object; no text dual-write. **Not** GC / scrub / trim / LRU. |
-| **`make`** (draft) | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15 M3 **draft** (M5 may finalize). Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). `cat` still Out of scope until M4. |
+| **`make`** (draft) | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15 M3 **draft** (M5 may finalize). Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). |
+| **`cat`** (draft) | `ok`, `bytes` | Phase 15 M4 **draft** (M5 may finalize). Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Orthogonal to `--cache` / `--cache-max-bytes` / `--jobs`. Failure paths do not require a full JSON object. |
 
 ## Conventions
 
@@ -41,7 +42,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
 | Path filter | `extract` / `pull` / `push` `--path`/`--exclude` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set |
-| Out of scope here | `cat` has **no** `--format json` until Phase 15 M4; `make` draft row above (Phase 15 M3) |
+| Out of scope here | `make` / `cat` draft rows above (Phase 15 M3/M4; M5 may finalize) |
 
 ## Responsibility split (no remote scrub)
 

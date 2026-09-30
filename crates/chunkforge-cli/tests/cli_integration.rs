@@ -10247,3 +10247,174 @@ fn make_format_json_reused_on_second_make() {
         "second make should reuse all chunks"
     );
 }
+
+// --- Phase 15 M4: cat --format text|json ---
+
+#[test]
+fn cat_help_lists_format() {
+    let out = run_ok(&["cat", "--help"]);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("--format"),
+        "cat --help must list --format:\n{s}"
+    );
+    assert!(
+        s.contains("text") && s.contains("json"),
+        "cat --help --format should mention text|json:\n{s}"
+    );
+}
+
+#[test]
+fn cat_default_format_is_text_not_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out_path = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.trim().starts_with('{'),
+        "default (no --format) stdout must not be pure JSON; got {stdout}"
+    );
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
+}
+
+#[test]
+fn cat_format_text_explicit_matches_default() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out_path = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "text",
+        idx.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.trim().starts_with('{'),
+        "text format must not emit JSON on stdout; got {stdout}"
+    );
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
+}
+
+#[test]
+fn cat_format_json_parses_and_has_fields() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out_path = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+    let input_bytes = fs::metadata(&input).unwrap().len();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("\"ok\""),
+        "json must not dual-write JSON on stderr; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("cat json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
+    assert_eq!(
+        fs::metadata(&out_path).unwrap().len(),
+        input_bytes,
+        "-o payload size must match bytes field"
+    );
+}
+
+#[test]
+fn cat_format_json_with_cache_max_bytes_smoke() {
+    let dir = tempdir().unwrap();
+    let primary = dir.path().join("primary");
+    let cache = dir.path().join("cache");
+    let idx = dir.path().join("out.cfidx");
+    let out_path = dir.path().join("reassembled");
+    let input = fixtures_dir().join("hello.txt");
+    let input_bytes = fs::metadata(&input).unwrap().len();
+
+    run_ok(&[
+        "make",
+        "--store",
+        primary.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&[
+        "cat",
+        "--source",
+        primary.to_str().unwrap(),
+        "--cache",
+        cache.to_str().unwrap(),
+        "--cache-max-bytes",
+        "1",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("cat json+cache-max invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    assert_eq!(fs::read(&input).unwrap(), fs::read(&out_path).unwrap());
+}
