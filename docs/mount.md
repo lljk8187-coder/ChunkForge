@@ -36,6 +36,10 @@ chunkforge mount \
   [--name <filename>] \
   [--no-prefetch] \
   [--prefetch-chunks N] \
+  [--path <prefix>]... \
+  [--path-from <file>]... \
+  [--exclude <pat>]... \
+  [--exclude-from <file>]... \
   <listing.cfidx|listing.cfdir> <mountpoint>
 ```
 
@@ -64,6 +68,40 @@ chunkforge mount \
   single origin. With `--cache`, outer Cache wraps the **whole** Fallback
   chain. **≠ cache ≠ sync ≠ prune ≠ write-back** (see below).
 - `--jobs` does **not** apply to mount.
+
+### Path scope (Phase 21 / 1.11 opt-in; Cargo still 1.10.0 until M7)
+
+Repeatable **`--path` / `--path-from` / `--exclude` / `--exclude-from`**
+restrict which **`.cfdir` File** paths appear under the mount point (kept
+Files + ancestor Dirs). Semantics match archive/extract/push/pull/diff/doctor/
+verify (`PathFilter` / `load_path_file` / `load_exclude_file`). Library path:
+`filter_dir_archive` → `DirFs::new` (empty filter ≡ identity ≡ **1.10** full
+tree).
+
+| Rule | Detail |
+|---|---|
+| Default | **No** path/exclude flags ⇒ **full tree** ≡ **1.10.0** |
+| `.cfidx` | Any path/exclude/`--path-from`/`--exclude-from` flag → **clear non-zero** |
+| Orthogonality | Works with `--fallback` / `--cache*` / prefetch / SigV4; still **RO** |
+| Session | Mount stays session-typed — **no** `--format json`, **no** `--progress` |
+
+**`mount path` ≠ write mount ≠ prune ≠ `gc --path` ≠ sync ≠ pack** — filtering
+only **shows fewer** paths; it never writes back, never deletes extras under a
+target tree, never shrinks the GC keep-set, and never packs chunks.
+
+```bash
+# Subset mount (packages/foo only)
+chunkforge mount --store ./store --path packages/foo tree.cfdir /mnt/cf
+# path-from + exclude-from combined
+chunkforge mount --store ./store \
+  --path-from include.txt --exclude-from exclude.txt \
+  tree.cfdir /mnt/cf
+```
+
+Smoke: [`scripts/demo_mount_path.sh`](../scripts/demo_mount_path.sh)
+(library DirFs / `filter_dir_archive` is the primary CI-friendly path; real
+FUSE is optional when `/dev/fuse` + fuse3 are present).
+
 
 ### Sequential prefetch (Phase 10 + Phase 11 P1 O1)
 
@@ -135,8 +173,9 @@ prefetch of subsequent chunk(s) when enabled (default depth 1).
 ### Smoke scripts
 
 ```bash
-./scripts/demo_mount.sh      # .cfidx single-file smoke
-./scripts/demo_archive.sh    # includes optional .cfdir mount (skips if fuse unavailable)
+./scripts/demo_mount.sh           # .cfidx single-file smoke
+./scripts/demo_archive.sh         # includes optional .cfdir mount (skips if fuse unavailable)
+./scripts/demo_mount_path.sh      # Phase21 path quartet (DirFs lib + optional FUSE)
 ```
 
 See also [remote-layout.md](remote-layout.md) for HTTP / `file://` chunk URLs and
@@ -161,12 +200,15 @@ session also tears down the mount when possible.
 | **`--fallback`** | **No** (read-only multi-origin) | On Missing, try next origin in CLI order; Transient/Corrupt fail fast |
 | **`--cache`** (+ optional `--cache-max-bytes`) | **Yes** (cache store only) | Miss → `get` from chain → `put` into cache; over budget **refuse-fill**, still serves |
 | Sync / prune / write mount | n/a | **Not implemented** — FUSE stays RO; fallback is not write-back, not bidirectional sync, not prune |
+| **`--path` / `--path-from` / `--exclude` / `--exclude-from`** | **No** (filter listing before DirFs) | Subset **visibility** only; **≠** write mount **≠** prune **≠** `gc --path` **≠** sync **≠** pack |
 
 Composition (recommended): `CacheSource(Fallback([primary, …fallbacks]), cache)`.
 
 ## Out of scope
 
-- Writable mounts / COW write-back
+- Writable mounts / COW write-back (**mount path is not write-back**)
 - Prefetch depth beyond the hard cap (`N≤2` / ≤512 KiB)
 - Treating `--fallback` as sync / prune / write-back / LRU
+- `gc --path` / extract prune / `--delete` / bidirectional sync / packfile
+- `mount --progress` done/TOTAL (session-typed; no natural TOTAL)
 - macOS (macFUSE / Fuse-T) and native Windows as supported platforms

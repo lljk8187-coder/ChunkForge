@@ -84,6 +84,18 @@ would mis-delete). Defaults stay ≡ **1.9.0**. Responsibility:
 dest ≠ `--fallback` / multi-dest**. The workspace reports **1.10.0**.
 Gate **`check_compat_1_9.sh`** gates 1.10 flags (calls 1_8).
 
+**1.11.0** (Phase 21 — **unpublished draft**; workspace / CLI still report
+**1.10.0** until M7 bump) adds further **opt-in** only: **`mount` path
+quartet** (`--path` / `--exclude` / `--exclude-from` / `--path-from`) on
+read-only `.cfdir` DirFs (library `filter_dir_archive`; empty filter ≡
+identity ≡ **1.10** full tree; `.cfidx` + any path flag → non-zero). Planned
+gate **`check_compat_1_10.sh`** (M4; calls 1_9 + mount path help asserts).
+**Hard ban unchanged:** **`gc --path`**, write mount, prune, pack, default
+zstd, push `--fallback`, mount `--progress`. Responsibility:
+**`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**. Defaults stay
+≡ **1.10.0** (no mount path flags ⇒ full tree). Do **not** treat this
+paragraph as a released version bump.
+
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
 [remote-layout.md](remote-layout.md), [ops-json.md](ops-json.md).
@@ -108,20 +120,22 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
 `pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
 `store create`, `pull --compression`, `diff --progress`, `make --jobs`,
-`--path-from`, `doctor`/`verify` path scope) may ship in
+`--path-from`, `doctor`/`verify` path scope, `mount` path quartet) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), and **1.10.0** (Phase20) are such
+**1.9.0** (Phase19), **1.10.0** (Phase20), and planned **1.11.0** (Phase21;
+draft until M7) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
 omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release /
 `make --jobs` default **1** / no `--path-from` / no doctor·verify path flags ≡
-1.9 full set. Soft budget is **refuse-fill only** (≠ LRU ≠
+1.9 full set / no mount path flags ≡ 1.10 full tree. Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 **`store create` ≠ recompress ≠ default zstd ≠ pack**.
 **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**.
+**`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync ≠ pack**.
 
 ## Breaking-change policy
 
@@ -165,7 +179,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.10.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.10.0** and Phase21 / planned **1.11** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -183,7 +197,7 @@ At 1.0, ChunkForge promises:
 | `diff` | Listing↔listing (+ `--tree`); optional `--path`/`--exclude`/`--exclude-from` (narrow before compare; default ≡ full); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
 | `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
-| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU) |
+| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes` / path quartet) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU); Phase21 path flags subset DirFs visibility (default ≡ 1.10 full tree; **≠** write mount **≠** prune **≠** `gc --path`) |
 | `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; human suffixes (`1M` …) accepted (Phase 16); omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 | `cat` / `verify` / `extract` / `mount` / `pull` / `doctor --fallback` | Ordered Missing-only failover behind primary; **≠ cache fill ≠ sync ≠ prune ≠ write-back**; zero times ≡ 1.5 single origin |
 | `push` local / `file://` `--dest` | Single Store as `ChunkSink` (open or create **none**); **≠** `--fallback` / multi-dest; HTTP knobs with local dest → non-zero |
@@ -231,4 +245,5 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.9 `store create` / `pull --compression` / `diff --progress`; calls 1_7).
 [`scripts/check_compat_1_9.sh`](../scripts/check_compat_1_9.sh)
 (1.10 `--path-from` / doctor·verify `--path`; no gc `--path`; calls 1_8).
-No absolute perf SLA.
+Planned **`check_compat_1_10.sh`** (Phase21-M4; mount path help + calls 1_9) —
+not required by M3 demo. No absolute perf SLA.

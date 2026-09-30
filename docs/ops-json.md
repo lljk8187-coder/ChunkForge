@@ -42,7 +42,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | JSON shape | Single compact **object** on stdout |
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
-| Path filter | `extract` / `pull` / `push` / `archive` / `diff` / `doctor` / `verify` `--path`/`--path-from`/`--exclude`/`--exclude-from` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set; doctor `checked` / verify `files`/`chunks` may shrink. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack** |
+| Path filter | `extract` / `pull` / `push` / `archive` / `diff` / `doctor` / `verify` `--path`/`--path-from`/`--exclude`/`--exclude-from` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set; doctor `checked` / verify `files`/`chunks` may shrink. **`path-from` ≠ prune ≠ gc-path ≠ sync ≠ pack**. **`mount` path** (Phase21) is the same PathFilter but **outside** this JSON matrix (no mount JSON). **`mount path` ≠ write mount ≠ prune ≠ gc-path ≠ sync** |
 | Cache soft budget | **`--cache-max-bytes N`** (with `--cache` on `cat`/`verify`/`extract`/`mount`) = **refuse-fill** when `bytes_on_disk + plaintext_len > N`; still serves primary. **≠ LRU ≠ trim ≠ GC ≠ sync**. Accepts plain decimal **or** human suffixes `K`/`M`/`G`/`Ki`/`Mi`/`Gi` (1024-base; Phase 16). Omit ≡ 1.4 unbounded fill. See [mount.md](mount.md). Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh). |
 | Cache observation JSON | Phase18-M3 / G3: on `cat` / `verify` / `extract` (write) / `pull` / `doctor`, **`--cache` + `--format json`** adds `cache_hits` / `cache_miss_fills` / `cache_miss_refused` (numbers from the same `CacheStatsRef` as `--cache-stats`). **No `--cache` → omit** the three keys (do not emit `null`). Orthogonal to `--cache-stats` (stderr) and `--progress` (stderr). **≠ LRU ≠ trim**. `mount` has no `--format json` (stderr stats only, M2). |
 | Read-path `--fallback` | Repeatable on `cat`/`verify`/`extract`/`mount`/`pull`/`doctor`. Missing-only failover; **≠ cache ≠ sync**. Outer Cache wraps the whole Fallback chain. Zero times ≡ 1.5 single origin. Smoke: [`scripts/demo_fallback_bytes_suffix.sh`](../scripts/demo_fallback_bytes_suffix.sh). |
@@ -137,6 +137,11 @@ flags ⇒ full set). JSON field **names** unchanged; filtered counts may shrink.
 Gated by **`check_compat_1_9.sh`** (calls 1_8; no absolute perf SLA). Workspace
 reports **1.10.0**. Smoke:
 [`scripts/demo_path_from_doctor_verify.sh`](../scripts/demo_path_from_doctor_verify.sh).
+Phase 21 / planned **1.11.0** (workspace still **1.10.0** until M7) adds
+**`mount` path** quartet only — **`mount` still has no `--format json`**
+(session-typed FUSE; no natural ops-json object / no mount `--progress`
+done/TOTAL). Smoke:
+[`scripts/demo_mount_path.sh`](../scripts/demo_mount_path.sh).
 
 
 ## Cache observation JSON (Phase18-M3 / 1.8 opt-in)
@@ -161,7 +166,7 @@ Rules:
 | `--cache-stats` | stderr `cache: hits=…` line; **orthogonal** to JSON fields |
 | `--progress` | stderr only; **orthogonal** to JSON fields |
 | Soft budget | Counters observe refuse-fill; they are **not** an LRU / trim / eviction API |
-| Coverage | `cat` / `verify` / `extract` (write path) / `pull` / `doctor`. `mount` has no ops-json |
+| Coverage | `cat` / `verify` / `extract` (write path) / `pull` / `doctor`. **`mount` has no ops-json** (session-typed; Phase21 path flags do not add JSON) |
 
 ## `--progress` ↔ JSON orthogonality (Phase 17 / 1.7.0 + Phase18)
 
