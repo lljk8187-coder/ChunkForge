@@ -691,7 +691,66 @@ fn mount_help_lists_source_cache_name() {
         s.contains("--prefetch-chunks"),
         "mount --help must list --prefetch-chunks:\n{s}"
     );
+    // Phase 21 M2: path four-pack (≡ archive/extract/push/pull/diff/doctor/verify).
+    for flag in ["--path", "--path-from", "--exclude", "--exclude-from"] {
+        assert!(
+            s.contains(flag),
+            "mount --help must list {flag}:\n{s}"
+        );
+    }
     assert!(s.to_ascii_lowercase().contains("mountpoint"), "{s}");
+}
+
+/// Phase 21 M2: `.cfidx` + any path/exclude flag → clear non-zero (≡ doctor/verify).
+#[test]
+fn mount_cfidx_plus_path_nonzero() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let mnt = dir.path().join("mnt");
+    fs::create_dir(&mnt).unwrap();
+    let input = fixtures_dir().join("hello.txt");
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "mount",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "a",
+        idx.to_str().unwrap(),
+        mnt.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path") || err.contains("looks like a `.cfidx`") || err.contains("cfidx"),
+        "mount .cfidx+--path must be clear non-zero; stderr={err}"
+    );
+
+    // --path-from alone also restricts → same error.
+    let path_file = dir.path().join("paths.txt");
+    fs::write(&path_file, "pkgs/foo\n").unwrap();
+    let fail2 = run_fail(&[
+        "mount",
+        "--store",
+        store.to_str().unwrap(),
+        "--path-from",
+        path_file.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        mnt.to_str().unwrap(),
+    ]);
+    let err2 = String::from_utf8_lossy(&fail2.stderr);
+    assert!(
+        err2.contains("--path") || err2.contains("looks like a `.cfidx`") || err2.contains("cfidx"),
+        "mount .cfidx+--path-from must be clear non-zero; stderr={err2}"
+    );
 }
 
 #[test]
@@ -791,6 +850,69 @@ fn mount_cli_hello_cmp_and_ro() {
     assert!(
         fs::write(&virtual_file, b"x").is_err(),
         "write should fail on RO mount"
+    );
+
+    let _ = Command::new("fusermount3").args(["-u"]).arg(&mnt).status();
+    let _ = Command::new("fusermount").args(["-u"]).arg(&mnt).status();
+    let _ = handle.join();
+}
+
+/// Phase 21 M2: mount --path subset on `.cfdir` (real FUSE; CI may lack /dev/fuse).
+/// Library DirFs + filter_dir_archive coverage is in chunkforge-fuse / chunkforge-index.
+#[test]
+#[ignore = "requires fuse3 + /dev/fuse; run with --ignored when available"]
+fn mount_cli_cfdir_path_subset() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"foo-a\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"bar-b\n").unwrap();
+    let cfdir = dir.path().join("tree.cfdir");
+    let mnt = dir.path().join("mnt");
+    fs::create_dir(&mnt).unwrap();
+
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        cfdir.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let mnt_s = mnt.to_str().unwrap().to_string();
+    let store_s = store.to_str().unwrap().to_string();
+    let cfdir_s = cfdir.to_str().unwrap().to_string();
+    let bin_path = bin();
+
+    let handle = thread::spawn(move || {
+        Command::new(&bin_path)
+            .args([
+                "mount",
+                "--store",
+                &store_s,
+                "--path",
+                "pkgs/foo",
+                &cfdir_s,
+                &mnt_s,
+            ])
+            .status()
+    });
+
+    let foo_a = mnt.join("pkgs/foo/a.txt");
+    for _ in 0..50 {
+        if foo_a.is_file() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(foo_a.is_file(), "pkgs/foo/a.txt should appear under --path");
+    assert_eq!(fs::read(&foo_a).unwrap(), b"foo-a\n");
+    assert!(
+        !mnt.join("pkgs/bar").exists(),
+        "pkgs/bar must be absent under --path pkgs/foo"
     );
 
     let _ = Command::new("fusermount3").args(["-u"]).arg(&mnt).status();

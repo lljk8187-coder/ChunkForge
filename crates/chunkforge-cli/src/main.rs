@@ -480,6 +480,14 @@ enum Commands {
         chunk_size: Option<String>,
     },
     /// Mount a `.cfidx` (single file) or `.cfdir` (directory tree) read-only (Linux + fuse3)
+    ///
+    /// Optional repeatable `--path` / `--path-from` / `--exclude` / `--exclude-from`
+    /// restrict which `.cfdir` File paths appear in the FUSE tree (filtered File
+    /// entries + ancestor Dirs). Default: no flags ⇒ full tree (≡ 1.10.0).
+    /// `.cfidx` + any path/exclude flag (including `--path-from` /
+    /// `--exclude-from`) → clear non-zero error. Still read-only; orthogonal to
+    /// `--fallback` / `--cache*` / prefetch / SigV4. Not write-mount / prune /
+    /// gc `--path` / sync.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Mount {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -531,6 +539,33 @@ enum Commands {
             value_parser = clap::value_parser!(u32).range(1..=2)
         )]
         prefetch_chunks: u32,
+        /// Include only `.cfdir` File paths under this prefix (repeatable; OR).
+        /// With any `--path`, a candidate must match at least one before
+        /// excludes apply. Omit all `--path` ⇒ include-all (≡ 1.10.0 full tree).
+        /// Ancestor Dir entries retained for kept Files. With `.cfidx` → clear
+        /// non-zero error.
+        #[arg(long = "path", value_name = "P", action = clap::ArgAction::Append)]
+        paths: Vec<String>,
+        /// Exclude `.cfdir` File paths matching this pattern (repeatable): exact,
+        /// trailing `/` directory prefix, or single edge `*` (`*.o`, `temp*`).
+        /// Illegal middle `*` / `**` → clear error. Applied after `--path`.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude", value_name = "PAT", action = clap::ArgAction::Append)]
+        excludes: Vec<String>,
+        /// Read exclude patterns from a UTF-8 file (repeatable). One pattern
+        /// per line (same rules as `--exclude`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--exclude` into one `PathFilter`.
+        /// Unreadable file or illegal pattern → clear non-zero error.
+        /// With `.cfidx` → clear non-zero error.
+        #[arg(long = "exclude-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        exclude_from: Vec<PathBuf>,
+        /// Read include path prefixes from a UTF-8 file (repeatable). One prefix
+        /// per line (same rules as `--path`); blank lines and `#` comments
+        /// skipped; trim. Merged with every `--path` (OR) into one `PathFilter`.
+        /// May combine with `--exclude` / `--exclude-from`. Unreadable file or
+        /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
+        #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
+        path_from: Vec<PathBuf>,
         /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
         /// Empty directory to mount onto
@@ -1353,11 +1388,19 @@ fn run() -> Result<()> {
             name,
             no_prefetch,
             prefetch_chunks,
+            paths,
+            excludes,
+            exclude_from,
+            path_from,
             index,
             mountpoint,
         } => {
             ensure_mount_supported()?;
             require_cache_for_stats(cache.as_deref(), cache_stats)?;
+            let paths = merged_paths(&paths, &path_from)?;
+            let excludes = merged_excludes(&excludes, &exclude_from)?;
+            let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let (src, stats) = open_chunk_source(
                 store.as_deref(),
                 source.as_deref(),
@@ -1373,6 +1416,7 @@ fn run() -> Result<()> {
                 name.as_deref(),
                 !no_prefetch,
                 prefetch_chunks as usize,
+                &path_filter,
             );
             // After FUSE session ends (unmount), emit once.
             maybe_emit_cache_stats(&stats, cache_stats);
@@ -5068,6 +5112,7 @@ fn cmd_mount(
     name: Option<&str>,
     prefetch: bool,
     prefetch_chunks: usize,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     #[cfg(feature = "fuse")]
     {
@@ -5078,6 +5123,7 @@ fn cmd_mount(
             name,
             prefetch,
             prefetch_chunks,
+            path_filter,
         )
     }
     #[cfg(not(feature = "fuse"))]
@@ -5089,6 +5135,7 @@ fn cmd_mount(
             name,
             prefetch,
             prefetch_chunks,
+            path_filter,
         );
         // ensure_mount_supported() already rejected; keep a defensive message.
         ensure_mount_supported()
@@ -5103,6 +5150,7 @@ fn cmd_mount_fuse(
     name: Option<&str>,
     prefetch: bool,
     prefetch_chunks: usize,
+    path_filter: &PathFilter,
 ) -> Result<()> {
     use chunkforge_fuse::{BlobFs, DirFs, MountOption, default_blob_name, mount_ro};
 
@@ -5122,8 +5170,17 @@ fn cmd_mount_fuse(
         MountOption::DefaultPermissions,
     ];
 
+    let filter_active = !path_filter.paths().is_empty() || !path_filter.excludes().is_empty();
+
     match peek_listing_kind(index_path)? {
         ListingKind::Index => {
+            // `.cfidx` + any path/exclude flag → clear non-zero (same as doctor/verify/push/pull).
+            if filter_active {
+                bail!(
+                    "--path/--path-from/--exclude applies to `.cfdir` File entries; {} looks like a `.cfidx` (use without path flags for full single-blob mount)",
+                    index_path.display()
+                );
+            }
             let blob_name = match name {
                 Some(n) => {
                     if n.is_empty() || n.contains('/') || n.contains('\\') {
@@ -5159,6 +5216,8 @@ fn cmd_mount_fuse(
                 );
             }
             let archive = load_dir_archive(index_path)?;
+            // PathFilter → filter_dir_archive → DirFs (empty filter ≡ 1.10 full tree).
+            let archive = chunkforge_index::filter_dir_archive(&archive, path_filter);
             let fs = if prefetch {
                 DirFs::new(archive, source).with_prefetch_chunks(prefetch_chunks)
             } else {
