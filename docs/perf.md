@@ -72,10 +72,10 @@ now.
 > defaults. Promotion checklist condition 1 stays unmet on local stub
 > evidence; pack stays deferred.
 >
-> **Phase22 / planned 1.12.0 still does not implement pack** (workspace Cargo
-> still **1.11.0** until M7). Symlink opt-in is metadata-only (0 chunks) and
-> does not change the loose `.cnk` layout or product defaults. Promotion
-> checklist condition 1 stays unmet; pack stays deferred.
+> **Phase22 / 1.12.0 still does not implement pack**. Symlink opt-in is
+> metadata-only (0 chunks) and does not change the loose `.cnk` layout or
+> product defaults. `make --dry-run` is plan-only accounting (≠ pack).
+> Promotion checklist condition 1 stays unmet; pack stays deferred.
 
 ## What we measure
 

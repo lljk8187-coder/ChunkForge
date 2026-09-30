@@ -51,12 +51,15 @@ enum Commands {
     /// (`make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`).
     /// **`--format json`**: one JSON object on stdout (`ok`, `bytes`, `chunks`,
     /// `new`, `reused`); no duplicate text summary; exit codes are
-    /// format-independent.
+    /// format-independent. With **`--dry-run`**, FastCDC still runs and
+    /// existing-store `has()` accounting produces `would_write`/`would_reuse`
+    /// (no store create/put, no `.cfidx` write). Omit `--dry-run` ≡ today's
+    /// real write path. **≠** seed / **≠** pack / **≠** recompress.
     Make {
-        /// Local CAS store directory (created if missing)
+        /// Local CAS store directory (created if missing; not written in `--dry-run`)
         #[arg(long)]
         store: PathBuf,
-        /// Output .cfidx path
+        /// Output .cfidx path (not written in `--dry-run`)
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
         /// Input file to chunk
@@ -72,7 +75,8 @@ enum Commands {
         /// case-insensitive). Omit ≡ create with `none` (≡ 1.6); existing stores
         /// open by `meta.toml` (omit → no mismatch check; explicit value that
         /// differs from meta → clear non-zero error). Disk zstd is **not** HTTP
-        /// wire compression / Content-Encoding. Default none ≡ 1.6.
+        /// wire compression / Content-Encoding. Default none ≡ 1.6. Ignored for
+        /// create under `--dry-run` (dry-run never creates a store).
         #[arg(
             long = "compression",
             value_name = "none|zstd",
@@ -90,6 +94,13 @@ enum Commands {
         /// (zstd) only; FastCDC cut-points remain serial.
         #[arg(long, default_value_t = 1, value_name = "N")]
         jobs: u32,
+        /// Plan-only: always read input + FastCDC + count chunks/bytes. If the
+        /// store exists, open for `has()` accounting → `would_write` /
+        /// `would_reuse` (SkippedExists vs missing). If missing, do **not**
+        /// create; treat unique chunks as would_write. Does **not** put chunks
+        /// or write `.cfidx`. **≠** seed / **≠** pack / **≠** recompress.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -1239,6 +1250,7 @@ fn run() -> Result<()> {
             compression,
             progress,
             jobs,
+            dry_run,
         } => {
             let jobs = parse_jobs(jobs)?;
             cmd_make(
@@ -1250,6 +1262,7 @@ fn run() -> Result<()> {
                 compression,
                 progress,
                 jobs,
+                dry_run,
             )
         }
         Commands::Archive {
@@ -2078,10 +2091,26 @@ fn cmd_make(
     compression: Option<Compression>,
     progress: bool,
     jobs: usize,
+    dry_run: bool,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
-    let store = open_or_create_store(store_path, compression)?;
+
+    // Dry-run: open existing store for has() accounting only; do not create / put / write .cfidx.
+    // `--compression` is ignored for create under dry-run (never creates).
+    let store = if dry_run {
+        let meta = store_path.join("meta.toml");
+        if meta.is_file() {
+            Some(
+                Store::open(store_path)
+                    .with_context(|| format!("open store at {}", store_path.display()))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        Some(open_or_create_store(store_path, compression)?)
+    };
 
     // FastCDC cut-points stay serial (StreamCDC / single-file). `--jobs` only
     // parallelizes post-chunk store put / on-disk encoding (zstd).
@@ -2092,8 +2121,53 @@ fn cmd_make(
     // input file → TOTAL=1 and a single tick after the file is fully chunked,
     // stored, and indexed. (Per-chunk ticks were considered; 1/1 keeps the
     // unit aligned with the CLI's single-file contract and avoids empty-file
-    // TOTAL=0 edge cases.)
+    // TOTAL=0 edge cases.) Dry-run ticks after accounting (no put / no index).
     let prog = ProgressReporter::new(progress, "make", Some(1));
+
+    if dry_run {
+        let mut would_write = 0usize;
+        let mut would_reuse = 0usize;
+        let mut seen: HashSet<ChunkId> = HashSet::new();
+        for c in &chunks {
+            let exists_in_store = store.as_ref().is_some_and(|s| s.has(&c.id));
+            if exists_in_store || seen.contains(&c.id) {
+                would_reuse += 1;
+            } else {
+                seen.insert(c.id);
+                would_write += 1;
+            }
+        }
+        prog.tick();
+        match format {
+            CliFormat::Text => {
+                eprintln!(
+                    "make: dry-run: {} bytes, {} chunk{} (would_write={}, would_reuse={});                      no store/.cfidx written (would write {})",
+                    data.len(),
+                    chunks.len(),
+                    if chunks.len() == 1 { "" } else { "s" },
+                    would_write,
+                    would_reuse,
+                    output.display()
+                );
+            }
+            CliFormat::Json => {
+                // Mirror archive dry-run: would_* instead of new/reused (avoid
+                // misleading written-field names on plan-only).
+                let obj = serde_json::json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "bytes": data.len() as u64,
+                    "chunks": chunks.len(),
+                    "would_write": would_write,
+                    "would_reuse": would_reuse,
+                });
+                println!("{obj}");
+            }
+        }
+        return Ok(());
+    }
+
+    let store = store.expect("non-dry-run make always opens or creates the store");
 
     // Store puts are atomic / race-safe (`Store::put_with_id`). map_indexed
     // preserves chunk order into `entries` (jobs=1 ≡ prior serial loop).

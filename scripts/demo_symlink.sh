@@ -13,8 +13,7 @@
 #   CHUNKFORGE_P22_DEMO_DIR (default /tmp/cf-p22-symlink-demo)
 #   CHUNKFORGE_DEMO_SKIP_FUSE=1  force-skip real FUSE even if available
 #
-# Version gate expects chunkforge 1.11.0 (workspace still 1.11.0; M7 bumps
-# to 1.12.0). Docs may preview Phase22 / 1.12.0 without changing Cargo.toml.
+# Version gate expects chunkforge 1.12.0 (Phase22-M7 closeout).
 #
 # Gate (Phase22-M6 / Phase21 / Phase19-M7b lesson): require
 # check_compat_1_11.sh present + executable (same pattern as
@@ -366,15 +365,15 @@ echo "mount has no --progress: OK"
 echo "G: help / ≠ prune / ≠ gc-path / ≠ write mount: OK"
 
 echo
-echo "==> H. version 1.11.0 + Cargo 1.11.0 + compat_1_11 (M7 bumps to 1.12.0)"
+echo "==> H. version 1.12.0 + Cargo 1.12.0 + compat_1_11 (Phase22-M7)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.11.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.11.0; got $VER" >&2
+if ! grep -F '1.12.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.12.0; got $VER" >&2
   exit 1
 fi
-if ! grep -E '^version = "1\.11\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must be 1.11.0 (M7 bumps to 1.12.0)" >&2
+if ! grep -E '^version = "1\.12\.0"' "$ROOT/Cargo.toml" >/dev/null; then
+  echo "error: workspace Cargo.toml version must be 1.12.0 (Phase22-M7)" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -397,7 +396,7 @@ if [[ ! -x "$COMPAT111" ]]; then
   echo "error: check_compat_1_11.sh must be executable" >&2
   exit 1
 fi
-echo "H: version 1.11.0 / Cargo 1.11.0 / compat_1_10 / compat_1_11: OK"
+echo "H: version 1.12.0 / Cargo 1.12.0 / compat_1_10 / compat_1_11: OK"
 
 echo
 echo "demo_symlink: ALL OK (assert_path=$ASSERT_PATH)"

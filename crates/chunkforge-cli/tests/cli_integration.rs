@@ -10948,6 +10948,197 @@ fn make_help_lists_format() {
     );
 }
 
+// --- Phase22-M7 / P1: make --dry-run ---
+
+#[test]
+fn make_help_lists_dry_run() {
+    let help = run_ok(&["make", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--dry-run"),
+        "make --help should list --dry-run:\n{s}"
+    );
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("seed") || lower.contains("pack") || lower.contains("recompress"),
+        "make --help --dry-run should nail ≠ seed / ≠ pack / ≠ recompress:\n{s}"
+    );
+}
+
+#[test]
+fn make_dry_run_prints_stats_without_writing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let input_bytes = fs::metadata(&input).unwrap().len();
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--dry-run",
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("dry-run") && err.contains("would_write="),
+        "stderr={err}"
+    );
+    assert!(
+        err.contains("would_reuse="),
+        "stderr must report would_reuse; stderr={err}"
+    );
+    assert!(
+        err.contains("no store") || err.contains("no store/.cfidx"),
+        "stderr={err}"
+    );
+    assert!(!idx.exists(), "dry-run must not write .cfidx");
+    assert!(
+        !store.join("meta.toml").exists(),
+        "dry-run must not create store when missing"
+    );
+    // bytes count should appear in the text summary
+    assert!(
+        err.contains(&input_bytes.to_string()),
+        "stderr should mention input bytes; stderr={err}"
+    );
+}
+
+#[test]
+fn make_dry_run_json_has_would_fields_not_new_reused() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let input_bytes = fs::metadata(&input).unwrap().len();
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("make: dry-run:") && !stderr.contains("make: wrote"),
+        "json must not dual-write text summary; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make dry-run json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["bytes"].as_u64(), Some(input_bytes));
+    let chunks = v["chunks"].as_u64().expect("chunks field");
+    let would_write = v["would_write"].as_u64().expect("would_write");
+    let would_reuse = v["would_reuse"].as_u64().expect("would_reuse");
+    assert_eq!(
+        would_write + would_reuse,
+        chunks,
+        "would_write+would_reuse must equal chunks"
+    );
+    assert!(
+        v.get("new").is_none() && v.get("reused").is_none(),
+        "dry-run json must omit misleading new/reused; got {v}"
+    );
+    assert!(!idx.exists(), "dry-run must not write .cfidx");
+    assert!(
+        !store.join("meta.toml").exists(),
+        "dry-run must not create store when missing"
+    );
+}
+
+#[test]
+fn make_dry_run_with_existing_store_reuses_without_writing() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx1 = dir.path().join("a.cfidx");
+    let idx2 = dir.path().join("b.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+
+    // Real write first so store has the chunks.
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx1.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+    assert!(store.join("meta.toml").is_file());
+    let meta_mtime = fs::metadata(store.join("meta.toml"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let chunk_count_before = walkdir_chunk_count(&store);
+
+    let out = run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx2.to_str().unwrap(),
+        "--dry-run",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("make dry-run json invalid: {e}; stdout={stdout}"));
+    assert_eq!(v["dry_run"], true);
+    let chunks = v["chunks"].as_u64().expect("chunks");
+    let would_reuse = v["would_reuse"].as_u64().expect("would_reuse");
+    assert_eq!(
+        would_reuse, chunks,
+        "existing store should would_reuse all chunks; got {v}"
+    );
+    assert_eq!(v["would_write"].as_u64(), Some(0));
+    assert!(!idx2.exists(), "dry-run must not write second .cfidx");
+    let meta_mtime_after = fs::metadata(store.join("meta.toml"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        meta_mtime, meta_mtime_after,
+        "dry-run must not touch store meta"
+    );
+    assert_eq!(
+        walkdir_chunk_count(&store),
+        chunk_count_before,
+        "dry-run must not add/remove .cnk files"
+    );
+}
+
+/// Count `.cnk` files under a store root (helper for dry-run unchanged checks).
+fn walkdir_chunk_count(store: &std::path::Path) -> usize {
+    let chunks = store.join("chunks");
+    if !chunks.is_dir() {
+        return 0;
+    }
+    let mut n = 0usize;
+    for ent in fs::read_dir(&chunks).unwrap() {
+        let ent = ent.unwrap();
+        if ent.file_type().unwrap().is_dir() {
+            for f in fs::read_dir(ent.path()).unwrap() {
+                let f = f.unwrap();
+                if f.path().extension().and_then(|e| e.to_str()) == Some("cnk") {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
 #[test]
 fn make_default_format_is_text_not_json() {
     let dir = tempdir().unwrap();

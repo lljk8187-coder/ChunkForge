@@ -32,7 +32,8 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`store stats`** (alias **`du`**) | `ok`, `chunks`, `bytes_on_disk`, `bytes_plaintext` (`number` \| `null`); optional `compression` (`"none"` \| `"zstd"`) | Phase 14 M2 + Phase 16 M4. Read-only; `chunks` = `list_chunk_ids` count; `bytes_on_disk` = sum of `.cnk` `metadata().len()` (no plaintext decode). `bytes_plaintext`: `compression=none` → equals `bytes_on_disk` (cheap); `compression=zstd` → `null` unless opt-in **`--decode`** (full-store `get` sum). Default **text**: `store stats: chunks=N bytes_on_disk=M [bytes_plaintext=P] compression=…` (`bytes_plaintext` printed only when known). **json**: one object; `bytes_plaintext` number or `null`; no text dual-write. Old field names unchanged. **Not** GC / scrub / trim / LRU. |
 | **`store create`** | `ok`, `store`, `compression` (`"none"` \| `"zstd"`) | Phase 19 M1. Creates empty local CAS (`Store::create`); default **text**. **json**: one object on stdout; no text dual-write; exit format-independent. Field set **orthogonal** to other store / ops commands (does **not** rename prior fields). Omit `--compression` ≡ `"none"` ≡ 1.8 create default. Existing `meta.toml` → clear non-zero (**≠** recompress / trim). See [store.md](store.md). |
 | **`store list`** | `ok`, `chunks`, `ids` (sorted string array of hex ids) | Phase 21 M6 / P1 O2. Read-only via `Store::list_chunk_ids`; default **text**: one hex id per line (**stably sorted**); empty → no lines. **json**: one object; no text dual-write; exit format-independent. Field set **orthogonal** (does **not** rename prior fields). **≠** GC / scrub / trim / LRU. See [store.md](store.md). |
-| **`make`** | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15. Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). Field set **frozen** for scripts. |
+| **`make`** (write) | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15. Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). Field set **frozen** for scripts. Omit `--dry-run` ≡ this write path. |
+| **`make`** (dry-run) | `ok`, `dry_run` (`true`), `bytes`, `chunks`, `would_write`, `would_reuse` | Phase22-M7 / P1. Plan-only: FastCDC + `has()` accounting; no store create/put; no `.cfidx` write. Uses **`would_write` / `would_reuse`** (not `new` / `reused`). Missing store → all unique chunks `would_write`. **≠** seed / **≠** pack / **≠** recompress. |
 | **`cat`** | `ok`, `bytes`; **additive when `--cache`:** `cache_hits`, `cache_miss_fills`, `cache_miss_refused` | Phase 15 + Phase18-M3. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Without `--cache`, omit `cache_*` (1.7 baseline). With `--cache`, three numeric fields from the same `CacheStatsRef` (even if `--cache-stats` off). Orthogonal to `--cache-max-bytes` / `--jobs` / `--cache-stats` / `--progress`. Failure paths do not require a full JSON object. Prior field names **frozen**. |
 
 ## Conventions
@@ -146,9 +147,11 @@ json`** (session-typed FUSE; no natural ops-json object / no mount
 `--progress` done/TOTAL). Gated by **`check_compat_1_10.sh`** (calls 1_9; no
 absolute perf SLA). Workspace reports **1.11.0**. Smoke:
 [`scripts/demo_mount_path.sh`](../scripts/demo_mount_path.sh).
-Phase 22 / planned **1.12.0** (workspace still **1.11.0** until M7) adds
-additive archive `recorded_symlinks`, extract `wrote_symlinks`/`symlinks`,
-verify cfdir `symlinks`. Default skip path field names unchanged. Smoke:
+Phase 22 / **1.12.0** adds additive archive `recorded_symlinks`, extract
+`wrote_symlinks`/`symlinks`, verify cfdir `symlinks`, and **`make` dry-run**
+`dry_run`/`would_write`/`would_reuse` (write path `new`/`reused` unchanged).
+Default skip path field names unchanged. Gated by **`check_compat_1_11.sh`**
+(calls 1_10; no absolute perf SLA). Workspace reports **1.12.0**. Smoke:
 [`scripts/demo_symlink.sh`](../scripts/demo_symlink.sh).
 
 

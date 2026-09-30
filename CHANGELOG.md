@@ -9,6 +9,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [1.12.0] — 2026-09-30
+
+Phase 22 closeout — **`.cfdir` Symlink opt-in** (`archive --symlinks
+skip|record`; default **skip** ≡ 1.11 skip+warn + default write
+`format_version=1`; `--symlinks record` → `DirEntryKind::Symlink` /
+`KIND_SYMLINK=3` + `format_version=2` when ≥1 Symlink; extract materialize;
+DirFs `readlink`; still **RO**) + docs + `demo_symlink.sh` +
+`check_compat_1_11.sh`; P1 **`make --dry-run`** (plan-only FastCDC +
+`would_write`/`would_reuse`; no store create/put; no `.cfidx` write; **≠**
+seed / **≠** pack / **≠** recompress). Defaults remain ≡ **1.11.0**. No pack /
+write mount / aws-sdk / remote scrub / extract prune / bidirectional sync /
+push listing / LRU / store trim / **default** zstd / HTTP wire compression /
+`store recompress` / `push --fallback` / multi dest / **`gc --path`** / mount
+`--progress` / **default record symlink** / follow dir symlink / fifo·xattr /
+offline bundle.
+
+### Added
+
+- **`.cfdir` Symlink opt-in** (Phase 22 M1–M4): library `DirEntryKind::Symlink`
+  + `format_version=2` encode/decode (v1 still strict without Symlink; decode
+  accepts 1|2); `archive --symlinks skip|record` (default **skip** ≡ 1.11);
+  absolute target → clear non-zero; extract materializes symlinks; DirFs
+  `readlink` (still RO); seed/diff/verify/doctor/`filter_dir_archive`/path
+  scope recognize Symlink (0 chunks). See `docs/dir-format.md` /
+  `docs/archive.md` / `docs/extract.md` / `docs/mount.md`.
+- **Docs + `demo_symlink.sh`** (Phase 22 M5): dir-format / archive / extract /
+  mount / stability / ops-json / perf / README Phase 22 narrative; local smoke
+  for default skip ≡ 1.11, record → extract `readlink`, absolute non-zero,
+  path filter, DirFs library `readlink` (PRIMARY), optional real FUSE.
+- **`check_compat_1_11.sh`** (Phase 22 M6): calls `check_compat_1_10` + asserts
+  archive `--symlinks` help; default skip quiet; record → v2 roundtrip; no
+  default record / no gc `--path` / no write mount / no mount `--progress`;
+  requires `demo_symlink.sh` present + executable.
+- **`make --dry-run`** (Phase 22 M7 / P1): plan-only — always read input +
+  FastCDC + count; if store exists open for `has()` → `would_write` /
+  `would_reuse`; if missing do **not** create (unique chunks = would_write);
+  no put / no `.cfidx` write; `--compression` ignored for create under
+  dry-run. Text: `make: dry-run: … (would_write=…, would_reuse=…)`. JSON:
+  additive `dry_run: true`, `would_write`, `would_reuse` (keep `bytes`/
+  `chunks`; omit `new`/`reused`). Omit `--dry-run` ≡ today's real write.
+  **≠** seed / **≠** pack / **≠** recompress. Thin `docs/ops-json.md`.
+- Workspace version **1.12.0** (Phase 22 M7 closeout).
+
+### Not delivered / deferred (Phase 22)
+
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred (use `verify --source` / `doctor` /
+  local `store scrub --listing`)
+- **Extract prune** / `--delete` — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk)
+- Bidirectional sync / watch dirs — non-goal
+- Byte-range HTTP resume / `push` listing upload — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal (write side stays single dest)
+- **`mount --progress`** — non-goal (session-typed; no natural done/TOTAL)
+- **Default record symlink** / follow directory symlink / fifo·socket·device /
+  xattr / ACL — non-goal (opt-in record only)
+- Offline bundle — deferred (not pack; not this release)
+
+### Compatibility
+
+- CLI defaults match **1.11.0**: `--symlinks skip` (or omit) ≡ 1.11 skip+warn +
+  default write v1; create compression **none**; `jobs=1`, `http-retries=0`,
+  SigV4 **off**, ops default **text**, progress **off**, mount prefetch depth
+  **1**; no mount path flags ⇒ full tree; omit make `--dry-run` ≡ real write;
+  no `--path-from` / no doctor·verify path flags ⇒ full set; no `diff
+  --progress` ⇒ quiet; `make --jobs` default **1**; no `--verify` on pull ⇒
+  quiet; no `--cache-stats` ⇒ no cache noise; no `--fallback` ⇒ single origin;
+  no `--cache-max-bytes` ⇒ unbounded cache fill; omit push `--compression` ≡
+  create none
+- `.cfidx` v1 on-wire bytes unchanged; `.cfdir` default write (no Symlink)
+  stays v1; opt-in v2 is a minor compatible extension (decode accepts 1|2)
+
 ## [1.11.0] — 2026-09-30
 
 Phase 21 closeout — **`mount` path quartet** (`--path` / `--exclude` /
@@ -1237,6 +1314,7 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[1.12.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.12.0
 [1.11.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.11.0
 [1.10.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.10.0
 [1.9.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.9.0

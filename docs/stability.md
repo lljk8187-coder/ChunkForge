@@ -96,19 +96,20 @@ zstd, push `--fallback`, mount `--progress`. Responsibility:
 ≡ **1.10.0** (no mount path flags ⇒ full tree). The workspace reports
 **1.11.0**. Gate **`check_compat_1_10.sh`** gates 1.11 flags (calls 1_9).
 
-**1.12.0 preview (Phase22; workspace still reports 1.11.0 until M7):** further
-**opt-in** only: **`archive --symlinks skip|record`** (default **`skip`** ≡
-**1.11** skip+warn + default write `format_version=1`); `--symlinks record`
-writes `DirEntryKind::Symlink` / `KIND_SYMLINK=3` and bumps listing to
-`format_version=2` when ≥1 Symlink is present. Decode accepts `{1,2}`.
-Extract materializes Symlink; DirFs exposes `readlink`; still **RO**. Path
-filter treats Symlink paths like Files. Absolute targets → clear non-zero;
-**not** followed. **Hard ban unchanged** plus: **no default record**, no
-follow-walk, no fifo/xattr, no offline bundle, no pack, no write mount, no
-prune, no `gc --path`. Responsibility nail:
-**`archive --symlinks record` ≠ write mount ≠ follow dir symlink ≠ pack ≠
-offline bundle ≠ prune ≠ `gc --path` ≠ default record**. Gate
-`check_compat_1_11.sh` lands in **M6** (not required for M5 docs/demo).
+**1.12.0** (Phase22 closeout) adds further **opt-in** only: **`archive
+--symlinks skip|record`** (default **`skip`** ≡ **1.11** skip+warn + default
+write `format_version=1`); `--symlinks record` writes `DirEntryKind::Symlink`
+/ `KIND_SYMLINK=3` and bumps listing to `format_version=2` when ≥1 Symlink is
+present. Decode accepts `{1,2}`. Extract materializes Symlink; DirFs exposes
+`readlink`; still **RO**. Path filter treats Symlink paths like Files.
+Absolute targets → clear non-zero; **not** followed. P1: **`make --dry-run`**
+(plan-only; omit ≡ real write; **≠** seed / pack / recompress). **Hard ban
+unchanged** plus: **no default record**, no follow-walk, no fifo/xattr, no
+offline bundle, no pack, no write mount, no prune, no `gc --path`.
+Responsibility nail: **`archive --symlinks record` ≠ write mount ≠ follow
+dir symlink ≠ pack ≠ offline bundle ≠ prune ≠ `gc --path` ≠ default
+record**. Defaults stay ≡ **1.11.0**. The workspace reports **1.12.0**. Gate
+**`check_compat_1_11.sh`** gates 1.12 flags (calls 1_10).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -138,7 +139,7 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `archive --symlinks record`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18),
-**1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21), and planned
+**1.9.0** (Phase19), **1.10.0** (Phase20), **1.11.0** (Phase21), and
 **1.12.0** (Phase22 symlink opt-in) are such
 minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
@@ -197,7 +198,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** and Phase22 / planned **1.12.0** still do not implement pack |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.11.0** and Phase22 / **1.12.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
