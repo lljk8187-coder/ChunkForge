@@ -16,8 +16,13 @@ adds further opt-in only: `store stats`/`du` `--format json`,
 `push --path`/`--exclude`/`--exclude-from`, `--exclude-from` on
 archive/extract/pull, `check_compat_1_3`; defaults stay ≡ **1.3.0** (no new
 flags ⇒ full reference set; jobs=1, retries=0, text, progress off). The
-workspace reports **1.4.0**. See [ops-json.md](ops-json.md) for the expanded
-matrix (incl. **archive** / **store stats**).
+workspace reports **1.4.0**. **1.5** (Unreleased / Phase 15) adds further
+opt-in only: `--cache-max-bytes` (refuse-fill, not LRU), `make`/`cat
+--format json`, ops-json make/cat rows finalized; defaults stay ≡ **1.4.0**
+(no max ⇒ unbounded cache fill; make/cat default **text**). Version bump to
+**1.5.0** is a later milestone — this tree may still report **1.4.0**. See
+[ops-json.md](ops-json.md) for the expanded matrix (incl. **archive** /
+**store stats** / **make** / **cat**).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -38,10 +43,12 @@ Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `--no-prefetch`, `--skip-trust-mtime`, `--prefetch-chunks N`, `gc --jobs`,
 `--progress`, `--path` / `--exclude` / `--exclude-from`, `archive --format json`,
-`store stats`/`du`, `push --path`) may ship in
+`store stats`/`du`, `push --path`, `--cache-max-bytes`, `make`/`cat
+--format json`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
-**1.3.0**, and **1.4.0** are such minors: all new flags default off / text /
-jobs=1 / depth 1 / no path filter ≡ prior release.
+**1.3.0**, **1.4.0**, and **1.5** (Unreleased) are such minors: all new flags
+default off / text / jobs=1 / depth 1 / no path filter / no cache-max ≡ prior
+release. Soft budget is **refuse-fill only** (≠ LRU ≠ trim ≠ GC ≠ sync).
 
 ## Breaking-change policy
 
@@ -85,8 +92,9 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md) |
-| Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); Phase 15 still does not implement pack |
+| Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
+| Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
 
 ## Command responsibilities (no remote scrub, no sync)
@@ -100,8 +108,9 @@ At 1.0, ChunkForge promises:
 | `store stats` / `du` | Local chunk count + on-disk bytes (observation; not trim) |
 | `diff` | Listing↔listing (+ `--tree`); not sync |
 | `extract --skip-unchanged` / `--dry-run` / `--skip-trust-mtime` | Incremental / plan-only materialize; mtime trust is opt-in; **no** prune |
-| `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
-| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0) |
+| `diff` / `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` / `make` / `cat --format json` | Ops JSON (default **text**); field rename is breaking — see [Ops JSON field matrix](ops-json.md) |
+| `mount` (+ prefetch / `--no-prefetch` / `--prefetch-chunks N` / `--cache-max-bytes`) | Read-only FUSE; sequential prefetch is RO UX only (default depth 1 ≡ 1.0.0); `--cache-max-bytes` = refuse-fill (≠ LRU) |
+| `cat` / `verify` / `extract` / `mount --cache-max-bytes` | Soft fill budget with `--cache`; omit ≡ 1.4 unbounded; **≠ LRU ≠ trim ≠ GC ≠ sync** |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.
 
@@ -111,11 +120,11 @@ There is **no** remote-scrub first-class command and **no** bidirectional sync.
 Stable `--format json` fields for ops commands live in
 **[ops-json.md](ops-json.md)** (one row per command: `archive` / `diff` /
 `verify` / `doctor` / `extract` / `push` / `pull` / `gc` / `store scrub` /
-`store stats`).
+`store stats` / **`make`** / **`cat`**).
 Default remains **text**. **Field rename → breaking** (same policy as above).
 Path filter on extract/pull/push does **not** rename fields (`unique_chunks` =
-filtered set). Nine prior command field names stay stable; **store stats** is
-additive only.
+filtered set). Prior command field names stay stable; **store stats** (1.4)
+and **make** / **cat** (1.5) are additive only.
 
 Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 (1.0 defaults), [`scripts/check_compat_1_1.sh`](../scripts/check_compat_1_1.sh)

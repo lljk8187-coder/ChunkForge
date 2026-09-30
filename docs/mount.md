@@ -52,8 +52,9 @@ chunkforge mount \
 - **`--cache-max-bytes N`** (Phase 15): soft fill budget in **bytes** (pure
   integer; no KiB suffix). Requires `--cache` (without it → clear non-zero).
   Over budget **skips fill** but still serves primary data; **never** evicts /
-  LRU / trim. Omit ≡ **1.4** unbounded fill. Orthogonal to prefetch / jobs /
-  retries / SigV4.
+  LRU / trim / GC / sync. Omit ≡ **1.4** unbounded fill. Orthogonal to
+  prefetch / jobs / retries / SigV4 / `--format`. Smoke:
+  [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).
 - `--jobs` does **not** apply to mount.
 
 ### Sequential prefetch (Phase 10 + Phase 11 P1 O1)

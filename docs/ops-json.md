@@ -30,8 +30,8 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | **`gc`** | `ok`, `dry_run`, `applied`, `listings`, `referenced`, `unreferenced`, `deleted` | Phase 12 §3.2. `unreferenced` = candidate count this run; `deleted` = actual deletes (**0** on dry-run). Both always present. No path listing on json. `--jobs` orthogonal. |
 | **`store scrub`** | `ok`, `checked`, `ok_count`, `corrupt`, `unreadable`, `corrupt_ids`, `unreadable_ids` | Phase 12 §3.2. `checked` = total scanned; `ok_count`/`corrupt`/`unreadable` partition; bad ids **only** in arrays. `ok` true iff corrupt+unreadable==0. `--jobs` orthogonal. |
 | **`store stats`** (alias **`du`**) | `ok`, `chunks`, `bytes_on_disk`; optional `compression` (`"none"` \| `"zstd"`) | Phase 14 M2. Read-only; `chunks` = `list_chunk_ids` count; `bytes_on_disk` = sum of `.cnk` `metadata().len()` (no plaintext decode). Default **text**: `store stats: chunks=N bytes_on_disk=M compression=…` on stdout. **json**: one object; no text dual-write. **Not** GC / scrub / trim / LRU. |
-| **`make`** (draft) | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15 M3 **draft** (M5 may finalize). Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). |
-| **`cat`** (draft) | `ok`, `bytes` | Phase 15 M4 **draft** (M5 may finalize). Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Orthogonal to `--cache` / `--cache-max-bytes` / `--jobs`. Failure paths do not require a full JSON object. |
+| **`make`** | `ok`, `bytes`, `chunks`, `new`, `reused` | Phase 15. Default **text** ≡ 1.4.0 stderr `make: wrote … (BYTES bytes, N chunk(s); new=X, reused=Y)`. **json**: one object on stdout; no text dual-write; exit format-independent. `bytes` = input size; `chunks` = chunk count; `new`/`reused` align stderr (`PutOutcome::Written` / `SkippedExists`). Field set **frozen** for scripts. |
+| **`cat`** | `ok`, `bytes` | Phase 15. Default **text** ≡ 1.4.0 (still writes `-o` payload; almost no stderr summary on success). **json**: one object on stdout; still writes `-o`; no text dual-write; exit format-independent. `bytes` = written bytes (`index.total_size`). Orthogonal to `--cache` / `--cache-max-bytes` / `--jobs`. Failure paths do not require a full JSON object. Field set **frozen** for scripts. |
 
 ## Conventions
 
@@ -42,7 +42,7 @@ Cross-links: [doctor-gc.md](doctor-gc.md) (`gc` / `store scrub` / `store stats` 
 | Exit vs format | Exit code does **not** change with `--format` |
 | Breaking | Renaming any field in this matrix → **breaking** (major) |
 | Path filter | `extract` / `pull` / `push` `--path`/`--exclude` do **not** rename existing JSON fields; pull/push `unique_chunks` = post-filter set |
-| Out of scope here | `make` / `cat` draft rows above (Phase 15 M3/M4; M5 may finalize) |
+| Cache soft budget | **`--cache-max-bytes N`** (with `--cache` on `cat`/`verify`/`extract`/`mount`) = **refuse-fill** when `bytes_on_disk + plaintext_len > N`; still serves primary. **≠ LRU ≠ trim ≠ GC ≠ sync**. Omit ≡ 1.4 unbounded fill. See [mount.md](mount.md). Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh). |
 
 ## Responsibility split (no remote scrub)
 
@@ -66,7 +66,7 @@ full tree / full reference set.
 
 | Rule | Detail |
 |---|---|
-| JSON fields | **Unchanged** names for the nine prior ops commands; only **`store stats`** is additive |
+| JSON fields | **Unchanged** names for prior ops commands; Phase 14 added **`store stats`**; Phase 15 adds **`make`/`cat`** only |
 | `unique_chunks` | = **post-filter** unique id count (push ≡ pull); field name stable |
 | `path` ≠ listing upload | Push still uploads **chunks only**; `.cfdir` / `.cfidx` stay local / out-of-band |
 | `path` ≠ sync / ≠ prune | Does **not** delete remote extras; extract path does **not** delete dest extras |
@@ -82,3 +82,6 @@ Flag presence for ops JSON / 1.1+ CLIs is gated by
 flags are gated by **`check_compat_1_2.sh`** (calls 1_1; no absolute perf SLA).
 Phase 14 (`store stats`, `push --path`/`--exclude`/`--exclude-from`) is gated
 by **`check_compat_1_3.sh`** (calls 1_2; no absolute perf SLA).
+Phase 15 finalizes **`make`/`cat`** in this matrix and soft cache budget
+(`--cache-max-bytes`); `check_compat_1_4.sh` arrives in a later milestone.
+Smoke: [`scripts/demo_cache_budget_ops_json.sh`](../scripts/demo_cache_budget_ops_json.sh).

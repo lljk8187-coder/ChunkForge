@@ -44,7 +44,7 @@ chunkforge extract \
 | `--skip-trust-mtime` | Requires `--skip-unchanged`. When size **and** dest `mtime_secs` both match the listing File entry, skip **without** content BLAKE3 (fast path). Default **off** ≡ 1.0.0 content path. **WARNING:** forged / clock-drifted / `cp -p`-preserved mtimes can miss content changes — prefer the content fingerprint unless you accept that risk |
 | `--dry-run` | Plan only: create/modify **no** paths under `-o` (output root included); never fetch chunks. Text: stderr `would_*` counters over the **filtered** set |
 | `--format` | `text` (default ≡ **1.0.0** stderr summary) or `json` (one object on **stdout**; no duplicate stderr summary). Exit codes are format-independent |
-| `--jobs` / `--http-retries` / `--cache` / `--cache-max-bytes` / templates / SigV4 | Same as other read-side commands; `--cache-max-bytes` requires `--cache` (soft refuse-fill, not LRU); skipped files issue **zero** chunk `get` |
+| `--jobs` / `--http-retries` / `--cache` / `--cache-max-bytes` / templates / SigV4 | Same as other read-side commands; `--cache-max-bytes` requires `--cache` (soft refuse-fill; **≠ LRU ≠ trim ≠ GC ≠ sync**); skipped files issue **zero** chunk `get` |
 
 Matching is orthogonal to `--force` / `--skip-*` / `--dry-run` / `--format` /
 `--jobs`: those flags never change which listing paths are selected.
