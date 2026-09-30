@@ -1197,13 +1197,36 @@ fn parse_chunk_size(spec: Option<&str>) -> Result<ChunkParams> {
     ChunkParams::new(min, avg, max).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-fn open_or_create_store(root: &Path) -> Result<Store> {
+/// Open an existing store or create one at `root`.
+///
+/// `compression`:
+/// - `None` — flag omitted: create with [`Compression::None`] (≡ 1.6); open existing
+///   as recorded in `meta.toml` (no mismatch check).
+/// - `Some(c)` — explicit request: create with `c`; open existing only if
+///   `store.compression() == c`, else a clear non-zero error.
+///
+/// Cache stores should pass `None` (or `Some(Compression::None)` on create); there
+/// is no `--cache-compression`. Mid-life recompress is out of scope.
+fn open_or_create_store(root: &Path, compression: Option<Compression>) -> Result<Store> {
     let meta = root.join("meta.toml");
     if meta.is_file() {
-        Store::open(root).with_context(|| format!("open store at {}", root.display()))
+        let store =
+            Store::open(root).with_context(|| format!("open store at {}", root.display()))?;
+        if let Some(requested) = compression {
+            let actual = store.compression();
+            if requested != actual {
+                bail!(
+                    "compression mismatch for store at {}: requested {}, store has {}",
+                    root.display(),
+                    requested,
+                    actual
+                );
+            }
+        }
+        Ok(store)
     } else {
-        Store::create(root, Compression::None)
-            .with_context(|| format!("create store at {}", root.display()))
+        let chosen = compression.unwrap_or(Compression::None);
+        Store::create(root, chosen).with_context(|| format!("create store at {}", root.display()))
     }
 }
 
@@ -1257,7 +1280,7 @@ fn open_chunk_source(
     match cache {
         None => Ok(chain),
         Some(cache_path) => {
-            let cache_store = open_or_create_store(cache_path)?;
+            let cache_store = open_or_create_store(cache_path, None)?;
             // `None` ≡ CacheSource::new (1.4 unbounded); Some(N) soft-refuses fill.
             // Outer Cache wraps the whole Fallback chain (Phase16-M2).
             Ok(Box::new(CacheSource::with_max_bytes(
@@ -1395,7 +1418,7 @@ fn cmd_make(
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
-    let store = open_or_create_store(store_path)?;
+    let store = open_or_create_store(store_path, None)?;
 
     let chunks = chunk_bytes(&data, &params);
     let blob_blake3 = ChunkId::hash(&data);
@@ -1525,7 +1548,7 @@ fn cmd_archive(
             None
         }
     } else {
-        Some(open_or_create_store(store_path)?)
+        Some(open_or_create_store(store_path, None)?)
     };
 
     let mut flags = 0u16;
@@ -3817,7 +3840,7 @@ fn cmd_pull(
             None
         }
     } else {
-        Some(open_or_create_store(store_path)?)
+        Some(open_or_create_store(store_path, None)?)
     };
 
     #[derive(Clone, Copy)]
@@ -4411,4 +4434,80 @@ fn which_cmd(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod open_or_create_store_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn create_omitted_is_none() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("store");
+        let store = open_or_create_store(&root, None).unwrap();
+        assert_eq!(store.compression(), Compression::None);
+        let opened = open_or_create_store(&root, None).unwrap();
+        assert_eq!(opened.compression(), Compression::None);
+    }
+
+    #[test]
+    fn create_explicit_zstd_put_get_plaintext_roundtrip() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("store");
+        let store = open_or_create_store(&root, Some(Compression::Zstd)).unwrap();
+        assert_eq!(store.compression(), Compression::Zstd);
+        let data = b"zzzzzzzzzzzzzzzz compressible payload for cli helper zzzzzzzzzzzz";
+        let (id, outcome) = store.put(data).unwrap();
+        assert!(outcome.is_new());
+        assert_eq!(store.get(&id).unwrap(), data);
+        // On-disk payload differs from plaintext under zstd.
+        let on_disk = std::fs::read(store.chunk_path(&id)).unwrap();
+        assert_ne!(on_disk, data);
+    }
+
+    #[test]
+    fn explicit_matching_opens_ok() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("store");
+        open_or_create_store(&root, Some(Compression::Zstd)).unwrap();
+        let store = open_or_create_store(&root, Some(Compression::Zstd)).unwrap();
+        assert_eq!(store.compression(), Compression::Zstd);
+
+        let root2 = dir.path().join("store-none");
+        open_or_create_store(&root2, Some(Compression::None)).unwrap();
+        let store2 = open_or_create_store(&root2, Some(Compression::None)).unwrap();
+        assert_eq!(store2.compression(), Compression::None);
+    }
+
+    #[test]
+    fn explicit_conflict_is_error() {
+        let dir = tempdir().unwrap();
+        let root_none = dir.path().join("store-none");
+        open_or_create_store(&root_none, None).unwrap();
+        let err = open_or_create_store(&root_none, Some(Compression::Zstd)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("compression mismatch"),
+            "expected mismatch error, got: {msg}"
+        );
+
+        let root_z = dir.path().join("store-z");
+        open_or_create_store(&root_z, Some(Compression::Zstd)).unwrap();
+        let err2 = open_or_create_store(&root_z, Some(Compression::None)).unwrap_err();
+        let msg2 = format!("{err2:#}");
+        assert!(
+            msg2.contains("compression mismatch"),
+            "expected mismatch error, got: {msg2}"
+        );
+    }
+
+    #[test]
+    fn omit_opens_existing_zstd_without_error() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("store");
+        open_or_create_store(&root, Some(Compression::Zstd)).unwrap();
+        let store = open_or_create_store(&root, None).unwrap();
+        assert_eq!(store.compression(), Compression::Zstd);
+    }
 }

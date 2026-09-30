@@ -24,7 +24,7 @@ blake3 = { workspace = true }
 clap = { workspace = true }
 chunkforge-chunk = { workspace = true }
 chunkforge-index = { workspace = true }
-chunkforge-store = { workspace = true }
+chunkforge-store = { workspace = true, features = ["zstd"] }
 chunkforge-remote = { workspace = true }
 ureq = { workspace = true }
 chunkforge-fuse = { workspace = true, optional = true }
