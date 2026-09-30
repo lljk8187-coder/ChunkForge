@@ -12685,7 +12685,10 @@ fn store_create_help_lists_store_compression_format() {
 
     let create = run_ok(&["store", "create", "--help"]);
     let h = String::from_utf8_lossy(&create.stdout);
-    assert!(h.contains("--store"), "store create --help must list --store:\n{h}");
+    assert!(
+        h.contains("--store"),
+        "store create --help must list --store:\n{h}"
+    );
     assert!(
         h.contains("--compression"),
         "store create --help must list --compression:\n{h}"
@@ -12703,12 +12706,7 @@ fn store_create_none_zstd_and_reject_duplicate() {
     let store_zstd = dir.path().join("sz");
     let store_json = dir.path().join("sj");
 
-    let out = run_ok(&[
-        "store",
-        "create",
-        "--store",
-        store_none.to_str().unwrap(),
-    ]);
+    let out = run_ok(&["store", "create", "--store", store_none.to_str().unwrap()]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("store create: ok") && err.contains("compression=none"),
@@ -12726,12 +12724,7 @@ fn store_create_none_zstd_and_reject_duplicate() {
     );
     assert!(store_none.join("chunks").is_dir());
 
-    let dup = run_fail(&[
-        "store",
-        "create",
-        "--store",
-        store_none.to_str().unwrap(),
-    ]);
+    let dup = run_fail(&["store", "create", "--store", store_none.to_str().unwrap()]);
     let dup_err = String::from_utf8_lossy(&dup.stderr);
     assert!(
         dup_err.contains("already exists") || dup_err.contains("store create"),
@@ -12775,7 +12768,6 @@ fn store_create_none_zstd_and_reject_duplicate() {
         "json store path; v={v}"
     );
 }
-
 
 // --- Phase 19 M2: pull --compression ---
 
@@ -13054,11 +13046,7 @@ fn diff_progress_emits_stderr_and_default_silent() {
         "text summary still on stdout; stdout={out}"
     );
 
-    let without = run_ok(&[
-        "diff",
-        left.to_str().unwrap(),
-        right.to_str().unwrap(),
-    ]);
+    let without = run_ok(&["diff", left.to_str().unwrap(), right.to_str().unwrap()]);
     let err0 = String::from_utf8_lossy(&without.stderr);
     assert!(
         !err0.contains("progress:"),
@@ -13114,7 +13102,10 @@ fn diff_progress_orthogonal_to_format_json() {
     );
     let v: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("diff json invalid with --progress: {e}; stdout={stdout}"));
-    assert!(v.get("added").is_some(), "json must keep added; stdout={stdout}");
+    assert!(
+        v.get("added").is_some(),
+        "json must keep added; stdout={stdout}"
+    );
     assert!(
         v.get("chunks_shared").is_some(),
         "json must keep chunks_shared; stdout={stdout}"
@@ -13153,4 +13144,150 @@ fn diff_tree_progress_emits_stderr() {
             .any(|l| l.starts_with("progress: op=diff done=")),
         "diff --tree --progress stderr must contain progress: op=diff; stderr={err}"
     );
+}
+
+// --- Phase 19 M6: make --jobs (post-chunk put; FastCDC stays serial) ---
+
+#[test]
+fn make_help_lists_jobs_honestly() {
+    let help = run_ok(&["make", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(s.contains("--jobs"), "make --help must list --jobs:\n{s}");
+    let lower = s.to_lowercase();
+    // Honest: post-chunk put / on-disk encoding — never claim parallel FastCDC.
+    assert!(
+        !lower.contains("parallel fastcdc") && !lower.contains("parallel chunking"),
+        "make --help must not claim parallel FastCDC/chunking:\n{s}"
+    );
+    assert!(
+        lower.contains("put") || lower.contains("store") || lower.contains("encoding"),
+        "make --help --jobs should mention store put / encoding:\n{s}"
+    );
+}
+
+#[test]
+fn make_jobs_zero_rejected() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let input = dir.path().join("in.bin");
+    fs::write(&input, b"make-jobs-zero").unwrap();
+    let out = run_fail(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        "--jobs",
+        "0",
+        input.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        err.contains("jobs") && (err.contains(">= 1") || err.contains("0")),
+        "stderr={err}"
+    );
+}
+
+#[test]
+fn make_jobs_one_matches_default_and_jobs_four_cfidx() {
+    let dir = tempdir().unwrap();
+    // Multi-chunk patterned blob so put parallelism is exercised.
+    let mut data = Vec::with_capacity(48 * 1024);
+    for i in 0..(48 * 1024) {
+        data.push(((i * 17 + 3) % 251) as u8);
+    }
+    let input = dir.path().join("multi.bin");
+    fs::write(&input, &data).unwrap();
+    let chunk_size = "2048:4096:8192";
+
+    let store_def = dir.path().join("store_def");
+    let store1 = dir.path().join("store1");
+    let store4 = dir.path().join("store4");
+    let out_def = dir.path().join("def.cfidx");
+    let out1 = dir.path().join("j1.cfidx");
+    let out4 = dir.path().join("j4.cfidx");
+
+    let def = run_ok(&[
+        "make",
+        "--store",
+        store_def.to_str().unwrap(),
+        "-o",
+        out_def.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        input.to_str().unwrap(),
+    ]);
+    let j1 = run_ok(&[
+        "make",
+        "--store",
+        store1.to_str().unwrap(),
+        "-o",
+        out1.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        "--jobs",
+        "1",
+        input.to_str().unwrap(),
+    ]);
+    let j4 = run_ok(&[
+        "make",
+        "--store",
+        store4.to_str().unwrap(),
+        "-o",
+        out4.to_str().unwrap(),
+        "--chunk-size",
+        chunk_size,
+        "--jobs",
+        "4",
+        "--format",
+        "json",
+        input.to_str().unwrap(),
+    ]);
+
+    let b_def = fs::read(&out_def).unwrap();
+    let b1 = fs::read(&out1).unwrap();
+    let b4 = fs::read(&out4).unwrap();
+    assert_eq!(b_def, b1, "default (no --jobs) ≡ --jobs 1 .cfidx bytes");
+    assert_eq!(
+        b1, b4,
+        "make --jobs 1 and --jobs 4 must produce identical .cfidx bytes"
+    );
+
+    let err_def = String::from_utf8_lossy(&def.stderr);
+    let err1 = String::from_utf8_lossy(&j1.stderr);
+    let (new_def, reused_def) = parse_make_stats(&err_def);
+    let (new1, reused1) = parse_make_stats(&err1);
+    assert_eq!(
+        (new_def, reused_def),
+        (new1, reused1),
+        "default ≡ jobs=1 new/reused; def={err_def} j1={err1}"
+    );
+    assert_eq!(reused_def, 0, "fresh store reused=0; stderr={err_def}");
+    assert!(new_def >= 4, "expect multi-chunk; stderr={err_def}");
+
+    let stdout4 = String::from_utf8_lossy(&j4.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout4.trim())
+        .unwrap_or_else(|e| panic!("make --jobs 4 json invalid: {e}; stdout={stdout4}"));
+    let chunks = v["chunks"].as_u64().expect("chunks") as usize;
+    let new4 = v["new"].as_u64().expect("new") as usize;
+    let reused4 = v["reused"].as_u64().expect("reused") as usize;
+    assert_eq!(reused4, 0, "fresh store jobs=4 reused=0; json={stdout4}");
+    assert_eq!(
+        new1 + reused1,
+        new4 + reused4,
+        "jobs=1 and jobs=4 new+reused must match; j1={err1} j4={stdout4}"
+    );
+    assert_eq!(
+        new4 + reused4,
+        chunks,
+        "new+reused must equal chunks; json={stdout4}"
+    );
+
+    run_ok(&[
+        "verify",
+        "--store",
+        store4.to_str().unwrap(),
+        out4.to_str().unwrap(),
+    ]);
 }

@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 19 toward **1.9.0** (workspace still **1.8.0** until M7). M1–M4 landed:
+Phase 19 toward **1.9.0** (workspace still **1.8.0** until M7). M1–M6 landed:
 `store create`, `pull --compression`, `diff --progress`, docs +
-`demo_store_create_pull_compression.sh`. Defaults remain ≡ **1.8.0**.
-`check_compat_1_8.sh` and version bump are **not** in this milestone.
+`demo_store_create_pull_compression.sh`, `check_compat_1_8.sh`, P1 honest
+`make --jobs` (post-chunk put) + thin docs brush. Defaults remain ≡ **1.8.0**.
+Version bump is **not** in this milestone.
 
 ### Added
 
@@ -18,10 +19,12 @@ Phase 19 toward **1.9.0** (workspace still **1.8.0** until M7). M1–M4 landed:
 - **`pull --compression`** (Phase 19 M2): create-time only (same as make/archive/`store create`); omit ≡ none ≡ 1.8; existing by meta / conflict → non-zero; dry-run never creates; does **not** rename pull JSON fields. See `docs/pull.md`.
 - **`diff --progress`** (Phase 19 M3): stderr `progress: op=diff done=N/TOTAL` (filtered File-path union); default off ≡ 1.8; orthogonal to `--format json`. See `docs/diff.md`.
 - **Docs + `demo_store_create_pull_compression.sh`** (Phase 19 M4): ops-json / stability / pull / store / diff / perf / README Phase 19 narrative; local smoke for create → pull zstd, omit≡none, pull `--compression zstd`, `diff --progress`, quiet defaults, repeat-create non-zero.
+- **`check_compat_1_8.sh`** (Phase 19 M5): calls `check_compat_1_7.sh` + asserts `store create` / pull `--compression` / diff `--progress`; thin non-goals (no prune / pack / LRU / aws-sdk / default zstd / recompress / push `--fallback`).
+- **`make --jobs`** (Phase 19 M6 / P1 O1, path A): opt-in; default **1** ≡ 1.8 serial; FastCDC cut-points stay **serial**; after chunking, `put_with_id` runs via `parallel::map_indexed` (speeds store put / on-disk zstd encoding only — **not** parallel FastCDC). Help text is honest. See README Phase 19.
+- **P1 docs brush** (Phase 19 M6 / O2): README / stability / remote-layout Phase 19·1.9 narrative; responsibility note **`store create` ≠ recompress ≠ default zstd ≠ pack**.
 
 ### Not yet (later Phase 19 milestones)
 
-- **`check_compat_1_8.sh`** (M5)
 - Workspace / CLI version bump to **1.9.0** (M7)
 
 ### Non-goals (unchanged)

@@ -59,11 +59,14 @@ workspace reports **1.8.0**.
 (`--compression none|zstd`, default omit ≡ **none** ≡ 1.8 create;
 **≠** recompress / trim / default zstd / pack), **`pull --compression`**
 (create-time only for a new `--store`; omit ≡ none ≡ 1.8; existing store
-opens by meta / explicit conflict → non-zero; dry-run never creates), and
+opens by meta / explicit conflict → non-zero; dry-run never creates),
 **`diff --progress`** (default **off** ≡ 1.8; stderr only; orthogonal to
-`--format json`; TOTAL = filtered File-path union). Defaults stay ≡
-**1.8.0**. Workspace still reports **1.8.0** until M7 (version bump).
-**`check_compat_1_8.sh`** is in tree (Phase19-M5; calls 1_7 + 1.9 flag asserts).
+`--format json`; TOTAL = filtered File-path union), and P1 honest
+**`make --jobs`** (default **1** ≡ 1.8; FastCDC cut-points stay serial;
+post-chunk store put / on-disk zstd encoding only — **not** parallel
+FastCDC). Defaults stay ≡ **1.8.0**. Workspace still reports **1.8.0** until
+M7 (version bump). **`check_compat_1_8.sh`** is in tree (Phase19-M5; calls
+1_7 + 1.9 flag asserts).
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -88,14 +91,15 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 --format json`, `--fallback`, cache-max human suffixes, `store stats`
 `bytes_plaintext` / `--decode`, `--compression`, `archive`/`extract`/`make --progress`,
 `pull --verify`, `--cache-stats` / ops-json `cache_*`, `cat`/`verify --progress`,
-`store create`, `pull --compression`, `diff --progress`) may ship in
+`store create`, `pull --compression`, `diff --progress`, `make --jobs`) may ship in
 **minor** releases when defaults stay compatible. **1.1.0**, **1.2.0**,
 **1.3.0**, **1.4.0**, **1.5.0**, **1.6.0**, **1.7.0**, **1.8.0** (Phase18), and
 **1.9.0** (Phase19 target) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
-omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release. Soft budget is **refuse-fill only** (≠ LRU ≠
+omit pull `--compression` ≡ create none / no `diff --progress` ≡ prior release /
+`make --jobs` default **1**. Soft budget is **refuse-fill only** (≠ LRU ≠
 trim ≠ GC ≠ sync). Cache observation counters are **observation only** (≠ LRU).
 **`store create` ≠ recompress ≠ default zstd ≠ pack**.
 
@@ -170,6 +174,7 @@ At 1.0, ChunkForge promises:
 | `cat` / `verify --progress` | Opt-in stderr `progress: op=cat|verify done=N/TOTAL` per listing chunk; default **off** ≡ 1.7; **orthogonal** to `--format json` / `--jobs` / `--cache` / `--fallback` / `--cache-stats` |
 | `store create` | Create empty local CAS (`Store::create`); `--compression none|zstd` (omit ≡ **none** ≡ 1.8); existing → non-zero; **≠** recompress / trim / default zstd / pack |
 | `pull --compression` | Create-time only for new `--store` (same as make/archive/`store create`); omit ≡ none ≡ 1.8; existing by meta / conflict → non-zero; dry-run never creates |
+| `make --jobs` | Opt-in post-chunk store put concurrency (default **1** ≡ 1.8); FastCDC stays serial; **not** parallel FastCDC |
 | `diff --progress` | Opt-in stderr `progress: op=diff done=N/TOTAL` (filtered File-path union); default **off** ≡ 1.8; **orthogonal** to `--format json` |
 
 There is **no** remote-scrub first-class command and **no** bidirectional sync.

@@ -10,8 +10,8 @@ use chunkforge_index::{
     DIR_FORMAT_VERSION_V1, DIR_MAGIC_PREFIX, DiffReport, DirArchive, DirEntry, DirEntryKind,
     FLAG_CHUNKS_COMPRESSED_IN_STORE, Index, IndexEntry, MAGIC_PREFIX, PathFilter, SeedDecision,
     UnchangedVerdict, decide_seed_for_entry_ex, diff_dir_archives_with_progress, entry_length,
-    hash_reader,
-    judge_extract_unchanged_opts, load_exclude_file, seed_file_map, validate_archive_path,
+    hash_reader, judge_extract_unchanged_opts, load_exclude_file, seed_file_map,
+    validate_archive_path,
 };
 use chunkforge_remote::{
     FileUrlSource, HttpChunkSink, HttpChunkSource, RetryPolicy, SigV4Config, SigV4Signer,
@@ -85,6 +85,11 @@ enum Commands {
         /// `--format json`.
         #[arg(long = "progress")]
         progress: bool,
+        /// Max concurrent store puts **after** FastCDC finishes (default 1 =
+        /// serial ≡ 1.8). Speeds post-chunk store put / on-disk encoding
+        /// (zstd) only; FastCDC cut-points remain serial.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
     },
     /// Archive a directory tree into a local store + `.cfdir` listing
     ///
@@ -1012,15 +1017,20 @@ fn run() -> Result<()> {
             format,
             compression,
             progress,
-        } => cmd_make(
-            &store,
-            &output,
-            &input,
-            chunk_size.as_deref(),
-            format,
-            compression,
-            progress,
-        ),
+            jobs,
+        } => {
+            let jobs = parse_jobs(jobs)?;
+            cmd_make(
+                &store,
+                &output,
+                &input,
+                chunk_size.as_deref(),
+                format,
+                compression,
+                progress,
+                jobs,
+            )
+        }
         Commands::Archive {
             store,
             output,
@@ -1782,11 +1792,14 @@ fn cmd_make(
     format: CliFormat,
     compression: Option<Compression>,
     progress: bool,
+    jobs: usize,
 ) -> Result<()> {
     let params = parse_chunk_size(chunk_size)?;
     let data = fs::read(input).with_context(|| format!("read input {}", input.display()))?;
     let store = open_or_create_store(store_path, compression)?;
 
+    // FastCDC cut-points stay serial (StreamCDC / single-file). `--jobs` only
+    // parallelizes post-chunk store put / on-disk encoding (zstd).
     let chunks = chunk_bytes(&data, &params);
     let blob_blake3 = ChunkId::hash(&data);
 
@@ -1797,26 +1810,40 @@ fn cmd_make(
     // TOTAL=0 edge cases.)
     let prog = ProgressReporter::new(progress, "make", Some(1));
 
+    // Store puts are atomic / race-safe (`Store::put_with_id`). map_indexed
+    // preserves chunk order into `entries` (jobs=1 ≡ prior serial loop).
+    let put_results = parallel::map_indexed(
+        &chunks,
+        jobs,
+        |_idx, c| -> Result<(PutOutcome, IndexEntry)> {
+            let start = c.offset as usize;
+            let end = (c.offset + c.length) as usize;
+            let slice = data
+                .get(start..end)
+                .with_context(|| format!("chunk range {start}..{end} out of bounds"))?;
+            let outcome = store
+                .put_with_id(&c.id, slice)
+                .with_context(|| format!("put chunk {}", c.id))?;
+            Ok((
+                outcome,
+                IndexEntry {
+                    end_offset: c.offset + c.length,
+                    chunk_id: c.id,
+                },
+            ))
+        },
+    );
+
     let mut entries = Vec::with_capacity(chunks.len());
     let mut new_chunks = 0usize;
     let mut reused_chunks = 0usize;
-    for c in &chunks {
-        let start = c.offset as usize;
-        let end = (c.offset + c.length) as usize;
-        let slice = data
-            .get(start..end)
-            .with_context(|| format!("chunk range {start}..{end} out of bounds"))?;
-        let outcome = store
-            .put_with_id(&c.id, slice)
-            .with_context(|| format!("put chunk {}", c.id))?;
+    for r in put_results {
+        let (outcome, entry) = r?;
         match outcome {
             PutOutcome::Written => new_chunks += 1,
             PutOutcome::SkippedExists => reused_chunks += 1,
         }
-        entries.push(IndexEntry {
-            end_offset: c.offset + c.length,
-            chunk_id: c.id,
-        });
+        entries.push(entry);
     }
 
     let mut flags = 0u16;
