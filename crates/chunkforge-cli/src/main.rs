@@ -299,7 +299,8 @@ enum Commands {
     /// Default **`--format text`** (≡ 1.4.0): almost no stderr summary on
     /// success. **`--format json`**: one JSON object on stdout (`ok`, `bytes`);
     /// no text dual-write; exit codes are format-independent. Orthogonal to
-    /// `--cache` / `--cache-max-bytes` / `--jobs`.
+    /// `--cache` / `--cache-max-bytes` / `--jobs` / `--progress` / `--fallback` /
+    /// `--cache-stats`.
     #[command(group(clap::ArgGroup::new("origin").required(true).args(["store", "source"])))]
     Cat {
         /// Local CAS store (Phase 1 compat; synonym for `--source <path>`)
@@ -347,6 +348,11 @@ enum Commands {
         /// Output file path
         #[arg(short = 'o', long = "output")]
         output: PathBuf,
+        /// Emit `progress: op=cat done=N/TOTAL` on stderr per listing chunk
+        /// (TOTAL = entry count when known; default off ≡ 1.7.0). Orthogonal to
+        /// `--format json`, `--jobs`, `--cache`, `--fallback`, and `--cache-stats`.
+        #[arg(long = "progress")]
+        progress: bool,
     },
     /// Verify `.cfidx` / `.cfdir` integrity, chunk presence/hashes, and blob_blake3
     ///
@@ -1070,6 +1076,7 @@ fn run() -> Result<()> {
             format,
             index,
             output,
+            progress,
         } => {
             let jobs = parse_jobs(jobs)?;
             require_cache_for_stats(cache.as_deref(), cache_stats)?;
@@ -1081,7 +1088,15 @@ fn run() -> Result<()> {
                 &http_tmpl,
                 &fallback,
             )?;
-            let result = cmd_cat(src.as_ref(), &index, &output, jobs, format, stats.as_ref());
+            let result = cmd_cat(
+                src.as_ref(),
+                &index,
+                &output,
+                jobs,
+                format,
+                progress,
+                stats.as_ref(),
+            );
             maybe_emit_cache_stats(&stats, cache_stats);
             result
         }
@@ -2912,6 +2927,7 @@ fn cmd_cat(
     output: &Path,
     jobs: usize,
     format: CliFormat,
+    progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
     let index = load_index(index_path)?;
@@ -2927,7 +2943,9 @@ fn cmd_cat(
     let mut writer = BufWriter::new(file);
 
     // Fetch plaintext (optionally concurrent); always write in entry order.
-    let plains = fetch_entry_plains(source, &index.entries, jobs, "cat")?;
+    // Progress is per listing chunk (TOTAL = entry count).
+    let prog = ProgressReporter::new(progress, "cat", Some(index.entries.len()));
+    let plains = fetch_entry_plains(source, &index.entries, jobs, "cat", Some(&prog))?;
     for plain in &plains {
         writer
             .write_all(plain)
@@ -2973,6 +2991,7 @@ fn fetch_entry_plains(
     entries: &[IndexEntry],
     jobs: usize,
     op: &str,
+    prog: Option<&ProgressReporter>,
 ) -> Result<Vec<Vec<u8>>> {
     let tasks: Vec<(usize, ChunkId, u64)> = entries
         .iter()
@@ -2996,26 +3015,35 @@ fn fetch_entry_plains(
                 );
             }
             plains.push(plain);
+            if let Some(p) = prog {
+                p.tick();
+            }
         }
         return Ok(plains);
     }
 
     let results = parallel::map_indexed(&tasks, jobs, |_idx, (i, chunk_id, expected_len)| {
-        let plain = match source.get(chunk_id) {
-            Ok(bytes) => bytes,
-            Err(e) => {
+        let outcome = (|| {
+            let plain = match source.get(chunk_id) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return Err(format!(
+                        "{op}: missing or corrupt chunk {chunk_id} (index entry {i}): {e}"
+                    ));
+                }
+            };
+            if plain.len() as u64 != *expected_len {
                 return Err(format!(
-                    "{op}: missing or corrupt chunk {chunk_id} (index entry {i}): {e}"
+                    "{op}: chunk {chunk_id} length mismatch: source has {} bytes, index expects {expected_len}",
+                    plain.len()
                 ));
             }
-        };
-        if plain.len() as u64 != *expected_len {
-            return Err(format!(
-                "{op}: chunk {chunk_id} length mismatch: source has {} bytes, index expects {expected_len}",
-                plain.len()
-            ));
+            Ok(plain)
+        })();
+        if let Some(p) = prog {
+            p.tick();
         }
-        Ok(plain)
+        outcome
     });
 
     // Prefer lowest entry-index error (stable vs serial fail-fast order).
@@ -3100,7 +3128,7 @@ fn cmd_verify_index(
         plains
     } else {
         // Concurrent get (presence implied); length-checked; errors include chunk id.
-        fetch_entry_plains(source, &index.entries, jobs, "verify failed")?
+        fetch_entry_plains(source, &index.entries, jobs, "verify failed", None)?
     };
 
     let mut hasher = blake3::Hasher::new();
@@ -3209,7 +3237,7 @@ fn cmd_verify_dir(
                     }
                     plains
                 } else {
-                    fetch_entry_plains(source, chunks, jobs, &op)?
+                    fetch_entry_plains(source, chunks, jobs, &op, None)?
                 };
 
                 let mut hasher = blake3::Hasher::new();
@@ -3441,7 +3469,7 @@ fn cmd_extract(
                 }
 
                 let op = format!("extract (file {})", entry.path);
-                let plains = fetch_entry_plains(source, chunks, jobs, &op)?;
+                let plains = fetch_entry_plains(source, chunks, jobs, &op, None)?;
 
                 let file = File::create(&dest)
                     .with_context(|| format!("create file {}", dest.display()))?;

@@ -12407,3 +12407,119 @@ fn doctor_cache_format_json_fields() {
     assert!(v.get("listings").is_some() && v.get("checked").is_some());
     assert_cache_ops_json_present(&v);
 }
+
+// --- Phase 18 M4: cat --progress ---
+
+#[test]
+fn cat_help_lists_progress() {
+    let help = run_ok(&["cat", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        s.contains("--progress"),
+        "cat --help must list --progress:\n{s}"
+    );
+}
+
+#[test]
+fn cat_progress_emits_stderr_and_default_silent() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let out2 = dir.path().join("out2.bin");
+    // Multi-chunk blob so TOTAL > 1 is observable (avg 64KiB default still
+    // yields several chunks for ~200KiB of distinct data).
+    let input = dir.path().join("blob.bin");
+    let mut data = Vec::with_capacity(200 * 1024);
+    for i in 0..(200 * 1024) {
+        data.push((i % 251) as u8);
+    }
+    fs::write(&input, &data).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let with = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&with.stderr);
+    assert!(
+        err.lines().any(|l| l.starts_with("progress: op=cat done=")),
+        "cat --progress stderr must contain progress: op=cat; stderr={err}"
+    );
+    assert!(
+        err.contains("done=") && err.contains("/"),
+        "cat progress should include done=N/TOTAL; stderr={err}"
+    );
+    assert_eq!(fs::read(&out).unwrap(), data);
+
+    let without = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        idx.to_str().unwrap(),
+        "-o",
+        out2.to_str().unwrap(),
+    ]);
+    let err0 = String::from_utf8_lossy(&without.stderr);
+    assert!(
+        !err0.contains("progress:"),
+        "without --progress stderr must not contain progress:; stderr={err0}"
+    );
+}
+
+#[test]
+fn cat_progress_orthogonal_to_format_json() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("out.cfidx");
+    let out = dir.path().join("out.bin");
+    let input = fixtures_dir().join("hello.txt");
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let result = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--progress",
+        "--format",
+        "json",
+        idx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        stderr.contains("progress: op=cat"),
+        "progress on stderr with json; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("progress:"),
+        "json stdout must not contain progress:; stdout={stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("cat json invalid with --progress: {e}; stdout={stdout}"));
+    assert_eq!(v["ok"], true);
+    assert!(v.get("bytes").is_some());
+}
