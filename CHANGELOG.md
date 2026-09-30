@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `listings`/`dry_run`); no duplicate stderr summary; exit codes
   format-independent. Field rename is breaking. See `docs/push.md` /
   `docs/pull.md`.
+- **Phase11-M4:** `scripts/demo_ops_json.sh` — local smoke for
+  `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json`
+  (put_stub; no internet). README: Phase 11 status row + **Phase 11 / 1.1.0**
+  section (field pointers to `docs/extract.md` / `docs/push.md` /
+  `docs/pull.md`; formal 1.1.0 bump reserved for closeout). Defaults remain
+  ≡ 1.0.0.
 
 ## [1.0.0] — 2026-09-29
 

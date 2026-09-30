@@ -16,6 +16,7 @@
 | **Phase 8** | **0.8.0** | HTTP `--http-retries` + error-class summaries; `diff --format json`; minimal `--aws-sigv4`; `scripts/demo_http_retry.sh` |
 | **Phase 9** | **0.9.0** | `extract --skip-unchanged` / `--dry-run`; loose HTTP perf baseline; SigV4 shared-creds fallback; `scripts/demo_extract_skip.sh` |
 | **Phase 10** | **1.0.0** | FUSE sequential prefetch (`--no-prefetch`) + 1.0 stability freeze (`docs/stability.md`); `verify`/`doctor --format json` |
+| **Phase 11** | *(in progress → **1.1.0**)* | `extract --skip-trust-mtime` + `extract`/`push`/`pull --format json` |
 
 ## Non-goals (Phase 10 / 1.0)
 
@@ -409,6 +410,52 @@ bash scripts/check_compat_1_0.sh
 Scripts: [`scripts/check_compat_1_0.sh`](scripts/check_compat_1_0.sh),
 [`scripts/demo_mount_prefetch.sh`](scripts/demo_mount_prefetch.sh).
 Details: [docs/stability.md](docs/stability.md), [docs/mount.md](docs/mount.md).
+
+
+## Phase 11 / 1.1.0: skip-trust-mtime + ops JSON *(in progress)*
+
+Phase 11 closes the remaining 1.0 experience debt: **`extract --skip-trust-mtime`**
+(symmetric to `archive --seed-trust-mtime`) and expands ops **`--format json`**
+from verify/doctor to **`extract` / `push` / `pull`**. All opt-in; **defaults ≡
+1.0.0** (text summaries, content-path skip, no silent mtime trust). Formal
+**1.1.0** version bump is reserved for Phase 11 closeout (M7) — workspace stays
+**1.0.0** until then.
+
+**Delivered (M1–M4):**
+
+- **`extract --skip-trust-mtime`**: requires `--skip-unchanged`; size +
+  `mtime_secs` hit skips content BLAKE3 (default **off** ≡ 1.0.0). Docs warn
+  about clock drift / forged / `cp -p` mtimes — see
+  [docs/extract.md](docs/extract.md).
+- **`extract --format text|json`**: default **text** ≡ 1.0.0 stderr summary;
+  JSON one object on stdout. Write path: `ok` / `dry_run` / `skipped` /
+  `wrote` / `dirs`. Dry-run: `ok` / `dry_run` / `would_skip` /
+  `would_write` / `would_dirs` / `would_fail`.
+- **`push` / `pull --format text|json`**: default **text** ≡ 1.0.0; JSON one
+  object on stdout — `ok` / `skipped` / `uploaded|fetched` / `failed` /
+  `failed_transient` / `failed_permanent` / `retries` / `unique_chunks` /
+  `listings` / `dry_run` (field rename is **breaking**). See
+  [docs/push.md](docs/push.md) / [docs/pull.md](docs/pull.md).
+- Smoke: [`scripts/demo_ops_json.sh`](scripts/demo_ops_json.sh) (trust-mtime +
+  extract/push/pull JSON via local `put_stub`; no internet).
+
+**Still not this Phase / non-goals (carry forward):** full AWS SDK / multipart /
+packfile / write mount / bidirectional sync / extract prune / remote scrub /
+byte-range resume / push listing upload / changing default jobs·retries /
+video analysis. Pack stays measured-only in [docs/perf.md](docs/perf.md).
+
+```bash
+# Phase 11 ops smoke (~minutes; local put_stub only)
+cargo build -p chunkforge-cli
+bash scripts/demo_ops_json.sh
+# A: archive → extract → --skip-unchanged --skip-trust-mtime --force (skipped=all)
+# B: extract/push/pull --format json → python3 json.load
+
+./target/debug/chunkforge --version   # still → chunkforge 1.0.0 until M7 bump
+```
+
+Details: [docs/extract.md](docs/extract.md), [docs/push.md](docs/push.md),
+[docs/pull.md](docs/pull.md).
 
 ## Incremental dedup demo
 
