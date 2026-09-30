@@ -365,9 +365,17 @@ enum Commands {
         #[arg(long = "progress")]
         progress: bool,
     },
-    /// Reassemble a blob from a .cfidx + chunk source
+    /// Reassemble a blob from a `.cfidx`, or one File from a `.cfdir` via `--path`
     ///
     /// Always writes the reassembled payload to `-o` (product unchanged).
+    /// **`.cfidx`**: ≡ 1.14 — reassembles the whole blob; **do not** pass `--path`
+    /// (`.cfidx` + `--path` → clear non-zero). JSON field names for `.cfidx`
+    /// stay `ok` / `bytes` (+ optional `cache_*`).
+    /// **`.cfdir`**: **requires** `--path <rel>` exact-matching one **File**
+    /// entry (normalized vs listing path); Symlink / Dir / missing → clear
+    /// non-zero. Reuses the same chunk fetch pipeline (jobs / cache / fallback /
+    /// progress / format). **≠** extract whole tree **≠** prune **≠** multi-file
+    /// batch (single `-o` only).
     /// Default **`--format text`** (≡ 1.4.0): almost no stderr summary on
     /// success. **`--format json`**: one JSON object on stdout (`ok`, `bytes`);
     /// no text dual-write; exit codes are format-independent. Orthogonal to
@@ -415,7 +423,14 @@ enum Commands {
         /// or `json` (one object on stdout; still writes `-o` payload)
         #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
         format: CliFormat,
-        /// Input .cfidx
+        /// Exact `.cfdir` File path to reassemble (required for `.cfdir`).
+        /// Normalized (trim; strip leading `./`) then exact-matched against one
+        /// listing File entry. With `.cfidx` → clear non-zero. Symlink / Dir /
+        /// missing → clear non-zero. Single path only (**≠** multi-file /
+        /// **≠** extract tree / **≠** prune).
+        #[arg(long = "path", value_name = "REL")]
+        path: Option<String>,
+        /// Input `.cfidx` or `.cfdir`
         index: PathBuf,
         /// Output file path
         #[arg(short = 'o', long = "output")]
@@ -1144,19 +1159,30 @@ enum Commands {
     ///
     /// Magic-dispatches like `mount` / `verify`: `.cfidx` → one logical file path
     /// (stem without `.cfidx`, same naming as mount); `.cfdir` → every **File** /
-    /// **Dir** / **Symlink** entry present in the listing. Default text inventory:
-    /// one `kind\tpath` line per entry on stdout (`file`, `dir`, or `symlink`).
-    /// Entries are printed in path lexicographic order. **Does not** open a store,
-    /// fetch chunks, mount, extract, verify hashes, or write a new listing.
+    /// **Dir** / **Symlink** entry present in the listing. Entries are printed in
+    /// path lexicographic order. **Does not** open a store, fetch chunks, mount,
+    /// extract, verify hashes, or write a new listing.
+    ///
+    /// Default **`--format text`**: one line per entry on stdout.
+    /// Columns (tab-separated): `file\tpath\tsize` (optional 4th column of
+    /// comma-joined chunk hex when `--chunks`); `dir\tpath`;
+    /// `symlink\tpath\ttarget`. **`--format json`**: one object on stdout —
+    /// `{ "ok": true, "entries": [ { "kind": "file"|"dir"|"symlink", "path": "…",
+    /// "size"?: n, "target"?: "…", "chunks"?: ["hex…"] } ] }` (prep for ops-json;
+    /// `size` on File; `target` on Symlink; `chunks` only when `--chunks` and
+    /// kind=file). Exit codes are format-independent.
+    ///
+    /// **`--chunks`** (default **off**): when set, File entries include the chunk
+    /// id list (lowercase hex); Symlink/Dir omit `chunks`. Still **no** store open
+    /// (ids come from the listing decode only).
     ///
     /// Optional path 四件套 (`--path` / `--path-from` / `--exclude` /
     /// `--exclude-from`) scopes a `.cfdir` via the same [`PathFilter`] /
-    /// [`filter_dir_archive`] rules as mount/filter (empty ≡ full listing).
+    /// [`filter_dir_archive`] rules as mount/filter (empty ≡ full listing;
+    /// filter-same include/exclude/from semantics).
     /// `.cfidx` + any path/exclude flag → clear non-zero error (same contract as
     /// mount/verify/filter-on-cfidx). **≠** mount / **≠** extract / **≠** verify /
     /// **≠** pack / **≠** filter (read-only inventory; does not persist a subset).
-    /// JSON / `--chunks` / richer columns land in a later milestone — M1 is decode
-    /// + path lines only.
     Ls {
         /// Include only `.cfdir` paths under this prefix (repeatable; OR).
         /// With any `--path`, a candidate must match at least one before
@@ -1184,6 +1210,13 @@ enum Commands {
         /// bad UTF-8 → clear non-zero error. With `.cfidx` → clear non-zero error.
         #[arg(long = "path-from", value_name = "FILE", action = clap::ArgAction::Append)]
         path_from: Vec<PathBuf>,
+        /// Output format: `text` (default; tab columns) or `json` (`ok`/`entries`)
+        #[arg(long = "format", value_enum, default_value_t = CliFormat::Text)]
+        format: CliFormat,
+        /// Include File chunk id lists (hex). Default **off**. Symlink/Dir omit.
+        /// Still no store open — ids come from listing decode only.
+        #[arg(long = "chunks")]
+        chunks: bool,
         /// Input `.cfidx` or `.cfdir`
         listing: PathBuf,
     },
@@ -1557,6 +1590,7 @@ fn run() -> Result<()> {
             http_tmpl,
             jobs,
             format,
+            path,
             index,
             output,
             progress,
@@ -1577,6 +1611,7 @@ fn run() -> Result<()> {
                 &output,
                 jobs,
                 format,
+                path.as_deref(),
                 progress,
                 stats.as_ref(),
             );
@@ -1868,13 +1903,15 @@ fn run() -> Result<()> {
             excludes,
             exclude_from,
             path_from,
+            format,
+            chunks,
             listing,
         } => {
             let paths = merged_paths(&paths, &path_from)?;
             let excludes = merged_excludes(&excludes, &exclude_from)?;
             let path_filter = PathFilter::new(paths.iter().cloned(), excludes.iter().cloned())
                 .map_err(|e| anyhow::anyhow!("path filter: {e}"))?;
-            cmd_ls(&listing, &path_filter)
+            cmd_ls(&listing, &path_filter, format, chunks)
         }
 
         Commands::Store {
@@ -3616,14 +3653,36 @@ fn ls_blob_name(index_path: &Path) -> String {
     }
 }
 
+/// One inventory row for `ls` (decode only; never opens a store).
+///
+/// JSON shape (ops-json prep): each object has `kind` (`file`|`dir`|`symlink`)
+/// and `path`; File may add `size` and (with `--chunks`) `chunks` (hex array);
+/// Symlink adds `target`; Dir has neither size nor chunks.
+struct LsRow {
+    kind: &'static str,
+    path: String,
+    size: Option<u64>,
+    target: Option<String>,
+    /// Chunk hex ids; populated only for File when `--chunks` is set.
+    chunks: Option<Vec<String>>,
+}
+
 /// Inventory a `.cfidx` / `.cfdir` listing (decode only; **never** opens a store).
 ///
-/// Text lines: `kind\tpath` (`file` / `dir` / `symlink`). `.cfdir` entries are
-/// path-sorted; `.cfidx` emits one `file\t<stem>` line. Path flags scope `.cfdir`
-/// via [`filter_dir_archive`]; `.cfidx` + any path flag → clear non-zero.
+/// Text lines (tab-separated): `file\tpath\tsize` (+ optional `\thex,hex…` when
+/// `--chunks`); `dir\tpath`; `symlink\tpath\ttarget`. JSON:
+/// `{ "ok": true, "entries": [ { "kind", "path", "size"?, "target"?, "chunks"? } ] }`.
+/// Path flags scope `.cfdir` via [`filter_dir_archive`] (empty ≡ full);
+/// `.cfidx` + any path flag → clear non-zero.
 /// **≠** mount / **≠** extract / **≠** verify / **≠** pack / **≠** filter.
-fn cmd_ls(listing: &Path, path_filter: &PathFilter) -> Result<()> {
+fn cmd_ls(
+    listing: &Path,
+    path_filter: &PathFilter,
+    format: CliFormat,
+    show_chunks: bool,
+) -> Result<()> {
     let filter_active = !path_filter.paths().is_empty() || !path_filter.excludes().is_empty();
+    let mut rows: Vec<LsRow> = Vec::new();
     match peek_listing_kind(listing)? {
         ListingKind::Index => {
             if filter_active {
@@ -3637,8 +3696,24 @@ fn cmd_ls(listing: &Path, path_filter: &PathFilter) -> Result<()> {
                 .validate()
                 .map_err(|e| anyhow::anyhow!("index structure {}: {e}", listing.display()))?;
             let name = ls_blob_name(listing);
-            println!("file\t{name}");
-            Ok(())
+            let chunks = if show_chunks {
+                Some(
+                    index
+                        .entries
+                        .iter()
+                        .map(|e| e.chunk_id.to_string())
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            rows.push(LsRow {
+                kind: "file",
+                path: name,
+                size: Some(index.total_size),
+                target: None,
+                chunks,
+            });
         }
         ListingKind::DirArchive => {
             let arch = load_dir_archive(listing)?;
@@ -3646,20 +3721,102 @@ fn cmd_ls(listing: &Path, path_filter: &PathFilter) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", listing.display()))?;
             // Empty PathFilter ≡ full listing; otherwise same keep rules as mount/filter.
             let arch = filter_dir_archive(&arch, path_filter);
-            let mut rows: Vec<(String, String)> = Vec::with_capacity(arch.entries.len());
+            rows.reserve(arch.entries.len());
             for entry in &arch.entries {
-                let kind = match &entry.kind {
-                    DirEntryKind::File { .. } => "file",
-                    DirEntryKind::Dir { .. } => "dir",
-                    DirEntryKind::Symlink { .. } => "symlink",
-                };
-                rows.push((entry.path.clone(), kind.to_string()));
+                match &entry.kind {
+                    DirEntryKind::File { size, chunks, .. } => {
+                        let chunk_hexes = if show_chunks {
+                            Some(chunks.iter().map(|c| c.chunk_id.to_string()).collect())
+                        } else {
+                            None
+                        };
+                        rows.push(LsRow {
+                            kind: "file",
+                            path: entry.path.clone(),
+                            size: Some(*size),
+                            target: None,
+                            chunks: chunk_hexes,
+                        });
+                    }
+                    DirEntryKind::Dir { .. } => {
+                        rows.push(LsRow {
+                            kind: "dir",
+                            path: entry.path.clone(),
+                            size: None,
+                            target: None,
+                            chunks: None,
+                        });
+                    }
+                    DirEntryKind::Symlink { target, .. } => {
+                        rows.push(LsRow {
+                            kind: "symlink",
+                            path: entry.path.clone(),
+                            size: None,
+                            target: Some(target.clone()),
+                            chunks: None,
+                        });
+                    }
+                }
             }
-            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            rows.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+    }
+    emit_ls_rows(&rows, format)
+}
+
+fn emit_ls_rows(rows: &[LsRow], format: CliFormat) -> Result<()> {
+    match format {
+        CliFormat::Text => {
             let mut out = std::io::stdout().lock();
-            for (path, kind) in rows {
-                writeln!(out, "{kind}\t{path}")?;
+            for row in rows {
+                match row.kind {
+                    "file" => {
+                        let size = row.size.unwrap_or(0);
+                        write!(out, "file\t{}\t{size}", row.path)?;
+                        if let Some(chunks) = &row.chunks {
+                            write!(out, "\t{}", chunks.join(","))?;
+                        }
+                        writeln!(out)?;
+                    }
+                    "dir" => {
+                        writeln!(out, "dir\t{}", row.path)?;
+                    }
+                    "symlink" => {
+                        let target = row.target.as_deref().unwrap_or("");
+                        writeln!(out, "symlink\t{}\t{target}", row.path)?;
+                    }
+                    other => bail!("internal: unknown ls kind {other}"),
+                }
             }
+            Ok(())
+        }
+        CliFormat::Json => {
+            // Nail JSON field names for ops-json M4:
+            // { "ok": true, "entries": [ { "kind", "path", "size"?, "target"?, "chunks"? } ] }
+            let mut entries = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "kind".into(),
+                    serde_json::Value::String(row.kind.to_string()),
+                );
+                obj.insert("path".into(), serde_json::Value::String(row.path.clone()));
+                if let Some(size) = row.size {
+                    obj.insert("size".into(), serde_json::json!(size));
+                }
+                if let Some(target) = &row.target {
+                    obj.insert("target".into(), serde_json::Value::String(target.clone()));
+                }
+                if let Some(chunks) = &row.chunks {
+                    obj.insert("chunks".into(), serde_json::json!(chunks));
+                }
+                entries.push(serde_json::Value::Object(obj));
+            }
+            let root = serde_json::json!({
+                "ok": true,
+                "entries": entries,
+            });
+            println!("{root}");
             Ok(())
         }
     }
@@ -4400,17 +4557,99 @@ fn apply_file_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Normalize `cat --path` against `.cfdir` listing paths: trim, strip leading
+/// `./`, then [`validate_archive_path`]. Exact string equality vs entry.path.
+fn normalize_cat_path(raw: &str) -> Result<String> {
+    let mut s = raw.trim();
+    while let Some(rest) = s.strip_prefix("./") {
+        s = rest;
+    }
+    if s.is_empty() {
+        bail!("cat --path: path must be a non-empty relative archive path");
+    }
+    validate_archive_path(s).map_err(|e| anyhow::anyhow!("cat --path: {e}"))?;
+    Ok(s.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_cat(
     source: &dyn ChunkSource,
     index_path: &Path,
     output: &Path,
     jobs: usize,
     format: CliFormat,
+    path: Option<&str>,
     progress: bool,
     cache_stats: Option<&CacheStatsRef>,
 ) -> Result<()> {
-    let index = load_index(index_path)?;
+    match peek_listing_kind(index_path)? {
+        ListingKind::Index => {
+            if path.is_some() {
+                bail!(
+                    "cat --path applies to `.cfdir` File entries; {} looks like a `.cfidx` (omit --path to reassemble the whole blob ≡ 1.14)",
+                    index_path.display()
+                );
+            }
+            let index = load_index(index_path)?;
+            // Empty file: still created below; total_size must be 0.
+            if index.total_size == 0 && !index.entries.is_empty() {
+                bail!("invalid index: total_size 0 with non-empty entries");
+            }
+            let bytes = index.total_size;
+            write_cat_plains(source, &index.entries, output, jobs, progress, "cat")?;
+            emit_cat_ops_json(format, bytes, cache_stats);
+            Ok(())
+        }
+        ListingKind::DirArchive => {
+            let want = match path {
+                Some(p) => normalize_cat_path(p)?,
+                None => bail!(
+                    "cat on `.cfdir` requires --path <rel> naming exactly one File entry (≠ extract whole tree ≠ prune ≠ multi-file); {}",
+                    index_path.display()
+                ),
+            };
+            let arch = load_dir_archive(index_path)?;
+            arch.validate()
+                .map_err(|e| anyhow::anyhow!("archive structure {}: {e}", index_path.display()))?;
+            let matches: Vec<&DirEntry> = arch.entries.iter().filter(|e| e.path == want).collect();
+            match matches.as_slice() {
+                [] => bail!(
+                    "cat --path: no entry matching {want:?} in {}",
+                    index_path.display()
+                ),
+                [entry] => match &entry.kind {
+                    DirEntryKind::File { size, chunks, .. } => {
+                        let op = format!("cat (file {want})");
+                        write_cat_plains(source, chunks, output, jobs, progress, &op)?;
+                        // JSON field names for `.cfdir` reuse `.cfidx` `ok`/`bytes`.
+                        emit_cat_ops_json(format, *size, cache_stats);
+                        Ok(())
+                    }
+                    DirEntryKind::Symlink { target, .. } => bail!(
+                        "cat --path: {want:?} is a symlink (target {target:?}); need a File entry (≠ follow ≠ extract)"
+                    ),
+                    DirEntryKind::Dir { .. } => bail!(
+                        "cat --path: {want:?} is a directory; need a File entry (≠ extract whole tree ≠ prune)"
+                    ),
+                },
+                _ => bail!(
+                    "cat --path: multiple entries matching {want:?} in {} (listing corrupt?)",
+                    index_path.display()
+                ),
+            }
+        }
+    }
+}
 
+/// Fetch entry plains and write a single `-o` file (shared by `.cfidx` / `.cfdir --path`).
+fn write_cat_plains(
+    source: &dyn ChunkSource,
+    entries: &[IndexEntry],
+    output: &Path,
+    jobs: usize,
+    progress: bool,
+    op: &str,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
@@ -4423,8 +4662,8 @@ fn cmd_cat(
 
     // Fetch plaintext (optionally concurrent); always write in entry order.
     // Progress is per listing chunk (TOTAL = entry count).
-    let prog = ProgressReporter::new(progress, "cat", Some(index.entries.len()));
-    let plains = fetch_entry_plains(source, &index.entries, jobs, "cat", Some(&prog))?;
+    let prog = ProgressReporter::new(progress, "cat", Some(entries.len()));
+    let plains = fetch_entry_plains(source, entries, jobs, op, Some(&prog))?;
     for plain in &plains {
         writer
             .write_all(plain)
@@ -4438,27 +4677,24 @@ fn cmd_cat(
         .with_context(|| format!("finalize output {}", output.display()))?
         .sync_all()
         .with_context(|| format!("fsync output {}", output.display()))?;
+    Ok(())
+}
 
-    // Empty file: still created above; total_size must be 0.
-    if index.total_size == 0 && !index.entries.is_empty() {
-        bail!("invalid index: total_size 0 with non-empty entries");
-    }
-
-    // `bytes` = written payload size ≡ index.total_size (entries already length-checked).
+fn emit_cat_ops_json(format: CliFormat, bytes: u64, cache_stats: Option<&CacheStatsRef>) {
     match format {
         CliFormat::Text => {
             // ≡ 1.4.0: almost no stderr summary on success.
         }
         CliFormat::Json => {
+            // `.cfidx` JSON field names unchanged (`ok` / `bytes`); `.cfdir --path` reuses them.
             let mut obj = serde_json::json!({
                 "ok": true,
-                "bytes": index.total_size,
+                "bytes": bytes,
             });
             apply_cache_ops_json(&mut obj, cache_stats);
             println!("{obj}");
         }
     }
-    Ok(())
 }
 
 /// Fetch every entry's plaintext with bounded concurrency; results in entry order.

@@ -18081,7 +18081,15 @@ fn ls_help_exists_and_lists_ls() {
     );
     assert!(
         s.contains("kind") && s.contains("path"),
-        "ls --help should nail text line format kind\\tpath:\n{s}"
+        "ls --help should nail text line format kind/path:\n{s}"
+    );
+    assert!(
+        s.contains("--format") && (s.contains("json") || s.contains("text")),
+        "ls --help should list --format text|json:\n{s}"
+    );
+    assert!(
+        s.contains("--chunks"),
+        "ls --help should list --chunks:\n{s}"
     );
     // Help prose nail: ls ≠ mount ≠ extract ≠ verify ≠ pack ≠ filter
     let lower = s.to_lowercase();
@@ -18131,28 +18139,39 @@ fn ls_cfdir_prints_paths() {
     );
     for line in &lines {
         let parts: Vec<&str> = line.split('\t').collect();
-        assert_eq!(
-            parts.len(),
-            2,
-            "each ls line must be kind\\tpath; got {line:?}"
-        );
         assert!(
             matches!(parts[0], "file" | "dir" | "symlink"),
             "kind must be file|dir|symlink; got {line:?}"
         );
+        assert!(
+            parts.len() >= 2,
+            "each ls line must start with kind\tpath; got {line:?}"
+        );
+        match parts[0] {
+            "file" => assert!(
+                parts.len() >= 3,
+                "file lines are kind\tpath\tsize; got {line:?}"
+            ),
+            "symlink" => assert!(
+                parts.len() >= 3,
+                "symlink lines are kind\tpath\ttarget; got {line:?}"
+            ),
+            "dir" => assert_eq!(parts.len(), 2, "dir lines are kind\tpath; got {line:?}"),
+            _ => unreachable!(),
+        }
     }
     let joined = lines.join("\n");
     assert!(
-        joined.contains("file\tpkgs/foo/a.txt"),
-        "ls must show pkgs/foo/a.txt; stdout={stdout}"
+        joined.contains("file\tpkgs/foo/a.txt\t"),
+        "ls must show pkgs/foo/a.txt with size; stdout={stdout}"
     );
     assert!(
-        joined.contains("file\tpkgs/bar/b.txt"),
-        "ls must show pkgs/bar/b.txt; stdout={stdout}"
+        joined.contains("file\tpkgs/bar/b.txt\t"),
+        "ls must show pkgs/bar/b.txt with size; stdout={stdout}"
     );
     assert!(
-        joined.contains("symlink\tpkgs/foo/link.txt"),
-        "ls must show symlink pkgs/foo/link.txt; stdout={stdout}"
+        joined.contains("symlink\tpkgs/foo/link.txt\ta.txt"),
+        "ls must show symlink pkgs/foo/link.txt with target; stdout={stdout}"
     );
     // Pure listing: no store arg required / no store open needed.
     assert!(
@@ -18185,10 +18204,15 @@ fn ls_cfidx_prints_logical_path() {
         1,
         "ls .cfidx must print exactly one logical path; stdout={stdout}"
     );
-    assert_eq!(
-        lines[0], "file\thello",
-        "ls .cfidx should emit file\\t<stem>; stdout={stdout}"
+    let parts: Vec<&str> = lines[0].split('\t').collect();
+    assert_eq!(parts[0], "file", "ls .cfidx kind; stdout={stdout}");
+    assert_eq!(parts[1], "hello", "ls .cfidx stem; stdout={stdout}");
+    assert!(
+        parts.len() >= 3,
+        "ls .cfidx should emit file\t<stem>\t<size>; stdout={stdout}"
     );
+    let size: u64 = parts[2].parse().expect("size column");
+    assert!(size > 0, "hello fixture size > 0; stdout={stdout}");
 }
 
 #[test]
@@ -18219,5 +18243,538 @@ fn ls_cfidx_rejects_path_flags() {
     assert!(
         err2.contains("cfidx") || err2.contains(".cfidx") || err2.contains("CFIDX"),
         "ls .cfidx + --exclude must be clear non-zero; stderr={err2}"
+    );
+}
+
+// --- Phase25-M2: ls json/chunks + cat --path for cfdir ---
+
+#[test]
+fn ls_empty_filter_equals_full_list() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let full = run_ok(&["ls", listing.to_str().unwrap()]);
+    let full_s = String::from_utf8_lossy(&full.stdout);
+    let empty_from = dir.path().join("empty_paths.txt");
+    fs::write(&empty_from, b"# nothing\n\n").unwrap();
+    let via_from = run_ok(&[
+        "ls",
+        "--path-from",
+        empty_from.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let via_s = String::from_utf8_lossy(&via_from.stdout);
+    assert_eq!(
+        full_s, via_s,
+        "empty path-from must ≡ full ls list;\nfull={full_s}\nvia={via_s}"
+    );
+}
+
+#[test]
+fn ls_filter_then_sees_retained_file_and_symlink() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let sub = dir.path().join("foo.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        sub.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let out = run_ok(&["ls", sub.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("file\tpkgs/foo/a.txt\t"),
+        "filter→ls must retain File pkgs/foo/a.txt; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("symlink\tpkgs/foo/link.txt\ta.txt"),
+        "filter→ls must retain Symlink pkgs/foo/link.txt; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("pkgs/bar/b.txt"),
+        "filter→ls must not show filtered-out bar; stdout={stdout}"
+    );
+
+    let scoped = run_ok(&["ls", "--path", "pkgs/foo", full.to_str().unwrap()]);
+    let scoped_s = String::from_utf8_lossy(&scoped.stdout);
+    assert!(
+        scoped_s.contains("file\tpkgs/foo/a.txt\t")
+            && scoped_s.contains("symlink\tpkgs/foo/link.txt\ta.txt")
+            && !scoped_s.contains("pkgs/bar/b.txt"),
+        "ls --path must match filter retain set; stdout={scoped_s}"
+    );
+}
+
+#[test]
+fn ls_path_exclude_and_from_orthogonal() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"A\n").unwrap();
+    fs::write(src.join("pkgs/foo/skip.o"), b"O\n").unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"B\n").unwrap();
+
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let path_from = dir.path().join("paths.txt");
+    fs::write(&path_from, b"pkgs/foo\n").unwrap();
+    let excl_from = dir.path().join("excl.txt");
+    fs::write(&excl_from, b"*.o\n").unwrap();
+
+    let out = run_ok(&[
+        "ls",
+        "--path-from",
+        path_from.to_str().unwrap(),
+        "--exclude-from",
+        excl_from.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("file\tpkgs/foo/a.txt\t"),
+        "path-from+exclude-from should keep a.txt; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("skip.o"),
+        "exclude-from *.o should drop skip.o; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("pkgs/bar"),
+        "path-from pkgs/foo should drop bar; stdout={stdout}"
+    );
+
+    let excl = run_ok(&[
+        "ls",
+        "--path",
+        "pkgs",
+        "--exclude",
+        "pkgs/bar/",
+        listing.to_str().unwrap(),
+    ]);
+    let excl_s = String::from_utf8_lossy(&excl.stdout);
+    assert!(
+        excl_s.contains("pkgs/foo/a.txt") && !excl_s.contains("pkgs/bar/b.txt"),
+        "exclude dir prefix pkgs/bar/ should drop bar; stdout={excl_s}"
+    );
+}
+
+#[test]
+fn ls_format_json_and_chunks() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello-foo\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let json = run_ok(&["ls", "--format", "json", listing.to_str().unwrap()]);
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).expect("ls json");
+    assert_eq!(v["ok"], true);
+    let entries = v["entries"].as_array().expect("entries array");
+    assert!(!entries.is_empty(), "entries non-empty: {v}");
+    let mut saw_file = false;
+    let mut saw_link = false;
+    for e in entries {
+        match e["kind"].as_str() {
+            Some("file") => {
+                saw_file = true;
+                assert_eq!(e["path"], "pkgs/foo/a.txt");
+                assert!(e["size"].as_u64().unwrap() > 0);
+                assert!(e.get("chunks").is_none(), "no --chunks ⇒ omit chunks: {e}");
+                assert!(e.get("target").is_none(), "file has no target: {e}");
+            }
+            Some("symlink") => {
+                saw_link = true;
+                assert_eq!(e["path"], "pkgs/foo/link.txt");
+                assert_eq!(e["target"], "a.txt");
+                assert!(e.get("size").is_none(), "symlink has no size: {e}");
+                assert!(e.get("chunks").is_none(), "symlink omits chunks: {e}");
+            }
+            Some("dir") => {
+                assert!(e.get("chunks").is_none());
+                assert!(e.get("size").is_none());
+            }
+            other => panic!("unexpected kind {other:?} in {e}"),
+        }
+    }
+    assert!(saw_file && saw_link, "json must include file+symlink: {v}");
+
+    let with_chunks = run_ok(&[
+        "ls",
+        "--format",
+        "json",
+        "--chunks",
+        listing.to_str().unwrap(),
+    ]);
+    let v2: serde_json::Value = serde_json::from_slice(&with_chunks.stdout).unwrap();
+    let mut file_chunks = None;
+    for e in v2["entries"].as_array().unwrap() {
+        if e["kind"] == "file" {
+            let chunks = e["chunks"].as_array().expect("file chunks when --chunks");
+            assert!(!chunks.is_empty(), "file should have ≥1 chunk: {e}");
+            for c in chunks {
+                let h = c.as_str().unwrap();
+                assert_eq!(h.len(), 64, "chunk hex len: {h}");
+                assert!(h.bytes().all(|b| b.is_ascii_hexdigit()), "hex: {h}");
+            }
+            file_chunks = Some(chunks.len());
+        } else {
+            assert!(
+                e.get("chunks").is_none(),
+                "symlink/dir omit chunks even with --chunks: {e}"
+            );
+        }
+    }
+    assert!(file_chunks.is_some());
+
+    let text_chunks = run_ok(&["ls", "--chunks", listing.to_str().unwrap()]);
+    let t = String::from_utf8_lossy(&text_chunks.stdout);
+    let file_line = t
+        .lines()
+        .find(|l| l.starts_with("file\tpkgs/foo/a.txt\t"))
+        .expect("file line");
+    let parts: Vec<&str> = file_line.split('\t').collect();
+    assert_eq!(parts.len(), 4, "file --chunks text columns: {file_line}");
+    assert!(!parts[3].is_empty(), "chunk hex column non-empty");
+    let link_line = t
+        .lines()
+        .find(|l| l.starts_with("symlink\tpkgs/foo/link.txt\t"))
+        .expect("symlink line");
+    assert_eq!(
+        link_line.split('\t').count(),
+        3,
+        "symlink omits chunks column: {link_line}"
+    );
+}
+
+#[test]
+fn cat_path_cfdir_bytes_match_extract() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::create_dir_all(src.join("pkgs/bar")).unwrap();
+    let payload = b"hello-foo-unique-bytes\n";
+    fs::write(src.join("pkgs/foo/a.txt"), payload).unwrap();
+    fs::write(src.join("pkgs/bar/b.txt"), b"hello-bar\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let full = dir.path().join("full.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        full.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    let sub = dir.path().join("foo.cfdir");
+    run_ok(&[
+        "filter",
+        "--path",
+        "pkgs/foo",
+        "-o",
+        sub.to_str().unwrap(),
+        full.to_str().unwrap(),
+    ]);
+
+    let cat_out = dir.path().join("a.bin");
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo/a.txt",
+        "-o",
+        cat_out.to_str().unwrap(),
+        sub.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&cat_out).unwrap(), payload);
+
+    let cat_out2 = dir.path().join("a2.bin");
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "./pkgs/foo/a.txt",
+        "-o",
+        cat_out2.to_str().unwrap(),
+        sub.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&cat_out2).unwrap(), payload);
+
+    let extract_dir = dir.path().join("extracted");
+    run_ok(&[
+        "extract",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo/a.txt",
+        "-o",
+        extract_dir.to_str().unwrap(),
+        sub.to_str().unwrap(),
+    ]);
+    let extracted = fs::read(extract_dir.join("pkgs/foo/a.txt")).unwrap();
+    assert_eq!(extracted, fs::read(&cat_out).unwrap());
+
+    let json = run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo/a.txt",
+        "-o",
+        dir.path().join("a3.bin").to_str().unwrap(),
+        "--format",
+        "json",
+        sub.to_str().unwrap(),
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["bytes"].as_u64().unwrap(), payload.len() as u64);
+}
+
+#[test]
+fn cat_cfidx_without_path_still_works() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let idx = dir.path().join("hello.cfidx");
+    let input = fixtures_dir().join("hello.txt");
+    let expected = fs::read(&input).unwrap();
+
+    run_ok(&[
+        "make",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        idx.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out.bin");
+    run_ok(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(&out).unwrap(), expected);
+
+    let fail = run_fail(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "hello",
+        "-o",
+        dir.path().join("nope.bin").to_str().unwrap(),
+        idx.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("cfidx") || err.contains(".cfidx"),
+        "cfidx + --path must be clear non-zero; stderr={err}"
+    );
+}
+
+#[test]
+fn cat_cfdir_without_path_fails() {
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), b"x\n").unwrap();
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let fail = run_fail(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "-o",
+        dir.path().join("out.bin").to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let err = String::from_utf8_lossy(&fail.stderr);
+    assert!(
+        err.contains("--path") || err.contains("cfdir") || err.contains(".cfdir"),
+        "cfdir cat without --path must be clear non-zero; stderr={err}"
+    );
+}
+
+#[test]
+fn cat_path_symlink_dir_missing_fails() {
+    use chunkforge_index::{DirArchive, DirEntry, DirEntryKind};
+
+    let dir = tempdir().unwrap();
+    let store = dir.path().join("store");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("pkgs/foo")).unwrap();
+    fs::write(src.join("pkgs/foo/a.txt"), b"hello\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", src.join("pkgs/foo/link.txt")).unwrap();
+
+    let listing = dir.path().join("tree.cfdir");
+    run_ok(&[
+        "archive",
+        "--store",
+        store.to_str().unwrap(),
+        "--symlinks",
+        "record",
+        "-o",
+        listing.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+
+    let out = dir.path().join("out.bin");
+    let fail_link = run_fail(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo/link.txt",
+        "-o",
+        out.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let err_link = String::from_utf8_lossy(&fail_link.stderr);
+    assert!(
+        err_link.to_lowercase().contains("symlink"),
+        "cat --path to Symlink → non-zero; stderr={err_link}"
+    );
+
+    let fail_miss = run_fail(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "pkgs/foo/missing.txt",
+        "-o",
+        out.to_str().unwrap(),
+        listing.to_str().unwrap(),
+    ]);
+    let err_miss = String::from_utf8_lossy(&fail_miss.stderr);
+    assert!(
+        err_miss.contains("no entry")
+            || err_miss.contains("matching")
+            || err_miss.contains("--path"),
+        "cat --path missing → non-zero; stderr={err_miss}"
+    );
+
+    // Explicit Dir entry (archive omits empty dirs by default).
+    let mut arch = DirArchive::decode(&fs::read(&listing).unwrap()).unwrap();
+    arch.entries.push(DirEntry {
+        path: "emptydir".into(),
+        kind: DirEntryKind::Dir { mode: 0o755 },
+    });
+    // Re-validate via DirArchive::new (recomputes format_version).
+    let arch = DirArchive::new(arch.flags, arch.entries).unwrap();
+    let with_dir = dir.path().join("with_dir.cfdir");
+    fs::write(&with_dir, arch.encode().unwrap()).unwrap();
+
+    let fail_dir = run_fail(&[
+        "cat",
+        "--store",
+        store.to_str().unwrap(),
+        "--path",
+        "emptydir",
+        "-o",
+        out.to_str().unwrap(),
+        with_dir.to_str().unwrap(),
+    ]);
+    let err_dir = String::from_utf8_lossy(&fail_dir.stderr);
+    assert!(
+        err_dir.to_lowercase().contains("directory") || err_dir.to_lowercase().contains("dir"),
+        "cat --path to Dir → non-zero; stderr={err_dir}"
+    );
+}
+
+#[test]
+fn cat_help_mentions_path_and_cfdir() {
+    let help = run_ok(&["cat", "--help"]);
+    let s = String::from_utf8_lossy(&help.stdout);
+    assert!(s.contains("--path"), "cat --help must list --path:\n{s}");
+    let lower = s.to_lowercase();
+    assert!(
+        lower.contains("cfdir") || lower.contains(".cfdir"),
+        "cat --help should mention .cfdir:\n{s}"
+    );
+    assert!(
+        lower.contains("extract") && (lower.contains("prune") || lower.contains("multi")),
+        "cat --help must nail ≠ extract / prune / multi-file:\n{s}"
     );
 }
