@@ -6,6 +6,7 @@
 //! - [diff helpers](diff_dir_archives) — path/chunk set comparison of two `.cfdir` (Phase 7)
 //! - [extract match](judge_extract_unchanged) — dest vs listing size+blake3 for `--skip-unchanged` (Phase 9); optional mtime trust (Phase 11)
 //! - [`PathFilter`] — `--path` / `--exclude` matching for archive paths (Phase 13; wired into `archive` / `extract` / `pull` / `push`); `--exclude-from` file loader (Phase 14 M4); [`load_path_file`] for `--path-from` include prefixes (Phase 20 M1; CLI wiring later)
+//! - [`chunk_locations`] / [`seed_plan`] — materialize-side chunk-level seed plan: prior `.cfdir` → `chunk_id ↦ (path, offset, len)` (Phase 27 M1; pure, zero IO)
 //! - [`filter_dir_archive`] — File-keep + ancestor-Dir subset of a `.cfdir` for DirFs / mount path (Phase 21 M1; mount CLI later)
 //!
 //! Binary layouts are little-endian. See `docs/index-format.md` and
@@ -22,6 +23,7 @@ mod index;
 mod path;
 mod path_filter;
 mod seed;
+mod seed_plan;
 
 pub use diff::{DiffReport, diff_dir_archives, diff_dir_archives_with_progress};
 pub use dir::{
@@ -41,6 +43,7 @@ pub use seed::{
     SeedDecision, decide_seed, decide_seed_for_entry, decide_seed_for_entry_ex,
     decide_seed_trust_mtime, hash_reader, seed_file_map,
 };
+pub use seed_plan::{SeedLocation, chunk_locations, seed_plan};
 
 #[cfg(test)]
 mod tests {

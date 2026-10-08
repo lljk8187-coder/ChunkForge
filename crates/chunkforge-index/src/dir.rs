@@ -449,7 +449,7 @@ impl DirArchive {
     }
 }
 
-fn validate_file_chunks(size: u64, chunks: &[IndexEntry]) -> Result<(), Error> {
+pub(crate) fn validate_file_chunks(size: u64, chunks: &[IndexEntry]) -> Result<(), Error> {
     if chunks.is_empty() {
         if size != 0 {
             return Err(Error::InvalidStructure(

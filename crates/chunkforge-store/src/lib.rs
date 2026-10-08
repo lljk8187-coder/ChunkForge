@@ -25,6 +25,10 @@
 //! Phase 17 P1: [`CacheSource`] exposes observation counters
 //! (`hits` / `miss_fills` / `miss_refused`) on the `get` path — **not** LRU / trim.
 //!
+//! Phase 27 M1: [`SeedSource`] — read-only, BLAKE3-verified chunk source over a
+//! local seed tree described by a prior listing; any failure → NotFound (never
+//! fills a cache, never writes). Unix-only (`FileExt::read_exact_at`, `(dev, ino)` check).
+//!
 //! Phase 4 adds [`ChunkSink`]: a write-only trait implemented by [`Store`]
 //! (and later by HTTP PUT) so push pipelines share one write face without
 //! forcing `put` onto read-only [`ChunkSource`] backends.
@@ -35,6 +39,8 @@ mod fallback;
 mod meta;
 mod outcome;
 mod path;
+#[cfg(unix)]
+mod seed;
 mod sink;
 mod source;
 mod store;
@@ -45,6 +51,8 @@ pub use fallback::{FallbackError, FallbackSource};
 pub use meta::{Compression, MAGIC, StoreMeta, VERSION};
 pub use outcome::PutOutcome;
 pub use path::{chunk_abs_path, chunk_rel_path};
+#[cfg(unix)]
+pub use seed::{SeedSource, SeedStats};
 pub use sink::{ChunkSink, SinkError};
 pub use source::{ChunkSource, SourceError};
 pub use store::{Store, StoreStats};
