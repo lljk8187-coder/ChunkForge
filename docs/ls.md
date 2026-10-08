@@ -1,8 +1,7 @@
 # `chunkforge ls` (+ `cat --path`)
 
 List paths in a `.cfidx` / `.cfdir` listing (**inventory only**). Phase25 /
-**1.15.0** closeout. Phase26 (toward **1.16.0**; workspace still **1.15.0**)
-makes `.cfdir --path` see an **empty-dirs leaf Dir** through the same
+**1.15.0** closeout. Phase26 / **1.16.0** closeout makes `.cfdir --path` see an **empty-dirs leaf Dir** through the same
 `filter_dir_archive` keep rule as `filter` / `mount` / path-scoped `diff`.
 
 Consumes public [`DirArchive::decode`](../crates/chunkforge-index/src/dir.rs) /
@@ -158,4 +157,6 @@ implement pack**. **Phase26 / 1.16.0 still does not implement pack**.
 Compat gate **`check_compat_1_14.sh`** (Phase25; calls 1_13; no absolute
 perf SLA). Smoke:
 [`scripts/demo_ls_cat_path.sh`](../scripts/demo_ls_cat_path.sh).
-Phase26-M4 does **not** require `check_compat_1_15.sh` (that gate is M5).
+Phase26 / **1.16.0** gate **`check_compat_1_15.sh`** (calls 1_14) asserts
+`ls --path <empty_leaf>` keeps the leaf Dir. Smoke:
+[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).

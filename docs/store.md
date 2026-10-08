@@ -1,8 +1,8 @@
 # `chunkforge store`
 
 Local CAS store subcommands. This page covers **`store create`** (Phase 19),
-**`store list`** (Phase 21 / P1), and **`store get`** (Phase26, toward
-**1.16.0**; workspace still **1.15.0**). See also [doctor-gc.md](doctor-gc.md)
+**`store list`** (Phase 21 / P1), and **`store get`** (Phase26 /
+**1.16.0**). See also [doctor-gc.md](doctor-gc.md)
 for **`store scrub`** / **`store stats`** / **`du`**, and [ops-json.md](ops-json.md)
 for JSON field rows.
 
@@ -86,7 +86,7 @@ chunkforge store list --store ./s              # sorted hex ids, one per line
 chunkforge store list --store ./s --format json
 ```
 
-## `store get` (Phase26; toward 1.16.0)
+## `store get` (Phase26 / 1.16.0)
 
 Fetch **one** chunk's plaintext from a local store (`Store::get_verify`) and
 write it to **`-o`**. Single hex id. Not a tree export.
@@ -137,5 +137,7 @@ chunkforge store get --store ./s --verify "$ID" -o /tmp/c2.bin --format json
 ```
 
 Smoke: [`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).
-`check_compat_1_15.sh` is **M5** (not required by the Phase26-M4 demo).
+Gate: [`check_compat_1_15.sh`](../scripts/check_compat_1_15.sh) (Phase26;
+calls 1_14; thin `store get -o` bytes check). `-o` stays required (stdout
+output deferred).
 

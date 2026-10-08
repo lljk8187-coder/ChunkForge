@@ -7,21 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-10-07
+
+Phase 26 closeout — **`filter_dir_archive` leaf-Dir keep** (P0: an explicit
+empty leaf **Dir** written by `archive --empty-dirs` is now kept when a
+non-empty path 四件套 `allows` that path; shared by `filter` / `ls --path` /
+`mount` path / `diff --path`; empty filter ≡ identity) + **`chunkforge store
+get`** (one local chunk id → plaintext `-o`; optional `--verify`;
+`--format text|json` `{ok,id,bytes}`) + `check_compat_1_15.sh` + docs +
+`demo_empty_dir_path_store_get.sh`; P1 path leaf-Dir **help honesty**.
+Defaults of existing commands remain ≡ **1.15.0**. `.cfidx` v1 / `.cfdir` v1
+bytes unchanged. No pack / write mount / **`gc --path`** / extract prune /
+aws-sdk / remote scrub / LRU / **default** zstd / `store recompress` /
+`push --fallback` / mount `--progress` / **default record symlink** / offline
+bundle / `store get` stdout.
+
+### Added
+
+- **`store get`** (Phase26 M2–M3 / P0):
+  `chunkforge store get --store <S> -o <FILE> [--verify] [--format text|json] <HEX>`.
+  Productizes library `Store::get` / `get_verify`: fetch **one** chunk's
+  plaintext from a local store and write it to **`-o`** (required). Default
+  trusts on-disk encoding; optional **`--verify`** re-hashes (no extra JSON
+  fields). Default **text**: stderr `store get: ok id=<hex> bytes=N`;
+  **json**: one object **`{ok,id,bytes}`** on stdout (still writes `-o`; no
+  text dual-write; exit format-independent). Missing id / bad hex → clear
+  non-zero (no success object). Responsibility nail: **`store get` ≠ scrub ≠
+  cat ≠ extract ≠ recompress ≠ remove**. See `docs/store.md` /
+  `docs/ops-json.md`.
+- **Correctness matrix** (Phase26 M3): leaf-Dir keep across `ls` / `filter` /
+  `mount` path / path-scoped `diff`; `store get --verify`; bad / missing id;
+  no-`--empty-dirs` regression (no ghost Dir synthesis).
+- **Docs + `demo_empty_dir_path_store_get.sh`** (Phase26 M4): filter / ls /
+  dir-format / store / stability / ops-json / perf / README Phase 26
+  narrative; local smoke for `archive --empty-dirs` → `ls --path <empty_leaf>`
+  shows `dir\t…` → `filter --path <empty_leaf>` keeps Dir (subset `ls`
+  non-empty) → `store get <hex> -o` bytes ≡ source; help nails ≠ prune / ≠
+  scrub / ≠ cat / ≠ pack / ≠ write mount / ≠ gc-path.
+- **`check_compat_1_15.sh`** (Phase26 M5): calls `check_compat_1_14` +
+  asserts `archive --empty-dirs` / `store get` help (≠ scrub ≠ cat ≠ extract;
+  `--store` / `--verify` / `--format` / `-o`) + thin functional
+  (`ls --path` / `filter --path` keep empty leaf Dir; `store get -o` bytes ≡
+  source) + non-goal re-asserts (no extract `--delete` / pack / LRU / store
+  trim / aws-sdk / default zstd / recompress / push `--fallback` /
+  **`gc --path`** / write mount / default record); requires
+  `demo_empty_dir_path_store_get.sh` present + executable.
+- Workspace version **1.16.0** (Phase 26 M7 closeout).
+
 ### Changed
 
+- **`filter_dir_archive` leaf-Dir keep** (Phase26 M1 / P0): when the
+  PathFilter is **non-empty**, an explicit `Dir` entry is kept if
+  `PathFilter::allows(path)` (e.g. an empty leaf Dir from
+  `archive --empty-dirs`), in addition to ancestor Dirs of kept File/Symlink
+  leaves. Previously such a Dir was dropped, so `filter` / `ls --path` /
+  `mount` path / `diff --path` did not see it although extract `--path`
+  materialized it. Empty filter stays **identity** ≡ 1.15; listings without
+  explicit Dir rows (default archive, no `--empty-dirs`) are unchanged; no
+  ghost Dir synthesis. Responsibility nail: **`filter_dir_archive` leaf-Dir ≠
+  prune ≠ `gc --path`** ≠ write mount ≠ pack.
 - **Phase26-M6 / P1 O1 help honesty**: `filter` / `ls` / `mount` (and `diff`
   path-scope) CLI `--help` now state that under a **non-empty** path 四件套,
   matching **File/Symlink** + **ancestor Dirs** + **explicit Dir** when
   `PathFilter::allows` (incl. empty-dirs leaf) are kept; empty filter / no path
   flags ≡ identity / full tree; aligns with extract `allows` on Dir; **≠**
   prune **≠** `gc --path` **≠** write mount; **no** ghost Dir synthesis.
-  Version stays **1.15.0** until M7.
+- Docs (`filter` / `ls` / `dir-format` / `store` / `ops-json` / `perf` /
+  `stability` / README): mark Phase26 closed at **1.16.0**; demo version gates
+  updated to **1.16.0** so `check_compat_1_15` nesting stays green.
+- `demo_empty_dir_path_store_get.sh`: mount `--help` nail accepts both
+  `write-mount` and `write mount` (M6 reworded the help; demo-only fix, same
+  rule as the cli_integration help test).
 
 ### Notes
 
 - **O2** (compat asserts demo present+executable): already satisfied by
-  Phase26-M5 `check_compat_1_15` — not re-done here.
-- **O3** (`store get` stdout without `-o`): **deferred**; `-o` stays required.
+  Phase26-M5 `check_compat_1_15` — not re-done in M6.
+
+### Not delivered / deferred (Phase 26)
+
+- **O3** `store get` to **stdout** without `-o` — **deferred**; `-o` stays
+  required
+- **packfile** / multi-chunk objects — still deferred (`docs/perf.md`)
+- **Write mount** / COW / writable FUSE — non-goal
+- **`gc --path`** — **hard ban** (mis-delete risk; leaf-Dir keep is not
+  gc-path)
+- **Extract prune** / `--delete` — non-goal
+- Full **`aws-sdk-*`** / multipart / IMDS / SSO / ListObjects — non-goal
+- **Remote scrub** / remote GC — deferred
+- Bidirectional sync / watch dirs — non-goal
+- Cache LRU / store trim — non-goal
+- **Default** store zstd / HTTP Content-Encoding / wire compression /
+  `store recompress` — non-goal
+- **`push --fallback`** / multi dest — non-goal
+- **`mount --progress`** — non-goal
+- **Default record symlink** / follow directory symlink / fifo·socket·device /
+  xattr / ACL — non-goal
+- Ghost Dir synthesis under path filters — non-goal
+- Offline bundle — deferred
+
+### Compatibility
+
+- CLI defaults of existing commands match **1.15.0**: archive without
+  `--empty-dirs` ≡ omit empty dirs (so path-scoped `filter` / `ls` / `mount` /
+  `diff` on such listings ≡ 1.15); empty path 四件套 ≡ identity / full tree;
+  `diff --tree` / archive `--symlinks` default **skip**; create compression
+  **none**; `jobs=1`, `http-retries=0`, SigV4 **off**, ops default **text**,
+  progress **off**, mount prefetch depth **1**; **`store get` is additive**
+  (new subcommand); omit `store get --verify` ≡ trust on-disk encoding; prior
+  JSON field names frozen
+- Formats frozen: `.cfidx` v1 on-wire bytes unchanged; `.cfdir` v1 bytes
+  unchanged (opt-in v2 Symlink unchanged from 1.12–1.15); Source/Sink
+  signatures unchanged; FUSE stays **RO**
 
 ## [1.15.0] — 2026-09-30
 
@@ -1606,6 +1703,8 @@ Phase 1 MVP closeout: local content-addressed chunking with make / cat / verify.
 - Not a restic/syncthing replacement; no GPU/LLM; no FUSE; no remote/network store;
   no casync binary drop-in; no full directory-tree archive
 
+[Unreleased]: https://github.com/lljk8187-coder/ChunkForge/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/lljk8187-coder/ChunkForge/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.15.0
 [1.14.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.14.0
 [1.13.0]: https://github.com/lljk8187-coder/ChunkForge/releases/tag/v1.13.0

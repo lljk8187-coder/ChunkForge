@@ -13,7 +13,7 @@
 #   CHUNKFORGE_BIN, CHUNKFORGE_PYTHON
 #   CHUNKFORGE_P26_DEMO_DIR (default /tmp/cf-p26-empty-dir-store-get-demo)
 #
-# Version gate expects chunkforge 1.15.0 (still, until Phase26-M7).
+# Version gate expects chunkforge 1.16.0 (Phase26-M7 closeout).
 #
 # Gate (Phase26-M5): require check_compat_1_15.sh present + executable
 # (same pattern as Phase25-M5 demo_ls_cat_path ↔ compat_1_14).
@@ -225,8 +225,10 @@ if ! grep -F 'read-only' <<<"$MOUNT_HELP" >/dev/null; then
   echo "error: mount --help must stay read-only (≠ write mount)" >&2
   exit 1
 fi
-if ! grep -F 'write-mount' <<<"$MOUNT_HELP" >/dev/null; then
-  echo "error: mount --help must nail not write-mount" >&2
+# Phase26-M6 help reworded "Not write-mount" → "≠ write mount"; accept both
+# spellings (same as cli_integration help-honesty test).
+if ! grep -Ei 'write[- ]mount' <<<"$MOUNT_HELP" >/dev/null; then
+  echo "error: mount --help must nail not write-mount / ≠ write mount" >&2
   exit 1
 fi
 echo "mount --help read-only / ≠ write mount: OK"
@@ -244,15 +246,15 @@ echo "no pack subcommand (≠ pack): OK"
 echo "E: help / narrative nails: OK"
 
 echo
-echo "==> F. version 1.15.0 + compat_1_14 + compat_1_15 (Phase26-M5)"
+echo "==> F. version 1.16.0 + Cargo 1.16.0 + compat_1_14 + compat_1_15 (Phase26-M7)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.15.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.15.0 (until M7); got $VER" >&2
+if ! grep -F '1.16.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.16.0; got $VER" >&2
   exit 1
 fi
-if ! grep -E '^version = "1\.15\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must stay 1.15.0" >&2
+if ! grep -E '^version = "1\.16\.0"' "$ROOT/Cargo.toml" >/dev/null; then
+  echo "error: workspace Cargo.toml version must be 1.16.0 (Phase26-M7)" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -280,7 +282,7 @@ if [[ ! -x "$COMPAT115" ]]; then
   exit 1
 fi
 echo "compat_1_15 present+executable: OK"
-echo "F: version 1.15.0 / compat_1_14 + compat_1_15 present+executable: OK"
+echo "F: version 1.16.0 / Cargo 1.16.0 / compat_1_14 + compat_1_15 present+executable: OK"
 
 echo
 echo "demo_empty_dir_path_store_get: ALL OK / PASS"
@@ -289,4 +291,4 @@ echo "        filter --path empty_leaf keeps Dir; filtered ls non-empty;"
 echo "        store get hex -o bytes ≡ source / chunk-id; optional --verify;"
 echo "        filter_dir_archive leaf-Dir ≠ prune ≠ gc-path;"
 echo "        store get ≠ scrub ≠ cat ≠ extract ≠ recompress ≠ remove;"
-echo "        ≠ pack ≠ write mount; version 1.15.0; compat_1_15 hard-required"
+echo "        ≠ pack ≠ write mount; version 1.16.0; compat_1_15 hard-required"

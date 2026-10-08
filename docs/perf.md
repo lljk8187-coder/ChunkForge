@@ -100,8 +100,8 @@ now.
 > leaf-Dir keep is listing metadata only (≠ pack ≠ prune ≠ gc-path).
 > `store get` reads one existing loose `.cnk` as plaintext (≠ pack ≠ scrub
 > ≠ cat ≠ extract ≠ recompress). Promotion checklist condition 1 stays
-> unmet on local stub evidence; pack stays deferred. Workspace version
-> remains **1.15.0** until the Phase26 closeout bump.
+> unmet on local stub evidence; pack stays deferred. Workspace version is
+> **1.16.0** (Phase26 closeout).
 
 ## What we measure
 

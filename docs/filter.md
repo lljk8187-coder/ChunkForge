@@ -1,8 +1,8 @@
 # `chunkforge filter`
 
 Persist a **path-scoped subset** of an existing `.cfdir` listing to a new
-`.cfdir`. Phase24 / **1.14.0** closeout. Phase26 (toward **1.16.0**;
-workspace still **1.15.0** until M7) extends shared `filter_dir_archive`:
+`.cfdir`. Phase24 / **1.14.0** closeout. Phase26 / **1.16.0** closeout
+extends shared `filter_dir_archive`:
 a **non-empty** PathFilter also **keeps an explicit Dir** when
 `PathFilter::allows(path)` (leaf empty Dir from `archive --empty-dirs`).
 Empty filter stays **identity**.
@@ -139,6 +139,7 @@ implement pack**. **Phase26 / 1.16.0 still does not implement pack**
 Compat gate **`check_compat_1_13.sh`** (Phase24-M5/M7) asserts `filter` help +
 thin Symlink-keep subset; calls `check_compat_1_12`. Smoke:
 [`scripts/demo_filter_listing.sh`](../scripts/demo_filter_listing.sh).
-Phase26-M4 smoke:
-[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh)
-(note-only on `check_compat_1_15.sh` — that gate is **M5**, not required here).
+Phase26 smoke:
+[`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh);
+gate **`check_compat_1_15.sh`** (Phase26; calls 1_14; asserts leaf-Dir keep on
+`ls --path` / `filter --path` + thin `store get`).

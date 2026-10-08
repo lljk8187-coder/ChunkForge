@@ -12,7 +12,7 @@
 #   CHUNKFORGE_P21_DEMO_DIR (default /tmp/cf-p21-mount-path-demo)
 #   CHUNKFORGE_DEMO_SKIP_FUSE=1  force-skip real FUSE even if available
 #
-# Version gate expects chunkforge 1.15.0 (Phase25-M7; nests under check_compat_1_14).
+# Version gate expects chunkforge 1.16.0 (Phase26-M7; nests under check_compat_1_15).
 # Gate (Phase20-M5 / Phase19-M7b lesson): require check_compat_1_10.sh
 # present + executable. Do NOT leave a soft "not yet" note, and never
 # assert that compat_1_10 must not exist.
@@ -290,16 +290,16 @@ echo "mount has no --format / --progress: OK"
 echo "E: help / ≠ gc-path / no session JSON-progress: OK"
 
 echo
-echo "==> F. version 1.15.0 + compat_1_9 + compat_1_10 (must exist + executable)"
+echo "==> F. version 1.16.0 + compat_1_9 + compat_1_10 (must exist + executable)"
 VER="$("$BIN" --version)"
 echo "version: $VER"
-if ! grep -F '1.15.0' <<<"$VER" >/dev/null; then
-  echo "error: expected chunkforge 1.15.0; got $VER" >&2
+if ! grep -F '1.16.0' <<<"$VER" >/dev/null; then
+  echo "error: expected chunkforge 1.16.0; got $VER" >&2
   exit 1
 fi
-# Workspace Cargo.toml must say 1.15.0
-if ! grep -E '^version = "1\.15\.0"' "$ROOT/Cargo.toml" >/dev/null; then
-  echo "error: workspace Cargo.toml version must be 1.15.0" >&2
+# Workspace Cargo.toml must say 1.16.0
+if ! grep -E '^version = "1\.16\.0"' "$ROOT/Cargo.toml" >/dev/null; then
+  echo "error: workspace Cargo.toml version must be 1.16.0" >&2
   grep -E '^version' "$ROOT/Cargo.toml" >&2 || true
   exit 1
 fi
@@ -321,7 +321,7 @@ if [[ ! -x "$COMPAT110" ]]; then
   echo "error: check_compat_1_10.sh must be executable" >&2
   exit 1
 fi
-echo "F: version 1.15.0 / Cargo 1.15.0 / compat_1_9 / compat_1_10: OK"
+echo "F: version 1.16.0 / Cargo 1.16.0 / compat_1_9 / compat_1_10: OK"
 
 echo
 echo "demo_mount_path: ALL OK (assert_path=$ASSERT_PATH)"

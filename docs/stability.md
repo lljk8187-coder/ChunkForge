@@ -166,11 +166,10 @@ Gate **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (calls
 1_13; asserts `ls` / `cat --path`; no absolute perf SLA). Defaults of
 existing commands stay ≡ **1.14.0**. The workspace reports **1.15.0**.
 
-**Phase26 (toward 1.16.0; not a version bump yet)** adds further **additive**
-behaviour only. Defaults of existing commands stay ≡ **1.15.0** (jobs=1,
-retries=0, SigV4 off, text format, progress off, empty-dirs **off**, symlink
-**skip**, create compression **none**). Workspace / CLI still report
-**1.15.0** until M7.
+**1.16.0** (Phase26 closeout) adds further **additive** behaviour only.
+Defaults of existing commands stay ≡ **1.15.0** (jobs=1, retries=0,
+SigV4 off, text format, progress off, empty-dirs **off**, symlink **skip**,
+create compression **none**). The workspace reports **1.16.0**.
 
 - **`filter_dir_archive` leaf-Dir:** when the PathFilter is non-empty, an
   explicit `Dir` is kept if `PathFilter::allows(path)`, in addition to
@@ -189,8 +188,11 @@ zstd, push `--fallback`, mount `--progress`, default record, remote scrub.
 Docs: [filter.md](filter.md) / [ls.md](ls.md) / [dir-format.md](dir-format.md)
 / [store.md](store.md) / [ops-json.md](ops-json.md) / [perf.md](perf.md).
 Smoke: [`scripts/demo_empty_dir_path_store_get.sh`](../scripts/demo_empty_dir_path_store_get.sh).
-**`check_compat_1_15.sh` is M5 — not shipped in M4** (demo is note-only if
-the file is absent). No absolute perf SLA.
+Gate **[`check_compat_1_15.sh`](../scripts/check_compat_1_15.sh)** (calls
+1_14; asserts empty-dirs leaf-Dir on `ls`/`filter --path` + `store get`;
+requires the demo present + executable). No absolute perf SLA. P1: `filter` /
+`ls` / `mount` / `diff` path `--help` state leaf-Dir keep. Deferred: `store
+get` stdout without `-o`.
 
 Cross-links: [index-format.md](index-format.md), [dir-format.md](dir-format.md),
 [mount.md](mount.md), [filter.md](filter.md), [ls.md](ls.md), [perf.md](perf.md), [sigv4.md](sigv4.md),
@@ -225,9 +227,8 @@ Opt-in flags and additive behaviour (e.g. `--skip-unchanged`, `--format json`,
 `diff --tree --symlinks` + P1 `would_symlinks`), and **1.14.0** (Phase24
 `chunkforge filter` + P1 `make --seed` / mount help Symlink honesty), and
 **1.15.0** (Phase25 `chunkforge ls` + `cat --path` + P1 `archive --empty-dirs` /
-`chunk-id`·`store has --format json`) are such minors. Phase26 leaf-Dir keep
-and **`store get`** are the same kind of additive change **aimed at 1.16.0**
-but the workspace **still reports 1.15.0** until that bump: all new
+`chunk-id`·`store has --format json`), and **1.16.0** (Phase26 leaf-Dir keep +
+**`store get`**) are such minors: all new
 flags default off / text / jobs=1 / depth 1 / no path filter / no cache-max /
 no `--fallback` / create compression **none** / progress **off** / no pull
 `--verify` / no `--cache-stats` / no `store create` side effects on old paths /
@@ -298,7 +299,7 @@ At 1.0, ChunkForge promises:
 | Cross-OS first-class support | Linux + fuse3 is the acceptance platform |
 | casync `.catar` / `.caibx` bit-compat | Semantic alignment only; native formats |
 | Remote scrub / remote GC | Use `verify --source` for referenced remote integrity; `doctor` for presence; local `store scrub` / `gc` only |
-| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.15.0** still do not implement pack; **Phase26 / 1.16.0 still does not implement pack** |
+| Packfile / multi-chunk objects | Not implemented; promotion checklist stays in [perf.md](perf.md); **1.5.0**–**1.16.0** still do not implement pack |
 | Write mount / COW / bidirectional sync | FUSE stays RO; `diff` / extract skip ≠ sync; cache-max ≠ sync |
 | Cache LRU / auto trim / `store trim` | Soft budget is **refuse-fill only**; never evicts `.cnk` |
 | Full AWS SDK, multipart, IMDS/SSO, byte-range resume, push listing upload | Explicit non-goals |
@@ -381,6 +382,6 @@ Compat gates: [`scripts/check_compat_1_0.sh`](../scripts/check_compat_1_0.sh)
 1_12).
 **[`check_compat_1_14.sh`](../scripts/check_compat_1_14.sh)** (Phase25;
 gates `ls` / `cat --path` + 1.15 flags; calls 1_13).
-**`check_compat_1_15.sh` is not in tree for Phase26-M4** (M5 adds it; M4 demo
-is note-only and must not fail when the script is absent).
+**[`check_compat_1_15.sh`](../scripts/check_compat_1_15.sh)** (Phase26;
+gates empty-dirs leaf-Dir + `store get`; calls 1_14).
 No absolute perf SLA.
